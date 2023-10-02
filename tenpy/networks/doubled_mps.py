@@ -157,9 +157,14 @@ class DoubledMPS(MPS):
     
     #def from_hdf5(cls, hdf5_loader, h5gr, subpath):
     
+    # For doubled MPS initialization (either density matrix or operator), we will only
+    # use from_Bflat, where we pass in the tensors on each site directly. The user
+    # will need to define the appropriate matrices.
+    
     @classmethod
     def from_lat_product_state(cls, lat, p_state, allow_incommensurate=False, **kwargs):
         raise NotImplementedError()
+    
     
     @classmethod
     def from_product_state(cls,
@@ -238,6 +243,7 @@ class DoubledMPS(MPS):
             if permute:
                 B = B[site.perm, :, :]
             # calculate the LegCharge of the right leg
+            # Modified to account for the two physical legs
             legs = [site.leg, site.leg.conj(), legL, None]  # other legs are known
             legs = npc.detect_legcharge(B, ci, legs, None, qconj=-1)
             B = npc.Array.from_ndarray(B, legs, dtype)
@@ -261,7 +267,7 @@ class DoubledMPS(MPS):
                   bc='finite',
                   outer_S=None):
         raise NotImplementedError()
-        # Sajant - adapt to work with multiple physical legs?
+        # No need for this, as psi is a dense vector with 2*L legs; this is too much for doubled states.
     
     @classmethod
     def from_singlets(cls,
@@ -276,15 +282,18 @@ class DoubledMPS(MPS):
         raise NotImplementedError()
     
     def to_regular_MPS(self):
+        """
+        Convert a doubled MPS to a regular MPS by combining together the 'p' and 'q' legs
+        """
+        # Build new site of squared dimension
         doubled_sites = [DoubledSite(self.sites[0].dim)] * self.L
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
-        #norm = np.sqrt(self.overlap(self))
         new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B')#, norm=norm)
-        return new_MPS, self.overlap(self)
+        return new_MPS
     
     def from_regular_MPS(self, reg_MPS):
         """
-        Replace SVs and B.
+        Convert a regular MPS back into a doubled MPS. We split the 'p' leg into 'p' and 'q'.
         """
         self._B = [B.replace_label('p', '(p.q)').split_legs() for B in reg_MPS._B]
         self._S = reg_MPS._S
@@ -306,10 +315,47 @@ class DoubledMPS(MPS):
     
     #def set_B(self, i, B, form='B'):
     
+    # If we want this, need to take care of additional physical legs.
+    # This function is needed for SVD compression of (infinite) doubled MPS.
     def set_svd_theta(self, i, theta, trunc_par=None, update_norm=False):
-        raise NotImplementedError()
-        # If we want this, need to take care of additional physical legs.
-        # This function is needed for SVD compression of (infinite) doubled MPS.
+        """SVD a two-site wave function `theta` and save it in `self`.
+
+        Parameters
+        ----------
+        i : int
+            `theta` is the wave function on sites `i`, `i` + 1.
+        theta : :class:`~tenpy.linalg.np_conserved.Array`
+            The two-site wave function with labels combined into ``"(vL.p0.q0)", "(p1.q1.vR)"``,
+            ready for svd.
+        trunc_par : None | dict
+            Parameters for truncation, see :cfg:config:`truncation`.
+            If ``None``, no truncation is done.
+        update_norm : bool
+            If ``True``, multiply the norm of `theta` into :attr:`norm`.
+        """
+        i0 = self._to_valid_index(i)
+        i1 = self._to_valid_index(i0 + 1)
+        self.dtype = np.promote_types(self.dtype, theta.dtype)
+        qtotal_LR = [self._B[i0].qtotal, None]
+        if trunc_par is None:
+            U, S, VH = npc.svd(theta, qtotal_LR=qtotal_LR, inner_labels=['vR', 'vL'])
+            renorm = np.linalg.norm(S)
+            S /= renorm
+            err = None
+            if update_norm:
+                self.norm *= renorm
+        else:
+            U, S, VH, err, renorm = svd_theta(theta, trunc_par, qtotal_LR)
+            if update_norm:
+                self.norm *= renorm
+        U = U.split_legs().ireplace_labels(['p0', 'q0'], ['p', 'q'])
+        VH = VH.split_legs().ireplace_labels(['p1', 'q1'], ['p', 'q'])
+        self._B[i0] = U.itranspose(self._B_labels)
+        self.form[i0] = self._valid_forms['A']
+        self._B[i1] = VH.itranspose(self._B_labels)
+        self.form[i1] = self._valid_forms['B']
+        self.set_SR(i, S)
+        return err
         
     #def get_SL(self, i):
     
@@ -354,6 +400,7 @@ class DoubledMPS(MPS):
     of the dMPS to get the density matrix. Instead, a single copy of the dMPS is the density matrix itself
     (as the name suggests).
     
+    The below functions treat the dMPS as a pure state and calculate the traditional entanglement entropies.
     So given some region A, what we are calculating is something like $-Tr((\rho^2)_A \ln (\rho^2)_A)$, 
     where $\rho^2_A$ is found by taking two copies of the dMPS (easiest to think of it as a vectorized
     MPS with local Hilbert space d**2 rather than having two physical legs of dimension d) and tracing 
@@ -361,14 +408,106 @@ class DoubledMPS(MPS):
     4 |A| legs (2 bras, 2 kets). We then project this into the bond space using the isometry tensors of
     \rho, which gets us back to an RDM just defined by the singular values on the bond (assuming that we
     are interested in a bipartition).
+    
+    As usual, all of this is done in terms of singular values wherever possible.
     """
     
     #def entanglement_entropy(self, n=1, bonds=None, for_matrix_S=False):
     
     #def entanglement_entropy_segment(self, segment=[0], first_site=None, n=1):
     
+    #def entanglement_entropy_segment2(self, segment, n=1):
+    
+    #def entanglement_spectrum(self, by_charge=False):
+    
+    # This function treats the dMPS as a pure state
+    #def get_rho_segment(self, segment):
+    
+    def get_rho_segment_rho(self, segment):
+    """Return reduced density matrix for a segment, treating the doubled MPS as a density
+        matrix directly. So we don't need two copies of the MPS. We simply trace over the
+        legs not contained in the desired region.
+
+        Note that the dimension of rho_A scales exponentially in the length of the segment.
+
+        Parameters
+        ----------
+        segment : iterable of int
+            Sites for which the reduced density matrix is to be calculated.
+            Assumed to be sorted.
+
+        Returns
+        -------
+        rho : :class:`~tenpy.linalg.np_conserved.Array`
+            Reduced density matrix of the segment sites.
+            Labels ``'p0', 'p1', ..., 'pk', 'q0', 'q1', ..., 'qk'`` with ``k=len(segment)``.
+        """
+        if len(segment) > 6:
+            warnings.warn("{0:d} sites in the segment, that's much!".format(len(segment)),
+                          stacklevel=2)
+        if len(segment) > 10:
+            raise ValueError("too large segment; this is exponentially expensive!")
+        segment = np.sort(segment)
+        # We don't get any benefit from the canonical form here since we are not working with
+        # two copies of the tensors. We want the new L1 canonical form (name in development).
+        
+        # So for each site not in segment, we need to contract the 'p' and 'q' legs with a
+        # trace.
+        if self.bc != 'finite':
+            raise NotImplementedError('Only works for finite dMPS (for now).')
+        
+        not_segment = list(set(range(self.L)) - set(segment))
+        Ts = copy.deepcopy(self._B)
+        for i in not_segment:
+            Ts[i] = npc.trace(Ts[i], leg1='p', leg2='p')
+        rho = Ts[0]
+        for T in Ts[1:]:
+            rho = npc.tensordot(rho, T, axes=(['vR'], ['vL']))
+        rho = self._replace_p_label(rho, str(k))
+        return rho
+    
+    def entanglement_entropy_segment_rho(self, segment=[0], first_site=None, n=1):
+        r"""Calculate entanglement entropy for general geometry of the bipartition, treating
+        the doubled MPS as a density matrix.
+
+        See documentation of `entanglement_entropy_segment` for function parameter details.
+        """
+        segment = np.sort(segment)
+        if first_site is None:
+            if self.finite:
+                first_site = range(0, self.L - segment[-1])
+            else:
+                first_site = range(self.L)
+        comb_legs = [
+            self._get_p_labels(len(segment), False)[:len(segment)],
+            self._get_p_labels(len(segment), False)[len(segment):]
+        ]
+        res = []
+        for i0 in first_site:
+            rho = self.get_rho_segment_rho(segment + i0)
+            rho = rho.combine_legs(comb_legs, qconj=[+1, -1])
+            p = npc.eigvalsh(rho)
+            res.append(entropy(p, n))
+        return np.array(res)
+    
+    #def probability_per_charge(self, bond=0):
+    
+    #def average_charge(self, bond=0):
+    
+    #def charge_variance(self, bond=0):
+    
+    #def mutinf_two_site(self, max_range=None, n=1):
+    
+    # SAJANT - write this
+    #def mutinf_two_site_rho(self, max_range=None, n=1):
+    
+    
+    
     # Need to finish going through MPS functions - Sajant
     # Include new function for getting actual reduced density matrix of some small region.
+    
+    def _normalize_exp_val(self, value):
+        return np.real_if_close(value) #/ self.norm
     
     def _get_bra_ket(self):
         return trace_identity_DMPS(self), self

@@ -771,15 +771,15 @@ class MPO:
             # First Row
             dW[0,0:1,:,:] = Idd
             if C.shape[0] > 0 and C.shape[1] > 0:
-                dW[0,1:DR-1,:,:] = np.kron(C, Id)
+                dW[0,1:DR-1,:,:] = np.kron(C, Id.conj())
                 dW[0,DR-1:2*DR-3,:,:] = -np.kron(Id, C.conj())
             if D.shape[0] > 0 and D.shape[1] > 0:
-                dW[0,2*DR-3,:,:] = np.kron(D, Id) - np.kron(Id, D.conj())
+                dW[0,2*DR-3,:,:] = np.kron(D, Id.conj()) - np.kron(Id, D.conj())
             # Second Block
             if A.shape[0] > 0 and A.shape[1] > 0:
-                dW[1:DL-1,1:DR-1,:,:] = np.kron(A, Id)
+                dW[1:DL-1,1:DR-1,:,:] = np.kron(A, Id.conj())
             if B.shape[0] > 0 and B.shape[1] > 0:
-                dW[1:DL-1,2*DR-3,:,:] = np.kron(B, Id)
+                dW[1:DL-1,2*DR-3,:,:] = np.kron(B, Id.conj())
             # Third Block
             if A.shape[0] > 0 and A.shape[1] > 0:
                 dW[DL-1:2*DL-3,DR-1:2*DR-3,:,:] = -np.kron(Id, A.conj())
@@ -789,6 +789,11 @@ class MPO:
             dW[2*DL-3,2*DR-3,:,:] = Idd
             
             # SAJANT - How does this work with charge conservation???
+            # Rather than use np.array, use npc.array to retain the charge structure
+            # For kronecker, do this by hand -> first do tensordot without contracting over any legs
+            # Use from_grid to build new MPO from A, B, C, D npc arrays.
+            
+            
             #leg_L, leg_R, leg_p, leg_pconj = W.legs
             #new_leg_L = npc.LegCharge.from_qflat(chinfo, [chinfo.make_valid()], leg_L.qconj)
             #new_leg_L = new_leg_L.extend(leg_L.project(proj_L)[2])
