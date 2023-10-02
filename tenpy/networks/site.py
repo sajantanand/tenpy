@@ -29,6 +29,7 @@ __all__ = [
     'BosonSite',
     'ClockSite',
     'spin_half_species',
+    'DoubledSite',
 ]
 
 
@@ -1988,3 +1989,115 @@ class ClockSite(Site):
 
     def __repr__(self):
         return f'ClockSite(q={self.q}, conserve={self.conserve})'
+
+class DoubledSite(Site):
+    r"""Doubled site for Heisenberg or density matrix evolution.
+
+    Given some physical Hilbert space of dimenison $d$, we want to define the vectorized,
+    doubled Hilbert space of dimension $d^2$. We want to define a basis of Hermitian,
+    orthogonal, and mostly traceless (HOMT) operators for use in DMT and DAOE.
+    What do these words mean?
+        (1) Hermitian - this is self-evident.
+        (2) orthogonal - given two operators $\sigma_\alpha, \sigma_\beta$, we demand that
+        $\langle \langle \sigma_\alpha | \sigma_\beta \rangle \rangle = Tr (\sigma_\alpha^\dagger \sigma_\beta) = \delta_{\alpha, \beta} $.
+        (3) Mostly traceless - only the Identity operator has a non-zero trace (and by orthogonality).
+    
+    How to we find such a basis? First, define a basis of $d^2$ Hermitian, mostly traceless (HMT)
+    (but not orthogonal) operators. Choose op[0] = Id, op[1 <= i < d] = |0><0| - |i><i|, 
+    op[d <= d + d(d-1)/2] = \sum_{i<j} |i><j| + |j><i|, 
+    op[d + d(d-1)/2 <= d^2] = \sum_{i<j} |i><j| - i|j><i|
+    
+    These are just a basis of operators in the standard bra-ket basis. These are not HOMT, but we
+    will make them so via a rotation and rescaling. Suppose we have a vector $\vec{v}$ in the standard
+    bra-ket basis, where $\vec{v}$ represents a Hermitian density matrix or Hermitian operator.
+    To write $\vec{v}$ as a linear combination of our HMT operators defined above, note that 
+    $\vec{v} = BK \vec{s}$.
+    
+    But we want the coefficients of $\vec{v}$ in a HOMT basis, so define $BK = QR$ and gauge-fix
+    the $R$ such that all of the diagonals are positive. Then $Q$ defines an HOMT basis.
+    So then let $\vec{v} = Q \vec{\lambda}$ where $\vec{\lambda} = R \vec{s}$. So $\vec{\lambda}$
+    defines how to make $\vec{v}$ as a linear combinations of elements of the HOMT $Q$ basis.
+    
+    Finally, given an operator $M$ that acts on the doubled Hilbert space vector $\vec{v}$, we map this
+    operator to the HOMT basis $Q$ by $M \rightarrow Q^\dagger M Q$. Then $\vec{v}^\dagger M \vec{v}
+    = \vec{w}^\dagger Q^\dagger M Q \vec{w}$.
+    
+    Let us give an example for $d=2$. The Pauli operators $I, Z, Y, X$ define an HOMT basis already.
+    The HMT operators we typically define are `already` the Pauli operators. So $BK = Q * 1$ is already
+    unitary (the hallmark of an HOMT basis). The $R$ matrix is trivial. Then, to map from the
+    computation, bra-ket basis to the basis in which index 0,1,2,3 corresponds to operators I, Z, X, Y,
+    one must use $Q$.
+    
+    For the general case, $R$ is non-trivial. While it seem paradoxical that we don't actually use $R$
+    anywhere, we could by first finding $\vec{s} = BK^{-1} \vec{v}$ and then $\vec{\lambda} = R \vec{s}$,
+    but this is equivalent to $\vec{\lambda} = Q^\dagger \vec{v}$.
+    
+    =========================== ================================================
+    operator                    description
+    =========================== ================================================
+    We don't define operators as the usual physical operators can be used once
+    we rotate back to the original, bra-ket basis.
+    =========================== ================================================
+
+    ============== ====  ============================
+    `conserve`     qmod  *excluded* onsite operators
+    ============== ====  ============================
+    ``'None'``     []    --
+    ============== ====  ============================
+
+    Parameters
+    ----------
+    d : int
+        Number of states per site in the physical (undoubled) Hilbert space
+    conserve : str | None
+        Defines what is conserved, see table above.
+    sort_charge : bool
+        Whether :meth:`sort_charge` should be called at the end of initialization.
+        This is usually a good idea to reduce potential overhead when using charge conservation.
+        Note that this permutes the order of the local basis states!
+        For backwards compatibility with existing data, it is not (yet) enabled by default.
+
+    Attributes
+    ----------
+    conserve : str
+        Defines what is conserved, see table above.
+    """
+
+    def __init__(self, d, conserve=None, sort_charge=None):
+        if not conserve:
+            conserve = 'None'
+        if conserve not in ['None']:
+            raise ValueError("invalid `conserve`: " + repr(conserve))
+            
+        self.d = d
+        BK_ops = []
+        BK_ops.append(np.eye(d, dtype=np.complex128))
+
+        for i in range(1, d):
+            BK_ops.append(np.diag([1+0.j] + (i-1)*[0] + [-1] + [0] * (d-1-i)))
+
+        for j in range(0, d-1):
+            for i in range(j+1, d):
+                op = np.zeros((d,d), dtype=np.complex128)
+                op[j,i] = 1
+                BK_ops.append(op + op.conj().T)
+
+                op *= -1.j
+                BK_ops.append(op + op.conj().T)
+        BK_ops_vec = [op.flatten() for op in BK_ops]
+        self.BK = BK = np.column_stack(BK_ops_vec)
+        self.Q, self.R = np.linalg.qr(BK)
+        self.sign_R = np.sign(np.diag(self.R))
+        self.Q = self.Q @ np.diag(self.sign_R)
+        self.R = np.diag(self.sign_R) @ self.R
+        
+        
+        ops = dict()
+        leg = npc.LegCharge.from_trivial(self.d**2)
+        self.conserve = conserve
+        # Specify Hermitian conjugates
+        Site.__init__(self, leg, [str(i) for i in range(self.d**2)], sort_charge=sort_charge, **ops)
+
+    def __repr__(self):
+        """Debug representation of self."""
+        return f'DoubledSite(q={self.d}, conserve={self.conserve})'

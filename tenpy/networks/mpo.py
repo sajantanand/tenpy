@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 from ..linalg import np_conserved as npc
 from ..linalg.sparse import NpcLinearOperator, FlatLinearOperator
-from .site import group_sites, Site
+from .site import group_sites, Site, DoubledSite
 from ..tools.string import vert_join
 from .mps import MPS as _MPS  # only for MPS._valid_bc
 from .mps import BaseEnvironment
@@ -712,7 +712,107 @@ class MPO:
             U.append(W_II)
         Id = [0] * (self.L + 1)
         return MPO(self.sites, U, self.bc, Id, Id, max_range=self.max_range)
+    
+    def make_doubled_MPO(self):
+        r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
+        :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
+        that the MPO has the usual block form.
+        
+        1 C D      1  CI -IC* (DI - ID*)
+        0 A B -->  0  AI  0    BI  
+        0 0 1      0  0   -IA* -IB*
+                   0  0   0    1
+        Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension 2D-2.
 
+        Parameters
+        ----------
+
+        Returns
+        -------
+        DMPO : :class:`~tenpy.networks.mpo.MPO`
+            The MPO in the doubled Hilbert space.
+
+        """
+        if self.explicit_plus_hc:
+            raise NotImplementedError("MPO.make_doubled_MPO assumes hermitian H, you can't use "
+                                      "the `explicit_plus_hc=True` flag!\n"
+                                      "See also https://github.com/tenpy/tenpy/issues/265")
+        dtype = self.dtype
+        IdL = self.IdL
+        IdR = self.IdR
+
+        chinfo = self.chinfo
+        trivial = chinfo.make_valid()
+        U = []
+        for i in range(0, self.L):
+            labels = ['wL', 'wR', 'p', 'p*']
+            W = self.get_W(i).itranspose(labels)
+            assert np.all(W.qtotal == trivial)
+            DL, DR, _, _ = W.shape
+            Wflat = W.to_ndarray()
+            proj_L = np.ones(DL, dtype=np.bool_)
+            proj_L[IdL[i]] = False
+            proj_L[IdR[i]] = False
+            proj_R = np.ones(DR, dtype=np.bool_)
+            proj_R[IdL[i + 1]] = False
+            proj_R[IdR[i + 1]] = False
+            print(proj_L, proj_R)
+            #Extract (A, B, C, D)
+            D = Wflat[IdL[i], IdR[i + 1], :, :]
+            C = Wflat[IdL[i], proj_R, :, :]
+            B = Wflat[proj_L, IdR[i + 1], :, :]
+            A = Wflat[proj_L, :, :, :][:, proj_R, :, :]  # numpy indexing requires two steps
+            
+            dW = np.zeros((2*DL-2, 2*DR-2, W.shape[2]**2, W.shape[3]**2), dtype=self.dtype)
+            Id = np.eye(W.shape[2])
+            Idd = np.eye(W.shape[2]**2)
+            
+            # At the beginning and end of the MPO, certain blocks may be empty.
+            # First Row
+            dW[0,0:1,:,:] = Idd
+            if C.shape[0] > 0 and C.shape[1] > 0:
+                dW[0,1:DR-1,:,:] = np.kron(C, Id)
+                dW[0,DR-1:2*DR-3,:,:] = -np.kron(Id, C.conj())
+            if D.shape[0] > 0 and D.shape[1] > 0:
+                dW[0,2*DR-3,:,:] = np.kron(D, Id) - np.kron(Id, D.conj())
+            # Second Block
+            if A.shape[0] > 0 and A.shape[1] > 0:
+                dW[1:DL-1,1:DR-1,:,:] = np.kron(A, Id)
+            if B.shape[0] > 0 and B.shape[1] > 0:
+                dW[1:DL-1,2*DR-3,:,:] = np.kron(B, Id)
+            # Third Block
+            if A.shape[0] > 0 and A.shape[1] > 0:
+                dW[DL-1:2*DL-3,DR-1:2*DR-3,:,:] = -np.kron(Id, A.conj())
+            if B.shape[0] > 0 and B.shape[1] > 0:
+                dW[DL-1:2*DL-3,DR-1:2*DR-3,:,:] = -np.kron(Id, B.conj())
+            # Last Row
+            dW[2*DL-3,2*DR-3,:,:] = Idd
+            
+            # SAJANT - How does this work with charge conservation???
+            #leg_L, leg_R, leg_p, leg_pconj = W.legs
+            #new_leg_L = npc.LegCharge.from_qflat(chinfo, [chinfo.make_valid()], leg_L.qconj)
+            #new_leg_L = new_leg_L.extend(leg_L.project(proj_L)[2])
+            #new_leg_R = npc.LegCharge.from_qflat(chinfo, [chinfo.make_valid()], leg_R.qconj)
+            #new_leg_R = new_leg_R.extend(leg_R.project(proj_R)[2])
+
+            #W_II = npc.Array.from_ndarray(
+            #    W_II,
+            #    [new_leg_L, new_leg_R, leg_p, leg_pconj],
+            #    dtype=dtype,
+            #    qtotal=trivial,
+            #    labels=labels,
+            #)
+            dW_npc = npc.Array.from_ndarray_trivial(
+                dW,
+                dtype=dtype,
+                labels=labels,
+            )
+            
+            # TODO: could sort by charges.
+            U.append(dW_npc)
+        Id = [0] * (self.L + 1)
+        return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, Id, Id, max_range=self.max_range)
+    
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
         """Calculate ``<psi|self|psi>/<psi|psi>`` (or density for infinite).
 

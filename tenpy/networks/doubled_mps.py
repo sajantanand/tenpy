@@ -123,6 +123,7 @@ import numpy as np
 import itertools
 
 from .mps import MPS
+from .site import DoubledSite
 from ..linalg import np_conserved as npc
 from ..tools.math import entropy
 from ..tools.misc import lexsort
@@ -139,7 +140,7 @@ class DoubledMPS(MPS):
     _p_label = ['p', 'q']  # this adjustment makes `get_theta` & friends work
     _B_labels = ['vL', 'p', 'q', 'vR']
 
-    # SAJANT - Check
+    # SAJANT - Check; this was taken from PurificationMPS
     # Thanks to using `self._replace_p_label`,
     # correlation_function works as it should, if we adjust _corr_up_diag
 
@@ -237,7 +238,7 @@ class DoubledMPS(MPS):
             if permute:
                 B = B[site.perm, :, :]
             # calculate the LegCharge of the right leg
-            legs = [site.leg, legL, None]  # other legs are known
+            legs = [site.leg, site.leg.conj(), legL, None]  # other legs are known
             legs = npc.detect_legcharge(B, ci, legs, None, qconj=-1)
             B = npc.Array.from_ndarray(B, legs, dtype)
             B.iset_leg_labels(['p', 'q', 'vL', 'vR']) # Modified to have multiple physical legs
@@ -273,6 +274,23 @@ class DoubledMPS(MPS):
                       lonely_state='up',
                       bc='finite'):
         raise NotImplementedError()
+    
+    def to_regular_MPS(self):
+        doubled_sites = [DoubledSite(self.sites[0].dim)] * self.L
+        new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
+        #norm = np.sqrt(self.overlap(self))
+        new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B')#, norm=norm)
+        return new_MPS, self.overlap(self)
+    
+    def from_regular_MPS(self, reg_MPS):
+        """
+        Replace SVs and B.
+        """
+        self._B = [B.replace_label('p', '(p.q)').split_legs() for B in reg_MPS._B]
+        self._S = reg_MPS._S
+        self.norm = reg_MPS.norm
+        self.form = reg_MPS.form
+        self.test_sanity()
     
     #def L(self):
     
@@ -349,6 +367,11 @@ class DoubledMPS(MPS):
     
     #def entanglement_entropy_segment(self, segment=[0], first_site=None, n=1):
     
+    # Need to finish going through MPS functions - Sajant
+    # Include new function for getting actual reduced density matrix of some small region.
+    
+    def _get_bra_ket(self):
+        return trace_identity_DMPS(self), self
     
     def _replace_p_label(self, A, s):
         """Return npc Array `A` with replaced label, ``'p' -> 'p'+s, 'q' -> 'q'+s``."""
@@ -364,3 +387,15 @@ class DoubledMPS(MPS):
             return [lbl + str(k) + '*' for k in range(ks) for lbl in self._p_label]
         else:
             return [lbl + str(k) for k in range(ks) for lbl in self._p_label]
+
+def trace_identity_DMPS(DMPS):
+    d = DMPS.sites[0].dim
+    I = np.eye(d).reshape(d, d, 1, 1)
+    return DoubledMPS.from_Bflat(DMPS.sites,
+                               [I] * DMPS.L,
+                               SVs=None,
+                               bc='finite',
+                               dtype=None,
+                               permute=True,
+                               form='B',
+                               legL=None)
