@@ -784,7 +784,7 @@ class MPO:
             if A.shape[0] > 0 and A.shape[1] > 0:
                 dW[DL-1:2*DL-3,DR-1:2*DR-3,:,:] = -np.kron(Id, A.conj())
             if B.shape[0] > 0 and B.shape[1] > 0:
-                dW[DL-1:2*DL-3,DR-1:2*DR-3,:,:] = -np.kron(Id, B.conj())
+                dW[DL-1:2*DL-3,2*DR-3,:,:] = -np.kron(Id, B.conj())
             # Last Row
             dW[2*DL-3,2*DR-3,:,:] = Idd
             
