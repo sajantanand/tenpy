@@ -465,13 +465,16 @@ class DoubledMPS(MPS):
             Ts = copy.deepcopy(proj_Bs)
         for i in not_segment:
             if Ts[i].ndim == 4:
-                Ts[i] = npc.trace(Ts[i], leg1='p', leg2='p')
+                Ts[i] = npc.trace(Ts[i], leg1='p', leg2='q')
             elif Ts[i].ndim != 2:
                 raise ValueError('Too many legs.')
         rho = Ts[0]
-        for T in Ts[1:]:
+        if 0 in segment:
+            rho = self._replace_p_label(rho, str(0))
+        for i, T in enumerate(Ts[1:]):
             rho = npc.tensordot(rho, T, axes=(['vR'], ['vL']))
-        rho = self._replace_p_label(rho, str(k))
+            if i+1 in segment:
+                rho = self._replace_p_label(rho, str(i+1))
         return rho
     
     def entanglement_entropy_segment_rho(self, segment=[0], first_site=None, n=1):
@@ -567,8 +570,10 @@ class DoubledMPS(MPS):
         norms = []
         total_prob = 1.
         proj_Bs = copy.deepcopy(self._B)
-        rho = self.get_rho_segment_rho([first_site], proj_Bs=proj_Bs)
-        norm = npc.trace(rho, leg1='p', leg2='p*')
+        rho = self.get_rho_segment_rho([first_site], proj_Bs=proj_Bs).replace_labels(['p0', 'q0'], ['p', 'q'])
+        rho = rho.squeeze()
+        assert rho.shape == (2,2)
+        norm = npc.trace(rho, leg1='p', leg2='q')
         rho = rho / norm
         norms.append(norm)
         for i in range(first_site, last_site + 1):
@@ -578,7 +583,7 @@ class DoubledMPS(MPS):
             # Check that rho is Hermitian and has trace 1
             # Trace 1 will fail since canonicalization messes up the norm, unless we normalize
             # which we do above.
-            assert np.isclose(npc.trace(rho, leg1='p', leg2='p*'), 1.0), "Not normalized"
+            assert np.isclose(npc.trace(rho, leg1='p', leg2='q'), 1.0), "Not normalized"
             assert np.isclose(npc.norm(rho - rho.conj().transpose()), 0.0), "Not Hermitian"
             assert np.alltrue(npc.eig(rho)[0] > -1.e-8), "Not positive semidefinite"
             
@@ -603,8 +608,10 @@ class DoubledMPS(MPS):
             proj_Bs[i] = proj_Bs[i].take_slice([sigma, sigma], ['p','q'])  # project to sigma in theta for remaining rho
             total_prob *= rho_diag[sigma]
             if i != last_site:
-                rho = self.get_rho_segment_rho([i+1], proj_Bs=proj_Bs)
-                norm = npc.trace(rho, leg1='p', leg2='p*')
+                rho = self.get_rho_segment_rho([i+1], proj_Bs=proj_Bs).replace_labels(['p' + str(i+1), 'q' + str(i+1)], ['p', 'q'])
+                rho = rho.squeeze()
+                assert rho.shape == (2,2)
+                norm = npc.trace(rho, leg1='p', leg2='q')
                 rho = rho / norm
                 norms.append(norm)
         return sigmas, total_prob, norms
