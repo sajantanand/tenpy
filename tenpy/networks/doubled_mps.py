@@ -423,8 +423,8 @@ class DoubledMPS(MPS):
     # This function treats the dMPS as a pure state
     #def get_rho_segment(self, segment):
     
-    def get_rho_segment_rho(self, segment):
-    """Return reduced density matrix for a segment, treating the doubled MPS as a density
+    def get_rho_segment_rho(self, segment, proj_Bs=None):
+        """Return reduced density matrix for a segment, treating the doubled MPS as a density
         matrix directly. So we don't need two copies of the MPS. We simply trace over the
         legs not contained in the desired region.
 
@@ -435,7 +435,9 @@ class DoubledMPS(MPS):
         segment : iterable of int
             Sites for which the reduced density matrix is to be calculated.
             Assumed to be sorted.
-
+        proj_Bs : list of npc_arrays
+            If we want to get the conditional reduced density matrix, we need to use the matrices
+            having already projected out some physical legs.
         Returns
         -------
         rho : :class:`~tenpy.linalg.np_conserved.Array`
@@ -457,9 +459,15 @@ class DoubledMPS(MPS):
             raise NotImplementedError('Only works for finite dMPS (for now).')
         
         not_segment = list(set(range(self.L)) - set(segment))
-        Ts = copy.deepcopy(self._B)
+        if proj_Bs is None:
+            Ts = copy.deepcopy(self._B)
+        else:
+            Ts = copy.deepcopy(proj_Bs)
         for i in not_segment:
-            Ts[i] = npc.trace(Ts[i], leg1='p', leg2='p')
+            if Ts[i].ndim == 4:
+                Ts[i] = npc.trace(Ts[i], leg1='p', leg2='p')
+            elif Ts[i].ndim != 2:
+                raise ValueError('Too many legs.')
         rho = Ts[0]
         for T in Ts[1:]:
             rho = npc.tensordot(rho, T, axes=(['vR'], ['vL']))
@@ -467,7 +475,7 @@ class DoubledMPS(MPS):
         return rho
     
     def entanglement_entropy_segment_rho(self, segment=[0], first_site=None, n=1):
-        r"""Calculate entanglement entropy for general geometry of the bipartition, treating
+        """Calculate entanglement entropy for general geometry of the bipartition, treating
         the doubled MPS as a density matrix.
 
         See documentation of `entanglement_entropy_segment` for function parameter details.
@@ -498,10 +506,108 @@ class DoubledMPS(MPS):
     
     #def mutinf_two_site(self, max_range=None, n=1):
     
-    # SAJANT - write this
-    #def mutinf_two_site_rho(self, max_range=None, n=1):
+    def mutinf_two_site_rho(self, max_range=None, n=1):
+        """Calculate the two-site mutual information :math:`I(i:j)`, treating
+        the doubled MPS as a density matrix.
+
+        See documentation of `mutinf_two_site` for function parameter details.
+        """
+        # This is not very optimized; Each S_{ij} is calculated independently, which
+        # is wasteful. SAJANT - Fix this?
+        if max_range is None:
+            max_range = self.L
+        S_i = self.entanglement_entropy_segment_rho(n=n)  # single-site entropy
+        mutinf = []
+        coord = []
+        for i in range(self.L):
+            jmax = i + max_range + 1
+            if self.finite:
+                jmax = min(jmax, self.L)
+            for j in range(i + 1, jmax):
+                rho_ij = self.get_rho_segment_rho([i, j])
+                S_ij = entropy(npc.eigvalsh(rho_ij), n)
+                mutinf.append(S_i[i] + S_i[j % self.L] - S_ij)
+                coord.append((i, j))
+        return np.array(coord), np.array(mutinf)
     
+    #def overlap(self, other, charge_sector=None, ignore_form=False, understood_infinite=False,
+    #            **kwargs):
     
+    #def expectation_value_terms_sum(self, term_list, prefactors=None):
+    
+    # Sample as if the doubled MPS were an MPS; i.e. treate dMPS as purification
+    def sample_measurements(self,
+                            first_site=0,
+                            last_site=None,
+                            ops=None,
+                            rng=None,
+                            norm_tol=1.e-12):
+        raise NotImplementedError("MPS function doesn't work yet.")
+    
+    def sample_measurements_rho(self,
+                            first_site=0,
+                            last_site=None,
+                            ops=None,
+                            rng=None,
+                            norm_tol=1.e-12):
+        """Sample measurement results in the computational basis, treating the dMPS as
+        a density matrix.
+        
+        Look at MPS.sample_measurements_rho for documentation. One difference is that we return
+        the total_prob rather than total_weight, which is the square root of total_prob with phase
+        information. When working with density matrices, we don't have the phase. Additionally,
+        we return the norm (i.e. traces) of the RDMs on each site.
+        """
+        assert self.bc == 'finite', "Infinite systems are weird without the L1 canonical form."
+        if last_site is None:
+            last_site = self.L - 1
+        if rng is None:
+            rng = np.random.default_rng()
+        sigmas = []
+        norms = []
+        total_prob = 1.
+        proj_Bs = copy.deepcopy(self._B)
+        rho = self.get_rho_segment_rho([first_site], proj_Bs=proj_Bs)
+        norm = npc.trace(rho, leg1='p', leg2='p*')
+        rho = rho / norm
+        norms.append(norm)
+        for i in range(first_site, last_site + 1):
+            # rho = reduced density matrix on site i in basis vL [sigmas...] p p* vR
+            # where the `sigmas` are already fixed to the measurement results
+            
+            # Check that rho is Hermitian and has trace 1
+            # Trace 1 will fail since canonicalization messes up the norm, unless we normalize
+            # which we do above.
+            assert np.isclose(npc.trace(rho, leg1='p', leg2='p*'), 1.0), "Not normalized"
+            assert np.isclose(npc.norm(rho - rho.conj().transpose()), 0.0), "Not Hermitian"
+            assert np.alltrue(npc.eig(rho)[0] > -1.e-8), "Not positive semidefinite"
+            
+            i0 = self._to_valid_index(i)
+            site = self.sites[i0]
+            if ops is not None:
+                op_name = ops[(i - first_site) % len(ops)]
+                op = site.get_op(op_name).transpose(['p', 'p*'])
+                if npc.norm(op - op.conj().transpose()) > 1.e-13:
+                    raise ValueError(f"measurement operator {op_name!r} not hermitian")
+                W, V = npc.eigh(op)
+                rho = npc.tensordot(V.conj(), theta, axes=['p*', 'p']).replace_label('p*', 'p')
+                rho = npc.tensordot(theta, V, axes=(['q', 'p'])) # 'p', 'p*'
+            else:
+                W = np.arange(site.dim)
+            rho_diag = np.abs(np.diag(rho.to_ndarray()))  # abs: real dtype & roundoff err
+            if abs(np.sum(rho_diag) - 1.) > norm_tol:
+                raise ValueError("not normalized to `norm_tol`")
+            rho_diag /= np.sum(rho_diag)
+            sigma = rng.choice(site.dim, p=rho_diag)  # randomly select index from probabilities
+            sigmas.append(W[sigma])
+            proj_Bs[i] = proj_Bs[i].take_slice([sigma, sigma], ['p','q'])  # project to sigma in theta for remaining rho
+            total_prob *= rho_diag[sigma]
+            if i != last_site:
+                rho = self.get_rho_segment_rho([i+1], proj_Bs=proj_Bs)
+                norm = npc.trace(rho, leg1='p', leg2='p*')
+                rho = rho / norm
+                norms.append(norm)
+        return sigmas, total_prob, norms
     
     # Need to finish going through MPS functions - Sajant
     # Include new function for getting actual reduced density matrix of some small region.

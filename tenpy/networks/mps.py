@@ -3147,6 +3147,9 @@ class MPS(BaseMPSExpectationValue):
             terms_sum = terms_sum * self.L
         return terms_sum, mpo_
 
+    # SAJANT - Adapt this function to work with two physical legs -> purification or doubled
+    # MPS when treaated as pure state. Need to decide what to do about extra ancilla leg 'q'.
+    # Do we sample it or leave it behind? Sampling would be most efficient.
     def sample_measurements(self,
                             first_site=0,
                             last_site=None,
