@@ -4308,7 +4308,8 @@ class MPS(BaseMPSExpectationValue):
             # Do QR starting from the left
             B = self.get_B(0, form='Th')
             for i in range(self.L - 1):
-                B = B.combine_legs(['vL', 'p'])
+                #B = B.combine_legs(['vL', 'p'])
+                B = B.combine_legs(['vL'] + self._p_label) # SAJANT - modify to work for multiple physical legs
                 q, r = npc.qr(B, inner_labels=['vR', 'vL'])
                 B = q.split_legs()
                 self.set_B(i, B, form=None)
@@ -4316,7 +4317,8 @@ class MPS(BaseMPSExpectationValue):
                 B = npc.tensordot(r, B, axes=('vR', 'vL'))
             # Do SVD from right to left & truncate
             for i in range(self.L - 1, 0, -1):
-                B = B.combine_legs(['p', 'vR'])
+                #B = B.combine_legs(['p', 'vR'])
+                B = B.combine_legs(self._p_label + ['vR']) # SAJANT - modify to work for multiple physical legs
                 U, S, VH, err, norm_new = svd_theta(B, trunc_par)
                 trunc_err += err
                 self.norm *= norm_new
@@ -4330,11 +4332,15 @@ class MPS(BaseMPSExpectationValue):
         elif self.bc == 'infinite':
             for i in range(self.L):
                 theta = self.get_theta(i, n=2)
-                theta = theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], qconj=[+1, -1])
+                p_l = self._get_p_labels(2) # p0, q0, p1, q1 for purification
+                #theta = theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], qconj=[+1, -1])
+                theta = theta.combine_legs([['vL'] + p_l[:len(p_l)//2], p_l[len(p_l)//2:] + ['vR']], qconj=[+1, -1])
                 self.set_svd_theta(i, theta, _machine_prec_trunc_par, update_norm=False)
             for i in range(self.L - 1, -1, -1):
                 theta = self.get_theta(i, n=2)
-                theta = theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], qconj=[+1, -1])
+                p_l = self._get_p_labels(2) # p0, q0, p1, q1 for purification
+                #theta = theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], qconj=[+1, -1])
+                theta = theta.combine_legs([['vL'] + p_l[:len(p_l)//2], p_l[len(p_l)//2:] + ['vR']], qconj=[+1, -1])
                 trunc_err += self.set_svd_theta(i, theta, trunc_par, update_norm=False)
         else:
             raise NotImplementedError("unsupported boundary conditions " + repr(self.bc))
