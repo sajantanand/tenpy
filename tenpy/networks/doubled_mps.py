@@ -1,128 +1,10 @@
-r"""This module contains an MPS class representing an density matrix by purification.
-
-Usually, an MPS represents a pure state, i.e. the density matrix is :math:`\rho = |\psi><\psi|`,
-describing observables as :math:`<O> = Tr(O|\psi><\psi|) = <\psi|O|\psi>`.
-Clearly, if :math:`|\psi>` is the ground state of a Hamiltonian, this is the density matrix at
-`T=0`.
-
-At finite temperatures :math:`T > 0`, we want to describe a mixed density matrix
-:math:`\rho = \exp(-H/T)`. The following approaches have been used to lift the power of tensor
-network ansätze (representing pure states= to finite temperatures (and mixed states in general).
-
-1. Naively represent the density matrix as an MPO. This has the disadvantage that truncation can
-   quickly lead to non-positive (and hence unphysical) density matrices.
-2. Minimally entangled typical thermal states (METTS) as introduced in :cite:`white2009`.
-3. Use Purification to represent the mixed density matrix by pure states in the doubled Hilbert
-   space.
-   In the literature, this is also referred to as matrix product density operators (MPDO) or
-   locally purified density operator (LPDO).
-
-
-Here, we follow the third approach.
-In addition to the physical space `P`, we introduce a second 'auxiliar' space `Q`
-and define the density matrix
-of the physical system as :math:`\rho = Tr_Q(|\phi><\phi|)`, where :math:`|\phi>` is a pure state
-in the combined physical and auxiliary system.
-
-For :math:`T=\infty`, the density matrix :math:`\rho_\infty` is the identity matrix.
-In other words, expectation values are sums over all possible states
-:math:`<O> = Tr_P(\rho_\infty O) = Tr_P(O)`.
-Saying that each ``:`` on top is to be connected with the corresponding ``:`` on the bottom,
-the trace is simply a contraction::
-
-    |         :   :   :   :   :   :
-    |         |   |   |   |   |   |
-    |         |-------------------|
-    |         |        O          |
-    |         |-------------------|
-    |         |   |   |   |   |   |
-    |         :   :   :   :   :   :
-
-Clearly, we get the same result, if we insert an identity operator, written as MPO, on the top
-and bottom::
-
-    |         :   :   :   :   :   :
-    |         |   |   |   |   |   |
-    |         B---B---B---B---B---B
-    |         |   |   |   |   |   |
-    |         |-------------------|
-    |         |        O          |
-    |         |-------------------|
-    |         |   |   |   |   |   |
-    |         B*--B*--B*--B*--B*--B*
-    |         |   |   |   |   |   |
-    |         :   :   :   :   :   :
-
-We  use the following label convention::
-
-    |         q
-    |         ^
-    |         |
-    |  vL ->- B ->- vR
-    |         |
-    |         ^
-    |         p
-
-You can view the `MPO` as an MPS by combining the `p` and `q` leg and defining every physical
-operator to act trivial on the `q` leg. In expectation values, you would then sum over
-over the `q` legs, which is exactly what we need.
-In other words, the choice :math:`B = \delta_{p,q}` with trivial (length-1) virtual bonds yields
-infinite temperature expectation values for operators action only on the `p` legs!
-
-Now, you go a step further and also apply imaginary time evolution (acting only on `p` legs)
-to the initial infinite temperature state.
-For example, the normalized state :math:`|\psi> \propto \exp(-\beta/2 H)|\phi>`
-yields expectation values
-
-.. math ::
-    <O>  = Tr(\exp(-\beta H) O) / Tr(\exp(-\beta H))
-    \propto <\phi|\exp(-\beta/2 H) O \exp(-\beta/2 H)|\phi>.
-
-An additional real-time evolution allows to calculate time correlation functions:
-
-.. math ::
-    <A(t)B(0)> \propto <\phi|\exp(-\beta H/2) \exp(+i H t) A \exp(-i H t) B \exp(-\beta H/2) |\phi>
-
-Time evolution algorithms (TEBD and MPO application) are adjusted in the module
-:mod:`~tenpy.algorithms.purification`.
-
-See also :cite:`karrasch2013` for additional tricks! One of their crucial observations is, that
-one can apply arbitrary unitaries on the auxiliar space (i.e. the `q`) without changing the result.
-This can actually be used to reduce the necessary virtual bond dimensions:
-From the definition, it is easy to see that if we apply :math:`exp(-i H t)` to the `p` legs of
-:math:`|\phi>`, and :math:`\exp(+iHt)` to the `q` legs, they just cancel out!
-(They commute with :math:`\exp(-\beta H/2)`...)
-If the state is modified (e.g. by applying `A` or `B` to calculate correlation functions),
-this is not true any more. However, we still can find unitaries, which are 'optimal' in the sense
-of reducing the entanglement of the MPS/MPO to the minimal value.
-For a discussion of `Disentanglers` (implemented in :mod:`~tenpy.algorithms.disentanglers`),
-see :cite:`hauschild2018`.
-
-.. note ::
-    The classes :class:`~tenpy.linalg.networks.mps.MPSEnvironment` and
-    :class:`~tenpy.linalg.networks.mps.TransferMatrix` should also work for the
-    :class:`PurificationMPS` defined here.
-    For example, you can use :meth:`~tenpy.networks.mps.MPSEnvironment.expectation_value`
-    for the expectation value of operators between different PurificationMPS.
-    However, this makes only sense if the *same* disentangler was applied
-    to the `bra` and `ket` PurificationMPS.
-
-.. note ::
-    The literature (e.g. section 7.2 of :cite:`schollwoeck2011` or :cite:`karrasch2013`) suggests
-    to use a `singlet` as a maximally entangled state.
-    Here, we use instead the identity :math:`\delta_{p,q}`, since it is easier to
-    generalize for `p` running over more than two indices, and allows a simple use of charge
-    conservation with the above `qconj` convention.
-    Moreover, we don't split the physical and auxiliar space into separate sites, which makes
-    TEBD as costly as :math:`O(d^6 \chi^3)`.
-"""
 # Copyright 2018-2023 TeNPy Developers, GNU GPLv3
 
 import copy
 import numpy as np
 import itertools
 
-from .mps import MPS
+from .mps import MPS, MPSEnvironment
 from .site import DoubledSite
 from ..linalg import np_conserved as npc
 from ..tools.math import entropy
@@ -130,7 +12,7 @@ from ..tools.misc import lexsort
 
 __all__ = ['DoubledMPS']
 
-
+# Use MPSEnvironment methods first where there is overlap!
 class DoubledMPS(MPS):
     r"""SAJANT - Write documentation later
     """
@@ -139,23 +21,9 @@ class DoubledMPS(MPS):
     # `MPS.get_B` & co work, thanks to using labels. `B` just have the additional `q` labels.
     _p_label = ['p', 'q']  # this adjustment makes `get_theta` & friends work
     _B_labels = ['vL', 'p', 'q', 'vR']
-
-    # SAJANT - Check; this was taken from PurificationMPS
-    # Thanks to using `self._replace_p_label`,
-    # correlation_function works as it should, if we adjust _corr_up_diag
-
-    def test_sanity(self):
-        """Sanity check, raises ValueErrors, if something is wrong."""
-        for B in self._B:
-            if not set(['vL', 'vR', 'p', 'q']) <= set(B.get_leg_labels()):
-                raise ValueError("B has wrong labels " + repr(B.get_leg_labels()))
-        super().test_sanity() # MPS check sanity
     
-    #def copy(self):
-    
-    #def save_hdf5(self, hdf5_saver, h5gr, subpath):
-    
-    #def from_hdf5(cls, hdf5_loader, h5gr, subpath):
+    # SAJANT - Do we need purification test_sanity?
+    #def test_sanity(self):
     
     # For doubled MPS initialization (either density matrix or operator), we will only
     # use from_Bflat, where we pass in the tensors on each site directly. The user
@@ -288,7 +156,7 @@ class DoubledMPS(MPS):
         # Build new site of squared dimension
         doubled_sites = [DoubledSite(self.sites[0].dim)] * self.L
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
-        new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B')#, norm=norm)
+        new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=self.norm)
         return new_MPS
     
     def from_regular_MPS(self, reg_MPS):
@@ -300,20 +168,6 @@ class DoubledMPS(MPS):
         self.norm = reg_MPS.norm
         self.form = reg_MPS.form
         self.test_sanity()
-    
-    #def L(self):
-    
-    #def dim(self):
-    
-    #def finite(self):
-    
-    #def chi(self):
-    
-    #def nontrivial_bonds(self):
-    
-    #def get_B(self, i, form='B', copy=False, cutoff=1.e-16, label_p=None):
-    
-    #def set_B(self, i, B, form='B'):
     
     # If we want this, need to take care of additional physical legs.
     # This function is needed for SVD compression of (infinite) doubled MPS.
@@ -356,51 +210,17 @@ class DoubledMPS(MPS):
         self.form[i1] = self._valid_forms['B']
         self.set_SR(i, S)
         return err
-        
-    #def get_SL(self, i):
-    
-    #def get_SR(self, i):
-    
-    #def set_SL(self, i, S):
-    
-    #def set_SR(self, i, S):
     
     #def get_theta(self, i, n=2, cutoff=1.e-16, formL=1., formR=1.):
         # This function is returns the theta matrix for $n$ sites with $2n + 2$ indices, a 'p'
         # and 'q' for each tensor and a 'vL' and 'vR' at the ends.
-        
-    #def convert_form(self, new_form='B'):
-    
-    #def increase_L(self, new_L=None):
-        # Depreciated in favor of enlarge_mps_unit_cell
-        
-    #def enlarge_mps_unit_cell(self, factor=2):
-        # For infinite BCs
-        
-    #def roll_mps_unit_cell(self, shift=1):
-    
-    #def enlarge_chi(self, extra_legs, random_fct=np.random.normal):
-    
-    #def spatial_inversion(self):
-    
-    #def group_sites(self, n=2, grouped_sites=None):
-    
-    #def group_split(self, trunc_par=None):
-    
-    #def get_grouped_mps(self, blocklen):
-    
-    #def extract_segment(self, first, last):
-    
-    #def get_total_charge(self, only_physical_legs=False):
-    
-    #def gauge_total_charge(self, qtotal=None, vL_leg=None, vR_leg=None):
     
     r"""
     Entanglement entropy for density matrices (or operators) is weird, since we don't need two copies
     of the dMPS to get the density matrix. Instead, a single copy of the dMPS is the density matrix itself
     (as the name suggests).
     
-    The below functions treat the dMPS as a pure state and calculate the traditional entanglement entropies.
+    The below functions would treat the dMPS as a pure state and calculate the traditional entanglement entropies.
     So given some region A, what we are calculating is something like $-Tr((\rho^2)_A \ln (\rho^2)_A)$, 
     where $\rho^2_A$ is found by taking two copies of the dMPS (easiest to think of it as a vectorized
     MPS with local Hilbert space d**2 rather than having two physical legs of dimension d) and tracing 
@@ -409,21 +229,26 @@ class DoubledMPS(MPS):
     \rho, which gets us back to an RDM just defined by the singular values on the bond (assuming that we
     are interested in a bipartition).
     
-    As usual, all of this is done in terms of singular values wherever possible.
+    We turn off any function that treats the doubled MPS as an MPS with combined physical legs. If you
+    want this functionality, just convert to a regular MPS and then call the function. We reimplement
+    certain functions to properly treat the density matrix as a density matrix, i.e. only ever use one
+    copy of the state.
     """
     
-    #def entanglement_entropy(self, n=1, bonds=None, for_matrix_S=False):
+    def entanglement_entropy(self, n=1, bonds=None, for_matrix_S=False):
+        raise NotImplementedError()
     
-    #def entanglement_entropy_segment(self, segment=[0], first_site=None, n=1):
+    def entanglement_entropy_segment2(self, segment, n=1):
+        raise NotImplementedError()
+        
+    def entanglement_spectrum(self, by_charge=False):
+        raise NotImplementedError()
+        
+    def trace(self):
+        # Needed for expectation values.
+        return self.get_rho_segment([]).squeeze()
     
-    #def entanglement_entropy_segment2(self, segment, n=1):
-    
-    #def entanglement_spectrum(self, by_charge=False):
-    
-    # This function treats the dMPS as a pure state
-    #def get_rho_segment(self, segment):
-    
-    def get_rho_segment_rho(self, segment, proj_Bs=None):
+    def get_rho_segment(self, segment, proj_Bs=None):
         """Return reduced density matrix for a segment, treating the doubled MPS as a density
         matrix directly. So we don't need two copies of the MPS. We simply trace over the
         legs not contained in the desired region.
@@ -453,8 +278,7 @@ class DoubledMPS(MPS):
         # We don't get any benefit from the canonical form here since we are not working with
         # two copies of the tensors. We want the new L1 canonical form (name in development).
         
-        # So for each site not in segment, we need to contract the 'p' and 'q' legs with a
-        # trace.
+        # So for each site not in segment, we need to contract the 'p' and 'q' legs with a trace.
         if self.bc != 'finite':
             raise NotImplementedError('Only works for finite dMPS (for now).')
         
@@ -477,11 +301,14 @@ class DoubledMPS(MPS):
                 rho = self._replace_p_label(rho, str(i+1))
         return rho
     
-    def entanglement_entropy_segment_rho(self, segment=[0], first_site=None, n=1):
+    def entanglement_entropy_segment(self, segment=[0], first_site=None, n=1):
         """Calculate entanglement entropy for general geometry of the bipartition, treating
         the doubled MPS as a density matrix.
 
         See documentation of `entanglement_entropy_segment` for function parameter details.
+        
+        To get a bipartite entanglement entropy, we could use this function and have segment
+        specify the bipartition. But this will be expensive.
         """
         segment = np.sort(segment)
         if first_site is None:
@@ -495,21 +322,22 @@ class DoubledMPS(MPS):
         ]
         res = []
         for i0 in first_site:
-            rho = self.get_rho_segment_rho(segment + i0)
+            rho = self.get_rho_segment(segment + i0)
             rho = rho.combine_legs(comb_legs, qconj=[+1, -1])
             p = npc.eigvalsh(rho)
             res.append(entropy(p, n))
         return np.array(res)
     
-    #def probability_per_charge(self, bond=0):
-    
-    #def average_charge(self, bond=0):
-    
-    #def charge_variance(self, bond=0):
-    
-    #def mutinf_two_site(self, max_range=None, n=1):
-    
-    def mutinf_two_site_rho(self, max_range=None, n=1):
+    def probability_per_charge(self, bond=0):
+        raise NotImplementedError()
+        
+    def average_charge(self, bond=0):
+        raise NotImplementedError()
+
+    def charge_variance(self, bond=0):
+        raise NotImplementedError()
+        
+    def mutinf_two_site(self, max_range=None, n=1):
         """Calculate the two-site mutual information :math:`I(i:j)`, treating
         the doubled MPS as a density matrix.
 
@@ -519,7 +347,7 @@ class DoubledMPS(MPS):
         # is wasteful. SAJANT - Fix this?
         if max_range is None:
             max_range = self.L
-        S_i = self.entanglement_entropy_segment_rho(n=n)  # single-site entropy
+        S_i = self.entanglement_entropy_segment(n=n)  # single-site entropy
         mutinf = []
         coord = []
         for i in range(self.L):
@@ -533,21 +361,11 @@ class DoubledMPS(MPS):
                 coord.append((i, j))
         return np.array(coord), np.array(mutinf)
     
-    #def overlap(self, other, charge_sector=None, ignore_form=False, understood_infinite=False,
-    #            **kwargs):
     
-    #def expectation_value_terms_sum(self, term_list, prefactors=None):
-    
-    # Sample as if the doubled MPS were an MPS; i.e. treate dMPS as purification
+    # The MPS function samples as if the doubled MPS were an MPS; i.e. treate dMPS as purification.
+    # Here we get the probability distribution on each site by taking traces over external sites.
+    # We don't get any benefit from the canonical form -> L1 canonical form.
     def sample_measurements(self,
-                            first_site=0,
-                            last_site=None,
-                            ops=None,
-                            rng=None,
-                            norm_tol=1.e-12):
-        raise NotImplementedError("MPS function doesn't work yet.")
-    
-    def sample_measurements_rho(self,
                             first_site=0,
                             last_site=None,
                             ops=None,
@@ -556,7 +374,7 @@ class DoubledMPS(MPS):
         """Sample measurement results in the computational basis, treating the dMPS as
         a density matrix.
         
-        Look at MPS.sample_measurements_rho for documentation. One difference is that we return
+        Look at MPS.sample_measurements for documentation. One difference is that we return
         the total_prob rather than total_weight, which is the square root of total_prob with phase
         information. When working with density matrices, we don't have the phase. Additionally,
         we return the norm (i.e. traces) of the RDMs on each site.
@@ -570,7 +388,7 @@ class DoubledMPS(MPS):
         norms = []
         total_prob = 1.
         proj_Bs = copy.deepcopy(self._B)
-        rho = self.get_rho_segment_rho([first_site], proj_Bs=proj_Bs).replace_labels(['p0', 'q0'], ['p', 'q'])
+        rho = self.get_rho_segment([first_site], proj_Bs=proj_Bs).replace_labels(['p0', 'q0'], ['p', 'q'])
         rho = rho.squeeze()
         assert rho.shape == (2,2)
         norm = npc.trace(rho, leg1='p', leg2='q')
@@ -608,7 +426,7 @@ class DoubledMPS(MPS):
             proj_Bs[i] = proj_Bs[i].take_slice([sigma, sigma], ['p','q'])  # project to sigma in theta for remaining rho
             total_prob *= rho_diag[sigma]
             if i != last_site:
-                rho = self.get_rho_segment_rho([i+1], proj_Bs=proj_Bs).replace_labels(['p' + str(i+1), 'q' + str(i+1)], ['p', 'q'])
+                rho = self.get_rho_segment([i+1], proj_Bs=proj_Bs).replace_labels(['p' + str(i+1), 'q' + str(i+1)], ['p', 'q'])
                 rho = rho.squeeze()
                 assert rho.shape == (2,2)
                 norm = npc.trace(rho, leg1='p', leg2='q')
@@ -616,14 +434,68 @@ class DoubledMPS(MPS):
                 norms.append(norm)
         return sigmas, total_prob, norms
     
-    # Need to finish going through MPS functions - Sajant
-    # Include new function for getting actual reduced density matrix of some small region.
+    def correlation_length(self, target=1, tol_ev0=1.e-8, charge_sector=0, return_charges=False):
+        raise NotImplementedError()
+
+    def correlation_length_charge_sectors(self, drop_symmetric=True, include_0=True):
+        raise NotImplementedError()
+
+    # SAJANT - need to write new versions of the above functions to work with the dMPS as a
+    # density matrix. If we trace over the p, p* leg and contract together a unit cell, we get
+    # a chi x chi transfer matrix. The eigenvalues of this should define correlation lengths.
+        
+    # We modify this so that the d x d operator is applied to both physical 'p' and conjugate
+    # 'q' leg. So if we have a density matrix or operator rho, it becomes U rho U^\dagger.
+    def apply_local_op(self, i, op, unitary=None, renormalize=False, cutoff=1.e-13,
+                       understood_infinite=False):
+        raise NotImplementedError()
     
-    def _normalize_exp_val(self, value):
-        return np.real_if_close(value) #/ self.norm
+    def apply_product_op(self, ops, unitary=None, renormalize=False):
+        raise NotImplementedError()
     
-    def _get_bra_ket(self):
-        return trace_identity_DMPS(self), self
+    # We need to group legs to a regular MPS, perturb, and then convert back to a doulbed MPS.
+    # Need to perturb with block diagonal U such that U = W \otimes W^\dagger to keep the 
+    # density matrix / operator well defined.
+    def perturb(self, randomize_params=None, close_1=True, canonicalize=None):
+        raise NotImplementedError()
+    
+    # Bosonic (no JW operators) swap with 'p' and 'q' legs.
+    # SAJANT - for fermions, we might want this option back.
+    def swap_sites(self, i, swap_op='auto', trunc_par=None):
+        assert swap_op is None
+        if trunc_par is None:
+            trunc_par = {}
+        siteL, siteR = self.sites[self._to_valid_index(i)], self.sites[self._to_valid_index(i + 1)]
+        theta = self.get_theta(i, n=2)
+        C = self.get_theta(i, n=2, formL=0.)  # inversion free, see also TEBDEngine.update_bond()
+        # just replace the labels, effectively this is a transposition.
+        theta.ireplace_labels(['p0', 'p1', 'q0', 'q1'], ['p1', 'p0', 'q1', 'q0'])
+        C.ireplace_labels(['p0', 'p1', 'q0', 'q1'], ['p1', 'p0', 'q1', 'q0'])
+        theta = theta.combine_legs([('vL', 'p0', 'q0'), ('vR', 'p1', 'q1')], qconj=[+1, -1])
+        U, S, V, err, renormalize = svd_theta(theta, trunc_par, inner_labels=['vR', 'vL'])
+        B_R = V.split_legs(1).ireplace_labels(['p1', 'q1'], ['p', 'q'])
+        B_L = npc.tensordot(C.combine_legs(('vR', 'p1', 'q1'), pipes=theta.legs[1]),
+                            V.conj(),
+                            axes=['(vR.p1.q1)', '(vR*.p1*.q1*)'])
+        B_L.ireplace_labels(['vL*', 'p0', 'q0'], ['vR', 'p', 'q'])
+        B_L /= renormalize  # re-normalize to <psi|psi> = 1
+        self.set_SR(i, S)
+        self.set_B(i, B_L, 'B')
+        self.set_B(i + 1, B_R, 'B')
+        self.sites[self._to_valid_index(i)] = siteR  # swap 'sites' as well
+        self.sites[self._to_valid_index(i + 1)] = siteL
+        return err
+        
+    def compute_K(self,
+                  perm,
+                  swap_op='auto',
+                  trunc_par=None,
+                  canonicalize=1.e-6,
+                  verbose=None,
+                  expected_mean_k=0.):
+        raise NotImplementedError()
+    
+    # Below functions are copied from PurificationMPS, but inherited from BaseMPSExpectationValue
     
     def _replace_p_label(self, A, s):
         """Return npc Array `A` with replaced label, ``'p' -> 'p'+s, 'q' -> 'q'+s``."""
@@ -639,15 +511,101 @@ class DoubledMPS(MPS):
             return [lbl + str(k) + '*' for k in range(ks) for lbl in self._p_label]
         else:
             return [lbl + str(k) for k in range(ks) for lbl in self._p_label]
-
+    
+    #def _to_valid_index(self, i):
+    
+    # Below we turn off function assosiated with BaseMPSExpectationValue, as we don't want to take MPS
+    # style measurements of a doubled MPS. Use MPSEnvironment instead.
+    
+    def expectation_value(self, ops, sites=None, axes=None):
+        raise NotImplementedError()
+        
+    def expectation_value_multi_sites(self, operators, i0):
+        raise NotImplementedError()
+        
+    def correlation_function(self,
+                             ops1,
+                             ops2,
+                             sites1=None,
+                             sites2=None,
+                             opstr=None,
+                             str_on_first=True,
+                             hermitian=False,
+                             autoJW=True):
+        raise NotImplementedError()
+        
+    def expectation_value_term(self, term, autoJW=True):
+        raise NotImplementedError()
+        
+    def term_correlation_function_right(self,
+                                        term_L,
+                                        term_R,
+                                        i_L=0,
+                                        j_R=None,
+                                        autoJW=True,
+                                        opstr=None):
+        raise NotImplementedError()
+        
+    def term_correlation_function_left(self,
+                                       term_L,
+                                       term_R,
+                                       i_L=None,
+                                       j_R=0,
+                                       autoJW=True,
+                                       opstr=None):
+        raise NotImplementedError()
+        
+    def term_list_correlation_function_right(self,
+                                             term_list_L,
+                                             term_list_R,
+                                             i_L=0,
+                                             j_R=None,
+                                             autoJW=True,
+                                             opstr=None):
+        raise NotImplementedError()
+        
+    def _term_to_ops_list(self, term, autoJW=True, i_offset=0, JW_from_right=False):
+        raise NotImplementedError()
+        
+    def _corr_up_diag(self, ops1, ops2, i, j_gtr, opstr, str_on_first, apply_opstr_first):
+        raise NotImplementedError()
+        
+    def _corr_ops_LP(self, operators, i0):
+        raise NotImplementedError()
+        
+    def _corr_ops_RP(self, operators, i0):
+        raise NotImplementedError()
+        
+    def _expectation_value_args(self, ops, sites, axes):
+        raise NotImplementedError()
+        
+    def _correlation_function_args(self, ops1, ops2, sites1, sites2, opstr):
+        raise NotImplementedError()
+        
+    def get_op(self, op_list, i):
+        raise NotImplementedError()
+    
+    def _normalize_exp_val(self, value):
+        raise NotImplementedError()
+        
+    def _contract_with_LP(self, C, i):
+        raise NotImplementedError()
+        
+    def _contract_with_RP(self, C, i):
+        raise NotImplementedError()
+        
+    def _get_bra_ket(self):
+        raise NotImplementedError()
+    
+# Bra for density matrix expectation value.
 def trace_identity_DMPS(DMPS):
     d = DMPS.sites[0].dim
     I = np.eye(d).reshape(d, d, 1, 1)
-    return DoubledMPS.from_Bflat(DMPS.sites,
+    return DMPS.from_Bflat(DMPS.sites,
                                [I] * DMPS.L,
                                SVs=None,
                                bc='finite',
                                dtype=None,
                                permute=True,
-                               form='B',
+                               form='B', # Form doesn't matter since it's a product state?
                                legL=None)

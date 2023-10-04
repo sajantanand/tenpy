@@ -756,7 +756,6 @@ class MPO:
             proj_R = np.ones(DR, dtype=np.bool_)
             proj_R[IdL[i + 1]] = False
             proj_R[IdR[i + 1]] = False
-            print(proj_L, proj_R)
             #Extract (A, B, C, D)
             D = Wflat[IdL[i], IdR[i + 1], :, :]
             C = Wflat[IdL[i], proj_R, :, :]
