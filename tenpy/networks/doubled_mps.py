@@ -156,13 +156,17 @@ class DoubledMPS(MPS):
         # Build new site of squared dimension
         doubled_sites = [DoubledSite(self.sites[0].dim)] * self.L
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
+        pipes = [B.get_leg('p') for B in new_Bs]
         new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=self.norm)
-        return new_MPS
+        return new_MPS, pipes
     
-    def from_regular_MPS(self, reg_MPS):
+    def from_regular_MPS(self, reg_MPS, pipes):
         """
         Convert a regular MPS back into a doubled MPS. We split the 'p' leg into 'p' and 'q'.
         """
+        for B, pipe in zip(reg_MPS._B, pipes):
+            B.itranspose(['vL', 'p', 'vR'])
+            B.legs[1] = pipe
         self._B = [B.replace_label('p', '(p.q)').split_legs() for B in reg_MPS._B]
         self._S = reg_MPS._S
         self.norm = reg_MPS.norm
@@ -601,7 +605,7 @@ class DoubledMPS(MPS):
 def trace_identity_DMPS(DMPS):
     d = DMPS.sites[0].dim
     I = np.eye(d).reshape(d, d, 1, 1)
-    return DMPS.from_Bflat(DMPS.sites,
+    return DoubledMPS.from_Bflat(DMPS.sites,
                                [I] * DMPS.L,
                                SVs=None,
                                bc='finite',

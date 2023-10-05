@@ -744,11 +744,12 @@ class MPO:
         chinfo = self.chinfo
         trivial = chinfo.make_valid()
         U = []
+        sites = []
         for i in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
             W = self.get_W(i).itranspose(labels)
             assert np.all(W.qtotal == trivial)
-            DL, DR, _, _ = W.shape
+            DL, DR, d, d = W.shape
             Wflat = W.to_ndarray()
             proj_L = np.ones(DL, dtype=np.bool_)
             proj_L[IdL[i]] = False
@@ -756,66 +757,85 @@ class MPO:
             proj_R = np.ones(DR, dtype=np.bool_)
             proj_R[IdL[i + 1]] = False
             proj_R[IdR[i + 1]] = False
+            
             #Extract (A, B, C, D)
-            D = Wflat[IdL[i], IdR[i + 1], :, :]
-            C = Wflat[IdL[i], proj_R, :, :]
-            B = Wflat[proj_L, IdR[i + 1], :, :]
+            D_npc = W.copy()
+            D_npc.iproject([IdL[i], IdR[i+1]], ['wL','wR'])
+            D_npc = D_npc.squeeze() # remove dummy wL, wR legs
+            C_npc = W.copy()
+            C_npc.iproject([IdL[i], proj_R], ['wL','wR'])
+            B_npc = W.copy()
+            B_npc.iproject([proj_L, IdR[i + 1]], ['wL','wR'])
+            A_npc = W.copy()
+            A_npc.iproject([proj_L, proj_R], ['wL','wR'])
+            
+            D = Wflat[IdL[i], IdR[i + 1], :, :] # p, p*
+            C = Wflat[IdL[i], proj_R, :, :]   # wR' (DR-2), p, p*
+            B = Wflat[proj_L, IdR[i + 1], :, :] # wL' (DL-2), p, p*
             A = Wflat[proj_L, :, :, :][:, proj_R, :, :]  # numpy indexing requires two steps
             
-            dW = np.zeros((2*DL-2, 2*DR-2, W.shape[2]**2, W.shape[3]**2), dtype=self.dtype)
-            Id = np.eye(W.shape[2])
-            Idd = np.eye(W.shape[2]**2)
+            #print('A_npc:', A_npc)
+            #print('A_flat:', A)
             
-            # At the beginning and end of the MPO, certain blocks may be empty.
+            #print('B_npc:', B_npc)
+            #print('B_flat:', B)
+            
+            #print('C_npc:', C_npc)
+            #print('C_flat:', C)
+            
+            #print('D_npc:', D_npc)
+            #print('D_flat:', D)
+            
+            
+            def combine_npc(T1, T2):
+                """
+                Assume that T1, T2 are (2,2) npc arrays with legs ()'p', 'p*'). We want to put them together into a (4,4) npc array with
+                legs ('(p0.p1)', '(p0*,p1*)').
+                """
+                T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1', 'p1*']))
+                T = T.combine_legs([['p0', 'p1'], ['p0*', 'p1*']]).replace_labels(['(p0.p1)', '(p0*.p1*)'], ['p', 'p*'])
+                #print(npc.norm(T))
+                return T #if npc.norm(T) > 1.e-14 else None
+            #dW = np.zeros((2*DL-2, 2*DR-2, d**2, d**2), dtype=self.dtype)
+            #Id_npc = W.copy()
+            #Id_npc.iproject([IdL[i], IdL[i+1]], ['wL','wR'])
+            #print(Id_npc)
+            #Id_npc = Id_npc.squeeze()
+            Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
+            #print('Id_npc:', Id_npc)
+            
+            
+            Idd_npc = combine_npc(Id_npc, Id_npc)
+            #print('Idd_npc:', Idd_npc)
+            
+            dW = np.empty((2*DL-2, 2*DR-2), dtype=object)
+            
+            #dW[0,0] = Idd_npc
+            #dW[-1,-1] = Idd_npc
+            
             # First Row
-            dW[0,0:1,:,:] = Idd
-            if C.shape[0] > 0 and C.shape[1] > 0:
-                dW[0,1:DR-1,:,:] = np.kron(C, Id.conj())
-                dW[0,DR-1:2*DR-3,:,:] = -np.kron(Id, C.conj())
-            if D.shape[0] > 0 and D.shape[1] > 0:
-                dW[0,2*DR-3,:,:] = np.kron(D, Id.conj()) - np.kron(Id, D.conj())
-            # Second Block
-            if A.shape[0] > 0 and A.shape[1] > 0:
-                dW[1:DL-1,1:DR-1,:,:] = np.kron(A, Id.conj())
-            if B.shape[0] > 0 and B.shape[1] > 0:
-                dW[1:DL-1,2*DR-3,:,:] = np.kron(B, Id.conj())
-            # Third Block
-            if A.shape[0] > 0 and A.shape[1] > 0:
-                dW[DL-1:2*DL-3,DR-1:2*DR-3,:,:] = -np.kron(Id, A.conj())
-            if B.shape[0] > 0 and B.shape[1] > 0:
-                dW[DL-1:2*DL-3,2*DR-3,:,:] = -np.kron(Id, B.conj())
-            # Last Row
-            dW[2*DL-3,2*DR-3,:,:] = Idd
-            
-            # SAJANT - How does this work with charge conservation???
-            # Rather than use np.array, use npc.array to retain the charge structure
-            # For kronecker, do this by hand -> first do tensordot without contracting over any legs
-            # Use from_grid to build new MPO from A, B, C, D npc arrays.
-            
-            
-            #leg_L, leg_R, leg_p, leg_pconj = W.legs
-            #new_leg_L = npc.LegCharge.from_qflat(chinfo, [chinfo.make_valid()], leg_L.qconj)
-            #new_leg_L = new_leg_L.extend(leg_L.project(proj_L)[2])
-            #new_leg_R = npc.LegCharge.from_qflat(chinfo, [chinfo.make_valid()], leg_R.qconj)
-            #new_leg_R = new_leg_R.extend(leg_R.project(proj_R)[2])
-
-            #W_II = npc.Array.from_ndarray(
-            #    W_II,
-            #    [new_leg_L, new_leg_R, leg_p, leg_pconj],
-            #    dtype=dtype,
-            #    qtotal=trivial,
-            #    labels=labels,
-            #)
-            dW_npc = npc.Array.from_ndarray_trivial(
-                dW,
-                dtype=dtype,
-                labels=labels,
-            )
-            
-            # TODO: could sort by charges.
-            U.append(dW_npc)
-        Id = [0] * (self.L + 1)
-        return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, Id, Id, max_range=self.max_range)
+            dW[0,0] = Idd_npc
+            for i in range(0, DR-2):
+                dW[0,i+1] = combine_npc(C_npc[0,i], Id_npc)
+                dW[0,i+DR-2+1] = 1*combine_npc(Id_npc, C_npc[0,i])                
+            dW[0,-1] = combine_npc(D_npc, Id_npc) - combine_npc(Id_npc, D_npc)
+            # Middle Rows
+            for i in range(0, DL-2):
+                for j in range(0, DR-2):
+                    dW[i+1,j+1] = combine_npc(A_npc[i,j], Id_npc)
+                    dW[i+1+DL-2,j+1+DR-2] = 1*combine_npc(Id_npc,A_npc[i,j])
+                dW[i+1, -1] = combine_npc(B_npc[i,0], Id_npc)
+                dW[i+1+DL-2, -1] = -1*combine_npc(Id_npc, B_npc[i,0])
+            #Bottom Rows
+            dW[-1,-1] = Idd_npc
+            sites.append(DoubledSite(d))
+            U.append(dW)
+            #print(dW)
+        IdL = [0] * (self.L + 1)
+        IdR = [-1] * (self.L + 1)
+        return MPO.from_grids([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+                             #) #[DoubledSite(self.sites[0].dim)] * self.L
+        # return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range) #[DoubledSite(self.sites[0].dim)] * self.L
     
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
         """Calculate ``<psi|self|psi>/<psi|psi>`` (or density for infinite).
