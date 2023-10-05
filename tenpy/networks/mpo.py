@@ -793,7 +793,7 @@ class MPO:
                 legs ('(p0.p1)', '(p0*,p1*)').
                 """
                 T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1', 'p1*']))
-                T = T.combine_legs([['p0', 'p1'], ['p0*', 'p1*']]).replace_labels(['(p0.p1)', '(p0*.p1*)'], ['p', 'p*'])
+                T = T.combine_legs([['p0', 'p1'], ['p0*', 'p1*']], qconj=[T.get_leg('p0').qconj, T.get_leg('p0*').qconj]).replace_labels(['(p0.p1)', '(p0*.p1*)'], ['p', 'p*'])
                 #print(npc.norm(T))
                 return T #if npc.norm(T) > 1.e-14 else None
             #dW = np.zeros((2*DL-2, 2*DR-2, d**2, d**2), dtype=self.dtype)

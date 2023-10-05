@@ -158,15 +158,15 @@ class DoubledMPS(MPS):
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
         pipes = [B.get_leg('p') for B in new_Bs]
         new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=self.norm)
-        return new_MPS, pipes
+        return new_MPS#, pipes
     
-    def from_regular_MPS(self, reg_MPS, pipes):
+    def from_regular_MPS(self, reg_MPS): #, pipes):
         """
         Convert a regular MPS back into a doubled MPS. We split the 'p' leg into 'p' and 'q'.
         """
-        for B, pipe in zip(reg_MPS._B, pipes):
-            B.itranspose(['vL', 'p', 'vR'])
-            B.legs[1] = pipe
+        #for B, pipe in zip(reg_MPS._B, pipes):
+            #B.itranspose(['vL', 'p', 'vR'])
+            #B.legs[1] = pipe
         self._B = [B.replace_label('p', '(p.q)').split_legs() for B in reg_MPS._B]
         self._S = reg_MPS._S
         self.norm = reg_MPS.norm
@@ -288,7 +288,7 @@ class DoubledMPS(MPS):
         
         not_segment = list(set(range(self.L)) - set(segment))
         if proj_Bs is None:
-            Ts = copy.deepcopy(self._B)
+            Ts = [self.get_B(i, form='B', copy=True) for i in range(self.L)]
         else:
             Ts = copy.deepcopy(proj_Bs)
         for i in not_segment:
