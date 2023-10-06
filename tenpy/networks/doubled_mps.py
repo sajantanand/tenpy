@@ -168,6 +168,8 @@ class DoubledMPS(MPS):
             #B.itranspose(['vL', 'p', 'vR'])
             #B.legs[1] = pipe
         self._B = [B.replace_label('p', '(p.q)').split_legs() for B in reg_MPS._B]
+        for B in self._B:
+            B.itranspose(self._B_labels)
         self._S = reg_MPS._S
         self.norm = reg_MPS.norm
         self.form = reg_MPS.form

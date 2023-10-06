@@ -2070,27 +2070,34 @@ class DoubledSite(Site):
             raise ValueError("invalid `conserve`: " + repr(conserve))
             
         self.d = d
-        BK_ops = []
-        BK_ops.append(np.eye(d, dtype=np.complex128))
+        self.BK_ops = BK_ops = []
+        # Want legPipes, so let's do this with NPC.
+        BK_ops.append(npc.Array.from_ndarray_trivial(np.eye(d, dtype=np.complex128), labels=['p', 'p*']))
 
         for i in range(1, d):
-            BK_ops.append(np.diag([1+0.j] + (i-1)*[0] + [-1] + [0] * (d-1-i)))
+            BK_ops.append(npc.Array.from_ndarray_trivial(np.diag([1+0.j] + (i-1)*[0] + [-1] + [0] * (d-1-i)), labels=['p', 'p*']))
 
         for j in range(0, d-1):
             for i in range(j+1, d):
                 op = np.zeros((d,d), dtype=np.complex128)
                 op[j,i] = 1
-                BK_ops.append(op + op.conj().T)
+                BK_ops.append(npc.Array.from_ndarray_trivial(op + op.conj().T, labels=['p', 'p*']))
 
                 op *= -1.j
-                BK_ops.append(op + op.conj().T)
-        BK_ops_vec = [op.flatten() for op in BK_ops]
-        self.BK = BK = np.column_stack(BK_ops_vec)
-        self.Q, self.R = np.linalg.qr(BK)
-        self.sign_R = np.sign(np.diag(self.R))
-        self.Q = self.Q @ np.diag(self.sign_R)
-        self.R = np.diag(self.sign_R) @ self.R
-        
+                BK_ops.append(npc.Array.from_ndarray_trivial(op + op.conj().T, labels=['p', 'p*']))
+
+        # Put the d (p) x d (p) operators into a d (q) x d (q*) x d (p) x d (p*) tensor, where the q and q* legs are for indexing the d^2 operators.
+        BK_ops = [op.add_trivial_leg(axis=0, qconj=-1, label='q').add_trivial_leg(axis=1, qconj=-1, label='q*') for op in BK_ops] # Add dummy legs that will be for grouping
+        self.BK = npc.grid_concat(np.asarray(BK_ops, dtype=object).reshape(d,d), axes=([0,1]))
+        self.BK = self.BK.combine_legs([['q', 'q*'], ['p','p*']], qconj=[self.BK.get_leg('q').qconj, self.BK.get_leg('p').qconj]).itranspose(['(p.p*)', '(q.q*)'])
+        self.BK.legs[1] = self.BK.legs[0].conj() # SAJANT - HACKY FIX
+        self.BK.ireplace_labels(['(p.p*)', '(q.q*)'], ['p', 'p*'])
+                
+        self.Q, self.R = npc.qr(self.BK, inner_labels=['p*', 'p'])
+        self.sign_R = np.sign(np.diag(self.R.to_ndarray()))
+        self.sign_R = npc.Array.from_ndarray(np.diag(self.sign_R), self.R.legs, labels=self.R.get_leg_labels())
+        self.Q = npc.tensordot(self.Q, self.sign_R, axes=(['p*'], ['p']))
+        self.R = npc.tensordot(self.sign_R, self.R, axes=(['p*'], ['p']))
         
         ops = dict()
         leg = npc.LegCharge.from_trivial(self.d**2)

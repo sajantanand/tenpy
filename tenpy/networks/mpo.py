@@ -789,7 +789,7 @@ class MPO:
             
             def combine_npc(T1, T2):
                 """
-                Assume that T1, T2 are (2,2) npc arrays with legs ()'p', 'p*'). We want to put them together into a (4,4) npc array with
+                Assume that T1, T2 are (2,2) npc arrays with legs ('p', 'p*'). We want to put them together into a (4,4) npc array with
                 legs ('(p0.p1)', '(p0*,p1*)').
                 """
                 T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1', 'p1*']))
@@ -833,10 +833,31 @@ class MPO:
             #print(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
-        return MPO.from_grids([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
                              #) #[DoubledSite(self.sites[0].dim)] * self.L
         # return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range) #[DoubledSite(self.sites[0].dim)] * self.L
-    
+        dMPO.rotated_basis = False
+        return dMPO
+    def conjugate_MPO(self, U):
+        """Conjugate MPO M with unitary U on each site.
+        
+        This leaves the block structure of U intact, as we are acting on the physical legs."""
+        assert U.ndim == 2
+        assert np.isclose(npc.norm(npc.tensordot(U, U.conj(), axes=([1],[1])) - npc.eye_like(U)), 0), "U is not unitary."
+        
+        for i in range(self.L):
+            W = self.get_W(i)
+            W_labels = W.get_leg_labels()
+            W = npc.tensordot(U, W, axes=(['p*'], ['p']))
+            W = npc.tensordot(W, U.conj(), axes=(['p*'], ['p']))
+            W.itranspose(W_labels)
+            self.set_W(i, W)
+            
+        try:
+            self.rotated_basis = not self.rotated_basis
+        except NameError:
+            self.rotated_basis = True
+            
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
         """Calculate ``<psi|self|psi>/<psi|psi>`` (or density for infinite).
 
@@ -1355,7 +1376,7 @@ class MPO:
         singlesitempo = self.get_grouped_mpo(self.L)
         # Note: the trace works only for 'finite' boundary conditions
         # where the legs are trivial - otherwise it would give 0 or even raise an error!
-        return npc.trace(singlesitempo.get_W(0), axes=[['wL'], ['wR']])
+        return npc.trace(singlesitempo.get_W(0), 'wL', 'wR')
 
     def _to_valid_index(self, i, bond=False):
         """Make sure `i` is a valid index (depending on `self.bc`)."""
