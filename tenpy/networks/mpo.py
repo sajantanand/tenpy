@@ -791,8 +791,12 @@ class MPO:
                 """
                 Assume that T1, T2 are (2,2) npc arrays with legs ('p', 'p*'). We want to put them together into a (4,4) npc array with
                 legs ('(p0.p1)', '(p0*,p1*)').
+                
+                When you conjugate a npc tensor, the labels pick up a star (*) mod 2 (** = nothing). So if you use labels to refer to the
+                legs, conjugation actually implies truncation at the same time. So below for T2, I relabel the p leg (after conjugation) 
+                to p1* so that we take the original p* leg to p1*.
                 """
-                T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1', 'p1*']))
+                T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1*', 'p1']))
                 T = T.combine_legs([['p0', 'p1'], ['p0*', 'p1*']], qconj=[T.get_leg('p0').qconj, T.get_leg('p0*').qconj]).replace_labels(['(p0.p1)', '(p0*.p1*)'], ['p', 'p*'])
                 #print(npc.norm(T))
                 return T #if npc.norm(T) > 1.e-14 else None
@@ -838,6 +842,7 @@ class MPO:
         # return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range) #[DoubledSite(self.sites[0].dim)] * self.L
         dMPO.rotated_basis = False
         return dMPO
+    
     def conjugate_MPO(self, U):
         """Conjugate MPO M with unitary U on each site.
         
@@ -855,7 +860,7 @@ class MPO:
             
         try:
             self.rotated_basis = not self.rotated_basis
-        except NameError:
+        except AttributeError:
             self.rotated_basis = True
             
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
