@@ -428,6 +428,10 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         # Construct the theta matrix
         C = self.psi.get_theta(i0, n=2, formL=0.)  # the two B without the S on the left
         C = npc.tensordot(U_bond, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))  # apply U
+        if np.linalg.norm([d.imag for d in C._data]) < self.imaginary_cutoff: # Remove small imaginary part
+            # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
+            C.iunary_blockwise(np.real)
+            #C.dtype = 'float64' # I think this may automatically be happening?
         C.itranspose(['vL', 'p0', 'p1', 'vR'])
         theta = C.scale_axis(self.psi.get_SL(i0), 'vL')
         # now theta is the same as if we had done
@@ -442,7 +446,6 @@ class TEBDEngine(TimeEvolutionAlgorithm):
                                                     self.trunc_params,
                                                     [self.psi.get_B(i0, None).qtotal, None],
                                                     inner_labels=['vR', 'vL'])
-
         # Split tensor and update matrices
         B_R = V.split_legs(1).ireplace_label('p1', 'p')
 
