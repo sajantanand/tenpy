@@ -219,6 +219,7 @@ class TimeEvolutionAlgorithm(Algorithm):
     def __init__(self, psi, model, options, **kwargs):
         super().__init__(psi, model, options, **kwargs)
         self.evolved_time = self.options.get('start_time', 0.)
+        self.imaginary_cutoff = self.options.get('imag_cutoff', 0.0)
         self.trunc_err = self.options.get('start_trunc_err', TruncationError())
         self.force_prepare_evolve = False
         if self.resume_data:
