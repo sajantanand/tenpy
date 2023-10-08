@@ -2099,6 +2099,18 @@ class DoubledSite(Site):
         self.Q = npc.tensordot(self.Q, self.sign_R, axes=(['p*'], ['p']))
         self.R = npc.tensordot(self.sign_R, self.R, axes=(['p*'], ['p']))
         
+        # Check that the Q basis is HOMT; it must be orthogonal from the QR
+        self.Q_ops = self.Q.replace_labels(['p', 'p*'], ['(p.p*)', '(q.q*)']).split_legs()
+        self.Q_ops = [self.Q_ops.take_slice([i, j], ['q', 'q*']) for i in range(d) for j in range(d)]
+        traces = []
+        for Q in self.Q_ops:
+            assert np.isclose(npc.norm(Q - Q.conj().transpose()), 0.0), f"{Q.to_ndarray()} is not Hermitian."
+            traces.append(npc.trace(Q, leg1=0, leg2=1))
+        self.traces = traces = np.array(traces)
+        self.traceful_ind = np.where(traces > 1.e-13)
+        assert len(traceful_ind) == 1
+        self.traceful_ind = self.traceful_ind[0].item()
+        
         ops = dict()
         leg = npc.LegCharge.from_trivial(self.d**2)
         self.conserve = conserve
