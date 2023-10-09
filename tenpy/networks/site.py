@@ -2108,7 +2108,7 @@ class DoubledSite(Site):
             traces.append(npc.trace(Q, leg1=0, leg2=1))
         self.traces = traces = np.array(traces)
         self.traceful_ind = np.where(traces > 1.e-13)
-        assert len(traceful_ind) == 1
+        assert len(self.traceful_ind) == 1
         self.traceful_ind = self.traceful_ind[0].item()
         
         ops = dict()

@@ -603,15 +603,3 @@ class DoubledMPS(MPS):
     def _get_bra_ket(self):
         raise NotImplementedError()
     
-# Bra for density matrix expectation value.
-def trace_identity_DMPS(DMPS):
-    d = DMPS.sites[0].dim
-    I = np.eye(d).reshape(d, d, 1, 1)
-    return DoubledMPS.from_Bflat(DMPS.sites,
-                               [I] * DMPS.L,
-                               SVs=None,
-                               bc='finite',
-                               dtype=None,
-                               permute=True,
-                               form='B', # Form doesn't matter since it's a product state?
-                               legL=None)

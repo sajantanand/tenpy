@@ -138,7 +138,7 @@ class TruncationError(Hdf5Exportable):
             return "TruncationError()"
 
 
-def truncate(S, options):
+def truncate(S, options, norm_old=1.):
     """Given a Schmidt spectrum `S`, determine which values to keep.
 
     Options
@@ -216,7 +216,7 @@ def truncate(S, options):
     good = np.ones(len(piv), dtype=np.bool_)  # good[cut] = (is `cut` a good choice?)
     # we choose the smallest 'good' cut.
 
-    if chi_max is not None:
+    if chi_max is not None and chi_max > 0:
         # keep at most chi_max values
         good2 = np.zeros(len(piv), dtype=np.bool_)
         good2[-chi_max:] = True
@@ -243,17 +243,17 @@ def truncate(S, options):
         good = _combine_constraints(good, good2, "svd_min")
 
     if trunc_cut is not None:
-        good2 = (np.cumsum(S[piv]**2) > trunc_cut * trunc_cut)
+        good2 = ((np.cumsum(S[piv]**2)/norm_old**2) > trunc_cut * trunc_cut)
         good = _combine_constraints(good, good2, "trunc_cut")
 
     cut = np.nonzero(good)[0][0]  # smallest possible cut: keep as many S as allowed
     mask = np.zeros(len(S), dtype=np.bool_)
     np.put(mask, piv[cut:], True)
     norm_new = np.linalg.norm(S[mask])
-    return mask, norm_new, TruncationError.from_S(S[np.logical_not(mask)]),
+    return mask, norm_new, TruncationError.from_S(S[np.logical_not(mask)], norm_old),
 
 
-def svd_theta(theta, trunc_par, qtotal_LR=[None, None], inner_labels=['vR', 'vL']):
+def svd_theta(theta, trunc_par, qtotal_LR=[None, None], inner_labels=['vR', 'vL'], renormalize=True):
     """Performs SVD of a matrix `theta` (= the wavefunction) and truncates it.
 
     Perform a singular value decomposition (SVD) with :func:`~tenpy.linalg.np_conserved.svd`
@@ -296,8 +296,12 @@ def svd_theta(theta, trunc_par, qtotal_LR=[None, None], inner_labels=['vR', 'vL'
                        qtotal_LR=qtotal_LR,
                        inner_labels=inner_labels)
     renormalization = np.linalg.norm(S)
-    S = S / renormalization
-    piv, new_norm, err = truncate(S, trunc_par)
+    if renormalize:
+        S = S / renormalization
+        piv, new_norm, err = truncate(S, trunc_par)
+    else:
+        # Truncate based on original, non-normalized singular values
+        piv, new_norm, err = truncate(S, trunc_par, norm_old=renormalization)
     new_len_S = np.sum(piv, dtype=np.int_)
     if new_len_S * 100 < len(S) and (trunc_par['chi_max'] is None
                                      or new_len_S != trunc_par['chi_max']):
@@ -308,8 +312,14 @@ def svd_theta(theta, trunc_par, qtotal_LR=[None, None], inner_labels=['vR', 'vL'
         VHV = npc.tensordot(VH, VH.conj(), axes=[[1], [1]])
         msg += " |V V - 1| = {0:f}".format(npc.norm(VHV - npc.eye_like(VHV)))
         warnings.warn(msg, stacklevel=2)
-    S = S[piv] / new_norm
-    renormalization *= new_norm
+    
+    if renormalize:
+        S = S[piv] / new_norm
+        renormalization *= new_norm
+    else:
+        # We have changed S by discarding some SVs, so return it to its original, possibly != 1 norm.
+        S = S[piv]
+        renormalization = 1
     U.iproject(piv, axes=1)  # U = U[:, piv]
     VH.iproject(piv, axes=0)  # VH = VH[piv, :]
     return U, S, VH, err, renormalization
