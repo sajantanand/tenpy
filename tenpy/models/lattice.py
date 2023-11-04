@@ -57,7 +57,7 @@ class Lattice:
     The **MPS index** `i` corresponds thus to the lattice sites given by
     ``(x_0, ..., x_{dim-1}, u) = tuple(self.order[i])``.
     Infinite boundary conditions of the MPS repeat in the first spatial direction of the lattice,
-    i.e., if the site at ``(x_0, x_1, ..., x_{dim-1},u)`` has MPS index `i`, the site at
+    i.e., if the site at ``(x_0, x_1, ..., x_{dim-1},u)`` has MPS index `i`, the site
     at ``(x_0 + Ls[0], x_1, ..., x_{dim-1}, u)`` corresponds to MPS index ``i + N_sites``.
     Use :meth:`mps2lat_idx` and :meth:`lat2mps_idx` for conversion of indices.
     The function :meth:`mps2lat_values` performs the necessary reshaping and re-ordering from
@@ -149,7 +149,7 @@ class Lattice:
         dimension as for the `unit_cell_positions` and `basis`.
     pairs : dict
         See above.
-    segement_first_last : tuple of int
+    segment_first_last : tuple of int
         The `first` and `last` MPS sites for "segment" :attr:`bc_MPS`; not set otherwise.
     _order : ndarray (N_sites, dim+1)
         The place where :attr:`order` is stored.
@@ -287,7 +287,7 @@ class Lattice:
         # not necessary for loading, but still usefull
         h5gr.attrs["dim"] = self.dim
         h5gr.attrs["N_sites"] = self.N_sites
-        if hasattr(self, 'segement_first_last'):
+        if hasattr(self, 'segment_first_last'):
             first, last = self.segment_first_last
             h5gr.attrs['segment_first'] = first
             h5gr.attrs['segment_last'] = last
@@ -307,7 +307,7 @@ class Lattice:
         hdf5_loader : :class:`~tenpy.tools.hdf5_io.Hdf5Loader`
             Instance of the loading engine.
         h5gr : :class:`Group`
-            HDF5 group which is represent the object to be constructed.
+            HDF5 group which is representing the object to be constructed.
         subpath : str
             The `name` of `h5gr` with a ``'/'`` in the end.
 
@@ -350,7 +350,7 @@ class Lattice:
 
         Each row of the array contains the lattice indices for one site,
         the order of the rows thus specifies a path through the lattice,
-        along which an MPS will wind through through the lattice.
+        along which an MPS will wind through the lattice.
 
         You can visualize the order with :meth:`plot_order`.
         """
@@ -561,7 +561,7 @@ class Lattice:
             last = L - 1
             enlarge = 1
         else:
-            enlarge = last + 1 // L
+            enlarge = last // L + 1
         assert enlarge > 0
         if enlarge > 1:
             cp.enlarge_mps_unit_cell(enlarge)
@@ -570,6 +570,7 @@ class Lattice:
         if first > 0 or last < cp.N_sites - 1:
             # take out some parts of the lattice
             remove = list(range(0, first)) + list(range(last + 1, cp.N_sites))
+            remove = cp.mps2lat_idx(remove)
             cp = IrregularLattice(cp, remove=remove)
         cp.bc_MPS = 'segment'
         if self.bc_MPS == 'finite':
@@ -1557,7 +1558,7 @@ class TrivialLattice(Lattice):
 class SimpleLattice(Lattice):
     """A lattice with a unit cell consisting of just a single site.
 
-    In many cases, the unit cell consists just of a single site, such that the the last entry of
+    In many cases, the unit cell consists just of a single site, such that the last entry of
     `u` of an 'lattice index' can only be ``0``.
     From the point of internal algorithms, we handle this class like a :class:`Lattice` --
     in that way we don't need to distinguish special cases in the algorithms.
@@ -1575,7 +1576,7 @@ class SimpleLattice(Lattice):
         the lattice site. The `unit_cell` of the :class:`Lattice` is just ``[site]``.
     **kwargs :
         Additional keyword arguments given to the :class:`Lattice`.
-        If `order` is specified in the form ``('standard', snake_windingi, priority)``,
+        If `order` is specified in the form ``('standard', snake_winding, priority)``,
         the `snake_winding` and `priority` should only be specified for the spatial directions.
         Similarly, `positions` can be specified as a single vector.
     """
@@ -1641,6 +1642,7 @@ class MultiSpeciesLattice(Lattice):
 
         from tenpy.models.lattice import *
         import tenpy
+        from copy import copy
 
     When defining the sites, you should probably call
     :func:`~tenpy.networks.site.set_common_charges` (see examples there!) to adjust the charges,
@@ -1683,15 +1685,16 @@ class MultiSpeciesLattice(Lattice):
 
 
     Note that the "simple lattice" can also have a non-trivial unit cell itself, e.g.
-    the Honeycomb already has two sites in it's unit cell:
+    the Honeycomb already has two sites in its unit cell:
 
     .. doctest :: MultiSpeciesLattice
 
         >>> simple_lat = Honeycomb(2, 3, None)
         >>> f = tenpy.networks.site.FermionSite(conserve='N')
-        >>> tenpy.networks.site.set_common_charges([f, f], 'same')  # same = total N conserved
+        >>> sites = [f, copy(f)]
+        >>> tenpy.networks.site.set_common_charges(sites, 'same')  # same = total N conserved
         [array([0, 1]), array([0, 1])]
-        >>> spinfull_fermion_Honeycomb = MultiSpeciesLattice(simple_lat, [f, f], ['up', 'down'])
+        >>> spinfull_fermion_Honeycomb = MultiSpeciesLattice(simple_lat, sites, ['up', 'down'])
 
     In this case, you could also call :func:`tenpy.networks.site.spin_half_species`.
     """
@@ -1881,7 +1884,7 @@ class IrregularLattice(Lattice):
 
         from tenpy.models.lattice import *
 
-    Let's imagine that we have two different sites; for concreteness we can thing of a
+    Let's imagine that we have two different sites; for concreteness we can think of a
     fermion site, which we represent with ``'F'``, and a spin site ``'S'``.
     If you want to preserve charges, take a look at
     :func:`~tenpy.networks.site.set_common_charges` for the proper way to initialize the sites.
