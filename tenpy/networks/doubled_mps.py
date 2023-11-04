@@ -33,7 +33,6 @@ class DoubledMPS(MPS):
     def from_lat_product_state(cls, lat, p_state, allow_incommensurate=False, **kwargs):
         raise NotImplementedError()
     
-    
     @classmethod
     def from_product_state(cls,
                            sites,

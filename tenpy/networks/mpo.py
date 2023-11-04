@@ -713,7 +713,7 @@ class MPO:
         Id = [0] * (self.L + 1)
         return MPO(self.sites, U, self.bc, Id, Id, max_range=self.max_range)
     
-    def make_doubled_MPO(self):
+    def make_doubled_MPO(self, embed=False):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
@@ -733,6 +733,9 @@ class MPO:
             The MPO in the doubled Hilbert space.
 
         """
+        assert embed==False
+        # SAJANT - remove `embed` and use functions defined at end of file to make function cleaner
+        
         if self.explicit_plus_hc:
             raise NotImplementedError("MPO.make_doubled_MPO assumes hermitian H, you can't use "
                                       "the `explicit_plus_hc=True` flag!\n"
@@ -817,19 +820,25 @@ class MPO:
             #dW[0,0] = Idd_npc
             #dW[-1,-1] = Idd_npc
             
+            # SAJANT - embedded MPO doesn't need to be larger MPO dimension than original; restructure function to deal with this.
+            # All we need to do is tensor on an identity to each block.
+            
             # First Row
             dW[0,0] = Idd_npc
             for i in range(0, DR-2):
                 dW[0,i+1] = combine_npc(C_npc[0,i], Id_npc)
-                dW[0,i+DR-2+1] = 1*combine_npc(Id_npc, C_npc[0,i])                
-            dW[0,-1] = combine_npc(D_npc, Id_npc) - combine_npc(Id_npc, D_npc)
+                if not embed:
+                    dW[0,i+DR-2+1] = 1*combine_npc(Id_npc, C_npc[0,i])                
+            dW[0,-1] = combine_npc(D_npc, Id_npc) - combine_npc(Id_npc, D_npc) * (not embed)
             # Middle Rows
             for i in range(0, DL-2):
                 for j in range(0, DR-2):
                     dW[i+1,j+1] = combine_npc(A_npc[i,j], Id_npc)
-                    dW[i+1+DL-2,j+1+DR-2] = 1*combine_npc(Id_npc,A_npc[i,j])
+                    if not embed:
+                        dW[i+1+DL-2,j+1+DR-2] = 1*combine_npc(Id_npc,A_npc[i,j])
                 dW[i+1, -1] = combine_npc(B_npc[i,0], Id_npc)
-                dW[i+1+DL-2, -1] = -1*combine_npc(Id_npc, B_npc[i,0])
+                if not embed:
+                    dW[i+1+DL-2, -1] = -1*combine_npc(Id_npc, B_npc[i,0])
             #Bottom Rows
             dW[-1,-1] = Idd_npc
             sites.append(DoubledSite(d))
@@ -840,6 +849,71 @@ class MPO:
         dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
                              #) #[DoubledSite(self.sites[0].dim)] * self.L
         # return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range) #[DoubledSite(self.sites[0].dim)] * self.L
+        dMPO.rotated_basis = False
+        return dMPO
+    
+    def make_embedded_MPO(self):
+        r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
+        :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
+        that the MPO has the usual block form.
+        
+        1 C D      1  CI -IC* (DI - ID*)
+        0 A B -->  0  AI  0    BI  
+        0 0 1      0  0   -IA* -IB*
+                   0  0   0    1
+        Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension 2D-2.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        DMPO : :class:`~tenpy.networks.mpo.MPO`
+            The MPO in the doubled Hilbert space.
+
+        """
+        if self.explicit_plus_hc:
+            raise NotImplementedError("MPO.make_doubled_MPO assumes hermitian H, you can't use "
+                                      "the `explicit_plus_hc=True` flag!\n"
+                                      "See also https://github.com/tenpy/tenpy/issues/265")
+        dtype = self.dtype
+        IdL = self.IdL
+        IdR = self.IdR
+
+        chinfo = self.chinfo
+        trivial = chinfo.make_valid()
+        U = []
+        sites = []
+        for i in range(0, self.L):
+            labels = ['wL', 'wR', 'p', 'p*']
+            W = self.get_W(i).itranspose(labels)
+            assert np.all(W.qtotal == trivial)
+            DL, DR, d, d = W.shape
+            
+            A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
+            Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
+            Idd_npc = _combine_npc(Id_npc, Id_npc)
+            
+            dW = np.empty((DL, DR), dtype=object)
+            
+            # First Row
+            dW[0,0] = Idd_npc
+            for i in range(0, DR-2):
+                dW[0,i+1] = _combine_npc(C_npc[0,i], Id_npc)
+            dW[0,-1] = _combine_npc(D_npc, Id_npc)
+            # Middle Rows
+            for i in range(0, DL-2):
+                for j in range(0, DR-2):
+                    dW[i+1,j+1] = _combine_npc(A_npc[i,j], Id_npc)
+                dW[i+1, -1] = _combine_npc(B_npc[i,0], Id_npc)
+            #Bottom Rows
+            dW[-1,-1] = Idd_npc
+            sites.append(DoubledSite(d))
+            U.append(dW)
+            #print(dW)
+        IdL = [0] * (self.L + 1)
+        IdR = [-1] * (self.L + 1)
+        dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         dMPO.rotated_basis = False
         return dMPO
     
@@ -2829,3 +2903,38 @@ def _mpo_graph_state_order(key):
         # fallback: compare strings
         return (0, key)
     return (0, str(key))
+
+
+def _partition_W(W, IdL_L, IdR_L, IdL_R, IdR_R):
+    DL, DR, d, d = W.shape
+    proj_L = np.ones(DL, dtype=np.bool_)
+    proj_L[IdL_L] = False
+    proj_L[IdR_L] = False
+    proj_R = np.ones(DR, dtype=np.bool_)
+    proj_R[IdL_R] = False
+    proj_R[IdR_R] = False
+
+    #Extract (A, B, C, D)
+    D_npc = W.copy()
+    D_npc.iproject([IdL_L, IdR_R], ['wL','wR'])
+    D_npc = D_npc.squeeze() # remove dummy wL, wR legs
+    C_npc = W.copy()
+    C_npc.iproject([IdL_L, proj_R], ['wL','wR'])
+    B_npc = W.copy()
+    B_npc.iproject([proj_L, IdR_R], ['wL','wR'])
+    A_npc = W.copy()
+    A_npc.iproject([proj_L, proj_R], ['wL','wR'])
+    return A_npc, B_npc, C_npc, D_npc
+
+def _combine_npc(T1, T2):
+    """
+    Assume that T1, T2 are (2,2) npc arrays with legs ('p', 'p*'). We want to put them together into a (4,4) npc array with
+    legs ('(p0.p1)', '(p0*,p1*)').
+
+    When you conjugate a npc tensor, the labels pick up a star (*) mod 2 (** = nothing). So if you use labels to refer to the
+    legs, conjugation actually implies truncation at the same time. So below for T2, I relabel the p leg (after conjugation) 
+    to p1* so that we take the original p* leg to p1*.
+    """
+    T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1*', 'p1']))
+    T = T.combine_legs([['p0', 'p1'], ['p0*', 'p1*']], qconj=[T.get_leg('p0').qconj, T.get_leg('p0*').qconj]).replace_labels(['(p0.p1)', '(p0*.p1*)'], ['p', 'p*'])
+    return T

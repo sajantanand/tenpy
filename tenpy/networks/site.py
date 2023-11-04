@@ -2005,7 +2005,7 @@ class DoubledSite(Site):
     How to we find such a basis? First, define a basis of $d^2$ Hermitian, mostly traceless (HMT)
     (but not orthogonal) operators. Choose op[0] = Id, op[1 <= i < d] = |0><0| - |i><i|, 
     op[d <= d + d(d-1)/2] = \sum_{i<j} |i><j| + |j><i|, 
-    op[d + d(d-1)/2 <= d^2] = \sum_{i<j} |i><j| - i|j><i|
+    op[d + d(d-1)/2 <= d^2] = \sum_{i<j} i|i><j| - i|j><i|
     
     These are just a basis of operators in the standard bra-ket basis. These are not HOMT, but we
     will make them so via a rotation and rescaling. Suppose we have a vector $\vec{v}$ in the standard
@@ -2068,7 +2068,8 @@ class DoubledSite(Site):
             conserve = 'None'
         if conserve not in ['None']:
             raise ValueError("invalid `conserve`: " + repr(conserve))
-            
+        # How to properly define operators for U(1) number conserving charges
+        
         self.d = d
         self.BK_ops = BK_ops = []
         # Want legPipes, so let's do this with NPC.

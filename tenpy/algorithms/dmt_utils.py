@@ -10,12 +10,12 @@ from ..linalg import np_conserved as npc
 from ..algorithms.truncation import svd_theta, TruncationError
 import warnings
 
-def double_model(H_MPO, NN=False, doubled=False, conjugate=False, lat=None):
+def double_model(H_MPO, NN=False, doubled=False, conjugate=False, lat=None, embed=False):
     if lat is None:
         lat = Chain
         
     if not doubled:
-        doubled_MPO = H_MPO.make_doubled_MPO()
+        doubled_MPO = H_MPO.make_doubled_MPO(embed=embed)
     else:
         doubled_MPO = deepcopy(H_MPO)
     
@@ -51,6 +51,7 @@ def trace_identity_MPS(DMPS, traceful_id=None):
     d = DMPS.sites[0].dim
     assert type(DMPS.sites[0]) is DoubledSite
     # In rotated, HOMT basis. Identity is vector vector with 1 at location specified by traceful_id
+    # SAJANT - Generalize this to case where the Identity isn't a unit vector.
     I = np.zeros((d,1,1))
     I[DMPS.sites[0].traceful_ind,0,0] = 1.
     
@@ -64,7 +65,7 @@ def trace_identity_MPS(DMPS, traceful_id=None):
                                legL=None)
 
 
-def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_env, connected=True, move_right=True):
+def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=True, move_right=True):
     """Performs Density Matrix Truncation (DMT) on an MPS representing a density matrix or operator.
     We truncate on the bond between site i to the left and i+1 to the right. This however requires
     the entire state, as we use non-local properties to do the truncation.
@@ -74,59 +75,132 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_env, connected=Tru
     
     See documentation of svd_theta, which we follow.
     """
+    # Make trace_env if none
+    # Used to speed up identity contractions
+    if trace_env is None:
+        trace_env = MPSEnvironment(trace_identity_MPS(dMPS), dMPS)
+    elif trace_env.ket is not dMPS:
+        raise ValueError("Ket in 'trace_env' is not the current doubled MPS.")
+    
+    # SAJANT - Is this really needed?
+    # Use QR instead of SVD
     if move_right:
         theta = dMPS.get_B(i, form='Th')
         U, s, VH, err, renormalization = svd_theta(theta.combine_legs(['vL', 'p']), trunc_par={'chi_max': 0})
         dMPS.set_B(i, U.split_legs(), form='A')
         dMPS.set_SR(i, s)
         dMPS.set_B(i+1, npc.tensordot(VH, dMPS.get_B(i+1, form='B'), axes=(['vR', 'vL'])), form='B')
+        trace_env.del_RP(i)
+        if MPO_envs is not None:
+            for Me in MPO_envs:
+                Me.del_RP(i)
     else:
         theta = dMPS.get_B(i+1, form='Th')
         U, s, VH, err, renormalization = svd_theta(theta.combine_legs(['p', 'vR']), trunc_par={'chi_max': 0})
         dMPS.set_B(i+1, VH.split_legs(), form='B')
         dMPS.set_SR(i, s)
         dMPS.set_B(i, npc.tensordot(dMPS.get_B(i, form='A'), U, axes=(['vR', 'vL'])), form='A')
-    
-    
+        trace_env.del_LP(i+1)
+        if MPO_envs is not None:
+            for Me in MPO_envs:
+                Me.del_LP(i+1)
+        
     S = dMPS.get_SR(i) # singular values to the right of site i
     chi = len(S)
-    # SAJANT - NEAREST NEIGHBOR FOR NOW
-
-    # Make trace_env if none
-    if trace_env is None:
-        trace_env = MPSEnvironment(trace_identity_MPS(dMPS), dMPS)
-    elif trace_env.ket is not dMPS:
-        raise ValueError("Ket in 'trace_env' is not the current doubled MPS.")
+        
+    QR_Ls, QR_Rs = [], []
+    keep_L, keep_R = 0, 0
+    local_par = dmt_par.get('k_local_par', None)
+    if local_par is not None:
+        k_local = local_par.get('k_local', (1,1)) # How many sites to include on either side of cut
+        start_L = np.max([i+1-np.max([k_local[0], 1]), 0]) # include endpoint
+        end_R = np.min([i+1+np.max([k_local[1], 1]), dMPS.L]) # do not include endpoint
+        
+        # Accounts for non-uniform local Hilbert space
+        keep_L += np.prod([1] + [dMPS.dim[k] for k in range(start_L, i+1)]) if k_local[0] > 0 else 1
+        keep_R += np.prod([1] + [dMPS.dim[k] for k in range(i+1, end_R)]) if k_local[1] > 0 else 1
+        
+        # Define basis change matrices - Eqn. 16 of paper
+        # Get env strictly to the left of site i and contract the A form site i tensor to it.
+        
+        QR_L = trace_env._contract_with_LP(dMPS.get_B(i, form='A'), i)
+        for k, j in enumerate(range(start_L+1, i+1)):
+            A = dMPS.get_B(j, form='A').replace_label('p', 'p1')
+            QR_L = npc.tensordot(QR_L, A, axes=['vR', 'vL'])  # axes_p + (vR*, vR)   
+            QR_L = QR_L.combine_legs(['p', 'p1']).ireplace_label('(p.p1)', 'p')
+        QR_L = QR_L.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vR
+        if k_local[0] == 0:
+            # SAJANT - Assumes that the first index is the identity; use traceful_ind instead
+            QR_L.iproject([True] + [False] * QR_L.shape[QR_L.get_leg_index('p')], 'p')
+        QR_Ls.append(QR_L)
+        
+        QR_R = trace_env._contract_with_RP(dMPS.get_B(end_R-1, form='B'), end_R-1)
+        for k, j in enumerate(reversed(range(i+1, end_R-1))):
+            B = dMPS.get_B(j, form='B').replace_label('p', 'p1')
+            QR_R = npc.tensordot(B, QR_R, axes=['vR', 'vL'])  # axes_p + (vL, vL*)
+            QR_R = QR_R.combine_legs(['p', 'p1']).ireplace_label('(p.p1)', 'p')
+        QR_R = QR_R.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vL
+        if k_local[1] == 0:
+            # SAJANT - Assumes that the first index is the identity; use traceful_ind instead
+            QR_R.iproject([True] + [False] * QR_R.shape[QR_R.get_leg_index('p')], 'p')
+        QR_Rs.append(QR_R)
+        
+    if MPO_envs is not None:
+        for Me in MPO_envs:
+            # Don't store envs since we are about to change the bond?
+            # Maybe store them and delete them later if necessary.
+            QR_L = Me.get_LP(i+1, store=True).squeeze().replace_label('wR', 'p')
+            QR_R = Me.get_RP(i, store=True).squeeze().replace_label('wL', 'p')
+            QR_Ls.append(QR_L)
+            QR_Rs.append(QR_R)
+            keep_L += QR_L.shape[QR_L.get_leg_index('p')]
+            keep_R += QR_R.shape[QR_R.get_leg_index('p')]
+    QR_L = npc.concatenate(QR_Ls, axis='p')
+    QR_R = npc.concatenate(QR_Rs, axis='p')
     
-    keep_L = 4
-    keep_R = 4
     if keep_L >= chi or keep_R >= chi:
         # We cannot truncate, so return.
-        # Nothing is done to the MPS.
-        return err, renormalization
-        
-    # Define basis change matrices - Eqn. 16 of paper
-    # Get env strictly to the left of site i and contract the A form site i tensor to it.
-    QR_L = trace_env._contract_with_LP(dMPS.get_B(i, form='A'), i)
-    QR_L = QR_L.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vR
-    Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
-                      mode='complete',
-                      inner_labels=['vR*', 'vR'], 
-                      #cutoff=1.e-12, # Need this to be none to have square Q
-                      pos_diag_R=True,
-                      inner_qconj=QR_L.get_leg('vR').conj().qconj)
-
-    QR_R = trace_env._contract_with_RP(dMPS.get_B(i+1, form='B'), i+1)
-    QR_R = QR_R.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vL
-    Q_R, R_R = npc.qr(QR_R.itranspose(['vL', 'p']),
-                      mode='complete',
-                      inner_labels=['vL*', 'vL'], 
-                      #cutoff=1.e-12, # Need this to be none to have square Q
-                      pos_diag_R=True,
-                      inner_qconj=QR_R.get_leg('vL').conj().qconj)
-    # SAJANT - Do I need to worry about charge of Q and R? Q is chargless by default.
-
+        # Nothing is done to the MPS, except for moving the OC one site ot the left
+        return err, renormalization, trace_env, MPO_envs
     
+    Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
+                          mode='complete',
+                          inner_labels=['vR*', 'vR'], 
+                          #cutoff=1.e-12, # Need this to be none to have square Q
+                          pos_diag_R=True,
+                          inner_qconj=QR_L.get_leg('vR').conj().qconj)
+    Q_R, R_R = npc.qr(QR_R.itranspose(['vL', 'p']),
+                          mode='complete',
+                          inner_labels=['vL*', 'vL'], 
+                          #cutoff=1.e-12, # Need this to be none to have square Q
+                          pos_diag_R=True,
+                          inner_qconj=QR_R.get_leg('vL').conj().qconj)
+    # SAJANT - Do I need to worry about charge of Q and R? Q is chargeless by default.
+    
+    # SAJANT - Do this without converting to numpy array for charge conservation
+    # QL may be rank difficient. Let's project out rows (p) that are unneeded, based on the QR
+    projs_L = np.diag(R_L.to_ndarray()) > 1.e-14
+    projs_R = np.diag(R_R.to_ndarray()) > 1.e-14
+    if np.any(projs_L == False):
+        QR_L.iproject(projs_L, 'p')
+        keep_L = np.sum(projs_L)
+        Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
+                          mode='complete',
+                          inner_labels=['vR*', 'vR'], 
+                          #cutoff=1.e-12, # Need this to be none to have square Q
+                          pos_diag_R=True,
+                          inner_qconj=QR_L.get_leg('vR').conj().qconj)
+        
+    if np.any(projs_R == False):    
+        QR_R.iproject(projs_R, 'p')
+        keep_R = np.sum(projs_R)
+        Q_R, R_R = npc.qr(QR_R.itranspose(['vL', 'p']),
+                          mode='complete',
+                          inner_labels=['vL*', 'vL'], 
+                          #cutoff=1.e-12, # Need this to be none to have square Q
+                          pos_diag_R=True,
+                          inner_qconj=QR_R.get_leg('vL').conj().qconj)
+
     # Build M matrix, Eqn. 15 of paper
     M = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
     
@@ -156,7 +230,6 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_env, connected=Tru
     # Lower right block; norm is `renormalization`
     M_DR_trunc = npc.tensordot(UM, VM.scale_axis(sM, axis='vL'), axes=(['vR', 'vL']))
 
-    # SAJANT - Fix This; don't convert to numpy
     M_trunc = M.copy()
     M_trunc[keep_L:, keep_R:] = M_DR_trunc
     
@@ -176,15 +249,24 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_env, connected=Tru
         VH.iscale_axis(S, axis='vL')
         form_left = 'A'
         form_right = 'Th'
+        trace_env.del_RP(i)
+        if MPO_envs is not None:
+            for Me in MPO_envs:
+                Me.del_RP(i)
+                Me.del_LP(i+1)
     else:
         U.iscale_axis(S, axis='vR')
         form_left = 'Th'
         form_right = 'B'
+        trace_env.del_LP(i+1)
+        if MPO_envs is not None:
+            for Me in MPO_envs:
+                Me.del_LP(i+1)
+                Me.del_RP(i)
     new_A = npc.tensordot(npc.tensordot(dMPS.get_B(i, form='A'), Q_L.conj(), axes=(['vR', 'vR*'])), U, axes=(['vR', 'vL']))
     new_B = npc.tensordot(VH, npc.tensordot(Q_R.conj(), dMPS.get_B(i+1, form='B'), axes=(['vL*', 'vL'])),axes=(['vR', 'vL']))
-    
     dMPS.set_SR(i, S)
     dMPS.set_B(i, new_A, form=form_left)
     dMPS.set_B(i+1, new_B, form=form_right)
     dMPS.test_sanity() # SAJANT - remove this for miniscule speed boost?
-    return err + err2, renormalization2
+    return err + err2, renormalization2, trace_env, MPO_envs
