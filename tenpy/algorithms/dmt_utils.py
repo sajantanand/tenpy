@@ -31,6 +31,32 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, lat=None, embe
         
     return doubled_model
 
+def generate_pairs(lat, key='nearest_neighbors'):
+    idXs, idYs = [], []
+    for dx1, dx2, bv in lat.pairs[key]:
+        idX, idY = lat.possible_couplings(dx1,dx2,bv)[:2]
+        idXs.append(idX)
+        idYs.append(idY)
+    pairs = [sorted((a,b)) for a,b in zip(np.concatenate(idXs), np.concatenate(idYs))]
+    return pairs
+
+def distribute_pairs(pairs, bi, symmetric=True):
+    cut_pairs = [a for a in pairs if a[0] <= bi and a[1] > bi]
+    print(cut_pairs)
+    left_points, right_points =[], []
+    if symmetric:
+        left_points = list(set([cp[0] for cp in cut_pairs]))
+        right_points = list(set([cp[1] for cp in cut_pairs]))
+    else:
+        for cp in cut_pairs:
+            if cp[0] not in left_points and cp[1] not in right_points:
+                # add to preserve list
+                if len(left_points) < len(right_points):
+                    left_points.append(cp[0])
+                else:
+                    right_points.append(cp[1])
+    return left_points, right_points
+
 # Bra for density matrix expectation value.
 def trace_identity_DMPS(DMPS, traceful_id=None):
     d = DMPS.sites[0].dim
@@ -111,6 +137,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=Tr
     QR_Ls, QR_Rs = [], []
     keep_L, keep_R = 0, 0
     local_par = dmt_par.get('k_local_par', None)
+    conjoined_par = dmt_par.get('conjoined_par', None)
     if local_par is not None:
         k_local = local_par.get('k_local', (1,1)) # How many sites to include on either side of cut
         start_L = np.max([i+1-np.max([k_local[0], 1]), 0]) # include endpoint
@@ -123,7 +150,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=Tr
         # Define basis change matrices - Eqn. 16 of paper
         # Get env strictly to the left of site i and contract the A form site i tensor to it.
         
-        QR_L = trace_env._contract_with_LP(dMPS.get_B(i, form='A'), i)
+        QR_L = trace_env._contract_with_LP(dMPS.get_B(start_L, form='A'), start_L)
         for k, j in enumerate(range(start_L+1, i+1)):
             A = dMPS.get_B(j, form='A').replace_label('p', 'p1')
             QR_L = npc.tensordot(QR_L, A, axes=['vR', 'vL'])  # axes_p + (vR*, vR)   
@@ -155,6 +182,46 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=Tr
             QR_Rs.append(QR_R)
             keep_L += QR_L.shape[QR_L.get_leg_index('p')]
             keep_R += QR_R.shape[QR_R.get_leg_index('p')]
+            
+    if conjoined_par is not None:
+        pairs = conjoined_par.get('pairs')
+        symmetric = conjoined_par.get('symmetric', True)
+        left_pairs, right_pairs = distribute_pairs(pairs, i, symmetric=symmetric)
+        print(left_pairs, right_pairs, i)
+        keep_L += np.sum([dMPS.dim[k]-1 for k in left_pairs]) + 1
+        keep_R += np.sum([dMPS.dim[k]-1 for k in right_pairs]) + 1
+        
+        # left
+        # SAJANT - only need identity if we aren't using another method
+        QR_L = trace_env.get_LP(i+1, store=False).replace_label('vR*', 'p') # Identity
+        QR_Ls.append(QR_L)
+        for lp in left_pairs:
+            QR_L = trace_env._contract_with_LP(dMPS.get_B(lp, form='A'), lp)
+            QR_L.iproject([False] + [True] * QR_L.shape[QR_L.get_leg_index('p')], 'p') # Remove the identity leg
+            # The QR rank reduction takes care of this.
+            for j in range(lp+1, i+1):
+                TT = trace_env.bra.get_B(j)
+                A = npc.tensordot(TT.conj(), dMPS.get_B(j, form='A'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR
+                QR_L = npc.tensordot(QR_L, A, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)   
+            QR_L = QR_L.squeeze()
+            QR_Ls.append(QR_L)
+            
+        # right
+        # SAJANT - only need identity if we aren't using another method
+        QR_R = trace_env.get_RP(i, store=False).replace_label('vL*', 'p') # Identity
+        QR_Rs.append(QR_R)
+        for rp in right_pairs:
+            QR_R = trace_env._contract_with_RP(dMPS.get_B(rp, form='B'), rp)
+            QR_R.iproject([False] + [True] * QR_R.shape[QR_R.get_leg_index('p')], 'p') # Remove the identity leg
+            # The QR rank reduction takes care of this.
+            for j in reversed(range(i+1, rp)):
+                TT = trace_env.bra.get_B(j)
+                B = npc.tensordot(TT.conj(), dMPS.get_B(j, form='B'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR
+                QR_R = npc.tensordot(B, QR_R, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)   
+            QR_R = QR_R.squeeze()
+            QR_Rs.append(QR_R)        
+        #print([q.shape for q in QR_Ls], [q.shape for q in QR_Rs])
+        
     QR_L = npc.concatenate(QR_Ls, axis='p')
     QR_R = npc.concatenate(QR_Rs, axis='p')
     
