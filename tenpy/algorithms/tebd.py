@@ -49,8 +49,9 @@ from .algorithm import TimeEvolutionAlgorithm, TimeDependentHAlgorithm
 from ..linalg import np_conserved as npc
 from .truncation import svd_theta, TruncationError, truncate
 from ..linalg import random_matrix
+from ..algorithms import dmt_utils as dmt
 
-__all__ = ['TEBDEngine', 'Engine', 'QRBasedTEBDEngine', 'RandomUnitaryEvolution', 'TimeDependentTEBD']
+__all__ = ['TEBDEngine', 'DMTTEBDEngine', 'Engine', 'QRBasedTEBDEngine', 'RandomUnitaryEvolution', 'TimeDependentTEBD']
 
 
 class TEBDEngine(TimeEvolutionAlgorithm):
@@ -380,7 +381,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
             Time step index in ``self._U``,
             evolve with ``Us[i] = self.U[U_idx_dt][i]`` at bond ``(i-1,i)``.
         odd : bool/int
-            Indication of whether to update even (``odd=False,0``) or even (``odd=True,1``) sites
+            Indication of whether to update even (``odd=False,0``) or odd (``odd=True,1``) sites
 
         Returns
         -------
@@ -582,7 +583,97 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         assert (tuple(U.get_leg_labels()) == ('(p0.p1)', '(p0*.p1*)'))
         return U.split_legs()
 
+class DMTTEBDEngine(TEBDEngine):
+    def evolve(self, N_steps, dt):
+        """Evolve by ``dt * N_steps``.
 
+        Parameters
+        ----------
+        N_steps : int
+            The number of steps for which the whole lattice should be updated.
+        dt : float
+            The time step; but really this was already used in :meth:`prepare_evolve`.
+
+        Returns
+        -------
+        trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
+            The error of the represented state which is introduced due to the truncation during
+            this sequence of evolvution steps.
+        """
+        if dt is not None:
+            assert dt == self._U_param['delta_t']
+        return self.update_imag(N_steps)
+
+    def evolve_step(self, U_idx_dt, odd):
+        raise NotImplementedError()
+    
+    def update_bond_imag(self, i, U_bond):
+        """Update a bond with a (possibly non-unitary) `U_bond`.
+
+        Similar as :meth:`update_bond`; but after the SVD just keep the `A, S, B` canonical form.
+        In that way, one can sweep left or right without using old singular values,
+        thus preserving the canonical form during imaginary time evolution.
+
+        Parameters
+        ----------
+        i : int
+            Bond index; we update the matrices at sites ``i-1, i``.
+        U_bond : :class:`~tenpy.linalg.np_conserved.Array`
+            The bond operator which we apply to the wave function.
+            We expect labels ``'p0', 'p1', 'p0*', 'p1*'``.
+
+        Returns
+        -------
+        trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
+            The error of the represented state which is introduced by the truncation
+            during this update step.
+        """
+        i0, i1 = i - 1, i
+        logger.debug("Update sites (%d, %d)", i0, i1)
+        # Construct the theta matrix
+        theta = self.psi.get_theta(i0, n=2)  # 'vL', 'vR', 'p0', 'p1'
+        theta = npc.tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
+        theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
+        
+        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+            # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
+            theta.iunary_blockwise(np.real)
+            #C.dtype = 'float64' # I think this may automatically be happening?
+        
+        
+        # Perform the SVD and truncate the wavefunction
+        U, S, V, trunc_err1, renormalize = svd_theta(theta,
+                                                    {'chi_max': 0,
+                                                     'svd_min': 1.e-14},
+                                                    inner_labels=['vR', 'vL'])
+        self.psi.norm *= renormalize
+        # Split legs and update matrices
+        B_R = V.split_legs(1).ireplace_label('p1', 'p')
+        A_L = U.split_legs(0).ireplace_label('p0', 'p')
+        self.psi.set_SR(i0, S)
+        self.psi.set_B(i0, A_L, form='A')
+        self.psi.set_B(i1, B_R, form='B')
+        self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err1
+        
+        # We've now applied the gate and split the two-site theta exactly via SVD. Now we need to use DMT to do truncation.
+        
+        dmt_par = self.options['dmt_par']
+        trace_env = self.options.get('trace_env', None)
+        MPO_envs = self.options.get('MPO_envs', None)
+                
+        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_par, trace_env, MPO_envs)
+        self.psi.norm *= renormalize
+        self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err2
+        
+        # Need to keep track of the envs for use on future steps
+        self.options['trace_env'] = trace_env
+        self.options['MPO_envs'] = MPO_envs
+        
+        return trunc_err1 + trunc_err2
+    
+    def update_bond(self, i, U_bond):
+        raise NotImplementedError()
+        
 class Engine(TEBDEngine):
     """Deprecated old name of :class:`TEBDEngine`.
 

@@ -91,7 +91,7 @@ def trace_identity_MPS(DMPS, traceful_id=None):
                                legL=None)
 
 
-def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=True): #, move_right=True):
+def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs): #, move_right=True):
     """Performs Density Matrix Truncation (DMT) on an MPS representing a density matrix or operator.
     We truncate on the bond between site i to the left and i+1 to the right. This however requires
     the entire state, as we use non-local properties to do the truncation.
@@ -113,8 +113,8 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=Tr
         raise ValueError("Ket in 'trace_env' is not the current doubled MPS.")
     
     # Check that the MPS has the proper form; need A to the left of (i,i+1) and B to the right
-    assert dMPS.form[:i] == [(1.0, 0.0) for _ in range(i)], [(1.0, 0.0) for _ in range(i)]
-    assert dMPS.form[i+2:] == [(0.0, 1.0) for _ in range(dMPS.L - i - 2)], [(0.0, 1.0) for _ in range(dMPS.L - i - 2)]
+    assert dMPS.form[:i] == [(1.0, 0.0) for _ in range(i)], dMPS.form[:i]
+    assert dMPS.form[i+2:] == [(0.0, 1.0) for _ in range(dMPS.L - i - 2)], dMPS.form[i+2:]
     
     
     # SAJANT - Is this really needed?
@@ -253,6 +253,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=Tr
     QR_L = npc.concatenate(QR_Ls, axis='p')
     QR_R = npc.concatenate(QR_Rs, axis='p')
     
+    # SAJANT - Should this be moved until after we remove redundant rows?
     if keep_L >= chi or keep_R >= chi:
         # We cannot truncate, so return.
         # Nothing is done to the MPS, except for moving the OC one site ot the left
@@ -300,7 +301,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=Tr
     M = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
     
     # Connected component
-    if connected:
+    if dmt_par.get('connected', True):
         orig_M = M
         M = orig_M - npc.outer(orig_M.take_slice([0], ['vR']), 
                                orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
@@ -321,14 +322,16 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=Tr
     if svd_trunc_par.get('chi_max', 100) == 0:
         # Only keep the part necessary to preserve local properties; not sure when we would want to do this.
         sM *= 0
-        
+    # SAJANT - do something with err so that truncation error is recorded?
+    
+    
     # Lower right block; norm is `renormalization`
     M_DR_trunc = npc.tensordot(UM, VM.scale_axis(sM, axis='vL'), axes=(['vR', 'vL']))
 
     M_trunc = M.copy()
     M_trunc[keep_L:, keep_R:] = M_DR_trunc
     
-    if connected:
+    if dmt_par.get('connected', True):
         M_trunc = M_trunc + npc.outer(orig_M.take_slice([0], ['vR']), 
                                orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
     

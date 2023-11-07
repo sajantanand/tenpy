@@ -160,7 +160,7 @@ logger = logging.getLogger(__name__)
 from ..linalg import np_conserved as npc
 from ..linalg import sparse
 from ..linalg.krylov_based import Arnoldi
-from .site import GroupedSite, group_sites
+from .site import GroupedSite, group_sites, DoubledSite
 from ..tools.misc import argsort, to_iterable, to_array, get_recursive
 from ..tools.math import lcm, speigs, entropy
 from ..tools.params import asConfig
@@ -4481,6 +4481,8 @@ class MPS(BaseMPSExpectationValue):
         trunc_par : dict
             Parameters for truncation, see :cfg:config:`truncation`.
         """
+        assert np.alltrue([type(s) == DoubledSite for s in self.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+        
         trunc_err = TruncationError()
         if self.bc == 'infinite':
             raise NotImplementedError('DMT not implemented for infinite BCs for now.')
