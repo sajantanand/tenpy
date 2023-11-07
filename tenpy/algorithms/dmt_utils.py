@@ -202,6 +202,10 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par, trace_env, MPO_envs, connected=Tr
             # Maybe store them and delete them later if necessary.
             QR_L = Me.get_LP(i+1, store=True).squeeze().replace_label('wR', 'p')
             QR_R = Me.get_RP(i, store=True).squeeze().replace_label('wL', 'p')
+            if np.linalg.norm([d.imag for d in QR_L._data]) < dmt_par.get('imaginary_cutoff', 1.e-12): # Remove small imaginary part
+                QR_L.iunary_blockwise(np.real)
+            if np.linalg.norm([d.imag for d in QR_R._data]) < dmt_par.get('imaginary_cutoff', 1.e-12): # Remove small imaginary part
+                QR_R.iunary_blockwise(np.real)
             QR_Ls.append(QR_L)
             QR_Rs.append(QR_R)
             keep_L += QR_L.shape[QR_L.get_leg_index('p')]
