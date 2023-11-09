@@ -1216,6 +1216,15 @@ class MPO:
         elif method == 'zip_up':
             trunc_err = self.apply_zipup(psi, options)
             return trunc_err + psi.compress_svd(trunc_params)
+        elif method == 'DMT':
+            dmt_params = options['dmt_par']
+            trace_env = options.get('trace_env', None)
+            MPO_envs = options.get('MPO_envs', None)
+            svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
+            svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
+
+            self.apply_naively(psi)
+            return psi.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2)
         # TODO: zipup method infinite?
         raise ValueError("Unknown compression method: " + repr(method))
 
