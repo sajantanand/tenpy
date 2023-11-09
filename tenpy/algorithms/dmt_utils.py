@@ -1,7 +1,7 @@
 import numpy as np
 from copy import deepcopy
 
-from ..models.lattice import Chain
+from ..models.lattice import Chain, TrivialLattice
 from ..models.model import MPOModel, NearestNeighborModel
 from ..networks.mps import MPSEnvironment, MPS
 from ..networks.doubled_mps import DoubledMPS
@@ -10,19 +10,17 @@ from ..linalg import np_conserved as npc
 from ..algorithms.truncation import svd_theta, TruncationError, _machine_prec_trunc_par
 import warnings
 
-def double_model(H_MPO, NN=False, doubled=False, conjugate=False, lat=None, embed=False):
-    if lat is None:
-        lat = Chain
-
+def double_model(H_MPO, NN=False, doubled=False, conjugate=False):
     if not doubled:
-        doubled_MPO = H_MPO.make_doubled_MPO(embed=embed)
+        doubled_MPO = H_MPO.make_doubled_MPO()
     else:
         doubled_MPO = deepcopy(H_MPO)
 
     if conjugate:
-        doubled_MPO.conjugate_MPO(doubled_MPO.sites[0].Q.conj())
+        doubled_MPO.conjugate_MPO([s.Q.conj() for s in doubled_MPO.sites])
 
-    doubled_lat = lat(H_MPO.L, doubled_MPO.sites[0]) # SAJANT - what if we have different types of sites in the lattice?
+    #doubled_lat = lat(H_MPO.L, doubled_MPO.sites[0]) # SAJANT - what if we have different types of sites in the lattice?
+    doubled_lat = TrivialLattice(doubled_MPO.sites) # Trivial lattice uses the sites of the doubled MPO.
     # What if we don't want a chain lattice?
 
     doubled_model = MPOModel(doubled_lat, doubled_MPO)

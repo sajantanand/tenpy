@@ -712,14 +712,14 @@ class MPO:
             U.append(W_II)
         Id = [0] * (self.L + 1)
         return MPO(self.sites, U, self.bc, Id, Id, max_range=self.max_range)
-    
-    def make_doubled_MPO(self, embed=False):
+
+    def make_doubled_MPO(self):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
-        
+
         1 C D      1  CI -IC* (DI - ID*)
-        0 A B -->  0  AI  0    BI  
+        0 A B -->  0  AI  0    BI
         0 0 1      0  0   -IA* -IB*
                    0  0   0    1
         Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension 2D-2.
@@ -733,9 +733,8 @@ class MPO:
             The MPO in the doubled Hilbert space.
 
         """
-        assert embed==False
         # SAJANT - remove `embed` and use functions defined at end of file to make function cleaner
-        
+
         if self.explicit_plus_hc:
             raise NotImplementedError("MPO.make_doubled_MPO assumes hermitian H, you can't use "
                                       "the `explicit_plus_hc=True` flag!\n"
@@ -760,7 +759,7 @@ class MPO:
             proj_R = np.ones(DR, dtype=np.bool_)
             proj_R[IdL[i + 1]] = False
             proj_R[IdR[i + 1]] = False
-            
+
             #Extract (A, B, C, D)
             D_npc = W.copy()
             D_npc.iproject([IdL[i], IdR[i+1]], ['wL','wR'])
@@ -771,32 +770,32 @@ class MPO:
             B_npc.iproject([proj_L, IdR[i + 1]], ['wL','wR'])
             A_npc = W.copy()
             A_npc.iproject([proj_L, proj_R], ['wL','wR'])
-            
+
             D = Wflat[IdL[i], IdR[i + 1], :, :] # p, p*
             C = Wflat[IdL[i], proj_R, :, :]   # wR' (DR-2), p, p*
             B = Wflat[proj_L, IdR[i + 1], :, :] # wL' (DL-2), p, p*
             A = Wflat[proj_L, :, :, :][:, proj_R, :, :]  # numpy indexing requires two steps
-            
+
             #print('A_npc:', A_npc)
             #print('A_flat:', A)
-            
+
             #print('B_npc:', B_npc)
             #print('B_flat:', B)
-            
+
             #print('C_npc:', C_npc)
             #print('C_flat:', C)
-            
+
             #print('D_npc:', D_npc)
             #print('D_flat:', D)
-            
-            
+
+
             def combine_npc(T1, T2):
                 """
                 Assume that T1, T2 are (2,2) npc arrays with legs ('p', 'p*'). We want to put them together into a (4,4) npc array with
                 legs ('(p0.p1)', '(p0*,p1*)').
-                
+
                 When you conjugate a npc tensor, the labels pick up a star (*) mod 2 (** = nothing). So if you use labels to refer to the
-                legs, conjugation actually implies truncation at the same time. So below for T2, I relabel the p leg (after conjugation) 
+                legs, conjugation actually implies truncation at the same time. So below for T2, I relabel the p leg (after conjugation)
                 to p1* so that we take the original p* leg to p1*.
                 """
                 T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1*', 'p1']))
@@ -810,35 +809,32 @@ class MPO:
             #Id_npc = Id_npc.squeeze()
             Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
             #print('Id_npc:', Id_npc)
-            
-            
+
+
             Idd_npc = combine_npc(Id_npc, Id_npc)
             #print('Idd_npc:', Idd_npc)
-            
+
             dW = np.empty((2*DL-2, 2*DR-2), dtype=object)
-            
+
             #dW[0,0] = Idd_npc
             #dW[-1,-1] = Idd_npc
-            
+
             # SAJANT - embedded MPO doesn't need to be larger MPO dimension than original; restructure function to deal with this.
             # All we need to do is tensor on an identity to each block.
-            
+
             # First Row
             dW[0,0] = Idd_npc
             for i in range(0, DR-2):
                 dW[0,i+1] = combine_npc(C_npc[0,i], Id_npc)
-                if not embed:
-                    dW[0,i+DR-2+1] = 1*combine_npc(Id_npc, C_npc[0,i])                
-            dW[0,-1] = combine_npc(D_npc, Id_npc) - combine_npc(Id_npc, D_npc) * (not embed)
+                dW[0,i+DR-2+1] = 1*combine_npc(Id_npc, C_npc[0,i])
+            dW[0,-1] = combine_npc(D_npc, Id_npc) - combine_npc(Id_npc, D_npc)
             # Middle Rows
             for i in range(0, DL-2):
                 for j in range(0, DR-2):
                     dW[i+1,j+1] = combine_npc(A_npc[i,j], Id_npc)
-                    if not embed:
-                        dW[i+1+DL-2,j+1+DR-2] = 1*combine_npc(Id_npc,A_npc[i,j])
+                    dW[i+1+DL-2,j+1+DR-2] = 1*combine_npc(Id_npc,A_npc[i,j])
                 dW[i+1, -1] = combine_npc(B_npc[i,0], Id_npc)
-                if not embed:
-                    dW[i+1+DL-2, -1] = -1*combine_npc(Id_npc, B_npc[i,0])
+                dW[i+1+DL-2, -1] = -1*combine_npc(Id_npc, B_npc[i,0])
             #Bottom Rows
             dW[-1,-1] = Idd_npc
             sites.append(DoubledSite(d))
@@ -851,14 +847,14 @@ class MPO:
         # return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range) #[DoubledSite(self.sites[0].dim)] * self.L
         dMPO.rotated_basis = False
         return dMPO
-    
+
     def make_embedded_MPO(self):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
-        
+
         1 C D      1  CI -IC* (DI - ID*)
-        0 A B -->  0  AI  0    BI  
+        0 A B -->  0  AI  0    BI
         0 0 1      0  0   -IA* -IB*
                    0  0   0    1
         Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension 2D-2.
@@ -889,13 +885,13 @@ class MPO:
             W = self.get_W(i).itranspose(labels)
             assert np.all(W.qtotal == trivial)
             DL, DR, d, d = W.shape
-            
+
             A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
             Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
             Idd_npc = _combine_npc(Id_npc, Id_npc)
-            
+
             dW = np.empty((DL, DR), dtype=object)
-            
+
             # First Row
             dW[0,0] = Idd_npc
             for i in range(0, DR-2):
@@ -916,27 +912,29 @@ class MPO:
         dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         dMPO.rotated_basis = False
         return dMPO
-    
-    def conjugate_MPO(self, U):
+
+    def conjugate_MPO(self, Us):
         """Conjugate MPO M with unitary U on each site.
-        
+
         This leaves the block structure of U intact, as we are acting on the physical legs."""
-        assert U.ndim == 2
-        assert np.isclose(npc.norm(npc.tensordot(U, U.conj(), axes=([1],[1])) - npc.eye_like(U)), 0), "U is not unitary."
-        
+        #assert U.ndim == 2
+        #assert np.isclose(npc.norm(npc.tensordot(U, U.conj(), axes=([1],[1])) - npc.eye_like(U)), 0), "U is not unitary."
+
         for i in range(self.L):
+            U = Us[i % len(Us)]
             W = self.get_W(i)
             W_labels = W.get_leg_labels()
             W = npc.tensordot(U, W, axes=(['p*'], ['p']))
             W = npc.tensordot(W, U.conj(), axes=(['p*'], ['p']))
             W.itranspose(W_labels)
             self.set_W(i, W)
-            
+
+        # SAJANT - THIS ISN'T USED I THINK>
         try:
             self.rotated_basis = not self.rotated_basis
         except AttributeError:
             self.rotated_basis = True
-            
+
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
         """Calculate ``<psi|self|psi>/<psi|psi>`` (or density for infinite).
 
@@ -2932,7 +2930,7 @@ def _combine_npc(T1, T2):
     legs ('(p0.p1)', '(p0*,p1*)').
 
     When you conjugate a npc tensor, the labels pick up a star (*) mod 2 (** = nothing). So if you use labels to refer to the
-    legs, conjugation actually implies truncation at the same time. So below for T2, I relabel the p leg (after conjugation) 
+    legs, conjugation actually implies truncation at the same time. So below for T2, I relabel the p leg (after conjugation)
     to p1* so that we take the original p* leg to p1*.
     """
     T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1*', 'p1']))
