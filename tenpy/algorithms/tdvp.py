@@ -32,11 +32,13 @@ Much of the code is very similar to DMRG, and also based on the
 # Copyright 2019-2023 TeNPy Developers, GNU GPLv3
 
 from ..linalg.krylov_based import LanczosEvolution
-from .truncation import svd_theta, TruncationError
+from .truncation import svd_theta, TruncationError, _machine_prec_trunc_par
 from .mps_common import Sweep, ZeroSiteH, OneSiteH, TwoSiteH
 from .algorithm import TimeEvolutionAlgorithm, TimeDependentHAlgorithm
 from ..networks.mpo import MPOEnvironment
 from ..linalg import np_conserved as npc
+from ..algorithms import dmt_utils as dmt
+
 import numpy as np
 import time
 import warnings
@@ -193,10 +195,12 @@ class TwoSiteTDVPEngine(TDVPEngine):
             theta = theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], new_axes=[0, 1],
                                        qconj=[+1, -1])
         qtotal_i0 = self.psi.get_B(i0, form=None).qtotal
-        U, S, VH, err, _ = svd_theta(theta,
+        U, S, VH, err, renormalize = svd_theta(theta,
                                      self.trunc_params,
                                      qtotal_LR=[qtotal_i0, None],
                                      inner_labels=['vR', 'vL'])
+        self.psi.norm *= renormalize
+
         B0 = U.split_legs(['(vL.p0)']).replace_label('p0', 'p')
         B1 = VH.split_legs(['(p1.vR)']).replace_label('p1', 'p')
 
@@ -213,7 +217,7 @@ class TwoSiteTDVPEngine(TDVPEngine):
         elif (self.move_right is False):
             self.one_site_update(i0, 0.5j * self.dt)
         # for the last update of the sweep, where move_right is None, there is no one_site_update
-        
+
         return update_data
 
     def update_env(self, **update_data):
@@ -235,6 +239,106 @@ class TwoSiteTDVPEngine(TDVPEngine):
         self.trunc_err = self.trunc_err + err
         self.trunc_err_list.append(err.eps)  # avoid error in return of sweep()
 
+
+class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
+    """Engine for the two-site TDVP algorithm.
+
+    Parameters
+    ----------
+    psi, model, options, **kwargs:
+        Same as for :class:`~tenpy.algorithms.algorithm.Algorithm`.
+
+    Options
+    -------
+    .. cfg:config :: TDVP
+        :include: TimeEvolutionAlgorithm
+
+        trunc_params : dict
+            Truncation parameters as described in :func:`~tenpy.algorithms.truncation.truncate`
+        lanczos_options : dict
+            Lanczos options as described in :cfg:config:`Lanczos`.
+
+    Attributes
+    ----------
+    options: dict
+        Optional parameters.
+    evolved_time : float | complex
+        Indicating how long `psi` has been evolved, ``psi = exp(-i * evolved_time * H) psi(t=0)``.
+    psi : :class:`~tenpy.networks.mps.MPS`
+        The MPS, time evolved in-place.
+    env : :class:`~tenpy.networks.mpo.MPOEnvironment`
+        The environment, storing the `LP` and `RP` to avoid recalculations.
+    lanczos_options : :class:`~tenpy.tools.params.Config`
+        Options passed on to :class:`~tenpy.linalg.lanczos.LanczosEvolution`.
+    """
+
+    def update_local(self, theta, **kwargs):
+        i0 = self.i0
+        L = self.psi.L
+
+        dt = self.dt
+        if i0 == L - 2:
+            dt = 2. * dt  # instead of updating the last pair of sites twice, we double the time
+        # update two-site wavefunction
+        theta, N = LanczosEvolution(self.eff_H, theta, self.lanczos_options).run(-0.5j * dt)
+        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+            # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
+            theta.iunary_blockwise(np.real)
+            #C.dtype = 'float64' # I think this may automatically be happening?
+        if self.combine:
+            theta.itranspose(['(vL.p0)', '(p1.vR)'])  # shouldn't do anything
+        else:
+            theta = theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], new_axes=[0, 1],
+                                       qconj=[+1, -1])
+        qtotal_i0 = self.psi.get_B(i0, form=None).qtotal
+        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', __machine_prec_trunc_par)
+        U, S, VH, err, renormalize = svd_theta(theta,
+                                     svd_trunc_par_0,
+                                     qtotal_LR=[qtotal_i0, None],
+                                     inner_labels=['vR', 'vL'])
+        self.psi.norm *= renormalize
+        B0 = U.split_legs(['(vL.p0)']).replace_label('p0', 'p')
+        B1 = VH.split_legs(['(p1.vR)']).replace_label('p1', 'p')
+
+        self.psi.set_B(i0, B0, form='A')  # left-canonical
+        self.psi.set_B(i0 + 1, B1, form='B')  # right-canonical
+        self.psi.set_SR(i0, S)
+        update_data = {'err': err, 'N': N, 'U': U, 'VH': VH}
+        # earlier update of environments, since they are needed for the one_site_update()
+        super().update_env(**update_data)  # new environments, e.g. LP[i0+1] on right move.
+
+        dmt_par = self.options['dmt_par']
+        trace_env = self.options.get('trace_env', None)
+        MPO_envs = self.options.get('MPO_envs', None)
+        svd_trunc_par_2 = self.options('svd_trunc_par_2', __machine_prec_trunc_par)
+
+        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_par, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
+        self.psi.norm *= renormalize
+
+        # Need to keep track of the envs for use on future steps
+        self.options['trace_env'] = trace_env
+        self.options['MPO_envs'] = MPO_envs
+
+
+        if self.move_right:
+            # note that i0 == L-2 is left-moving
+            self.one_site_update(i0 + 1, 0.5j * self.dt)
+        elif (self.move_right is False):
+            self.one_site_update(i0, 0.5j * self.dt)
+        # for the last update of the sweep, where move_right is None, there is no one_site_update
+
+        return update_data
+
+    def one_site_update(self, i, dt):
+        H1 = OneSiteH(self.env, i, combine=False)
+        theta = self.psi.get_theta(i, n=1, cutoff=self.S_inv_cutoff)
+        theta = H1.combine_theta(theta)
+        theta, _ = LanczosEvolution(H1, theta, self.lanczos_options).run(dt)
+        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+            # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
+            theta.iunary_blockwise(np.real)
+            #C.dtype = 'float64' # I think this may automatically be happening?
+        self.psi.set_B(i, theta.replace_label('p0', 'p'), form='Th')
 
 class SingleSiteTDVPEngine(TDVPEngine):
     """Engine for the single-site TDVP algorithm.
