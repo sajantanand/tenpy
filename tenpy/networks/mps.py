@@ -4404,6 +4404,7 @@ class MPS(BaseMPSExpectationValue):
         elif method == 'variational':
             from ..algorithms.mps_common import VariationalCompression
             return VariationalCompression(self, options).run()
+        #SAJANT - ADD DMT OPTION
         raise ValueError("Unknown compression method: " + repr(method))
 
     def compress_svd(self, trunc_par):
@@ -4462,10 +4463,63 @@ class MPS(BaseMPSExpectationValue):
         else:
             raise NotImplementedError("unsupported boundary conditions " + repr(self.bc))
         return trunc_err
-    
-    def compress_dmt(self, trunc_par, dmt_par, connected=True, move_right=True, trace_env=None, MPO_envs=None):
+
+    def compress_dmt(self, trunc_par, dmt_par,
+                     trace_env=None, MPO_envs=None,
+                     svd_trunc_par_0=_machine_prec_trunc_par,
+                     svd_trunc_par_2=_machine_prec_trunc_par):
+        """Compress `self` with a single sweep of SVDs; in place.
+
+        Perform a single right-sweep of QR/SVD without truncation, followed by a left-sweep with DMT
+        truncation, very much like :meth:`canonical_form_finite`.
+
+        .. warning ::
+            In case of a strong compression, this does not find the optimal, global solution.
+
+        Parameters
+        ----------
+        trunc_par : dict
+            Parameters for truncation, see :cfg:config:`truncation`.
+        """
+        trunc_err = TruncationError()
+        if self.bc == 'finite':
+            # Do QR starting from the left
+            B = self.get_B(0, form='Th')
+            for i in range(self.L - 1):
+                #B = B.combine_legs(['vL', 'p'])
+                B = B.combine_legs(['vL'] + self._p_label) # SAJANT - modify to work for multiple physical legs
+                q, r = npc.qr(B, inner_labels=['vR', 'vL'])
+                B = q.split_legs()
+                self.set_B(i, B, form='A')
+                B = self.get_B(i + 1, form='B')
+                B = npc.tensordot(r, B, axes=('vR', 'vL'))
+            self.set_B(i+1, B, form='Th')
+            # Do DMT from right to left & truncate
+            for i in range(self.L - 1, 0, -1):
+                theta = self.get_B(i, form='Th')
+                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['p', 'vR']), svd_trunc_par_0)
+                self.set_B(i, VH.split_legs(), form='B')
+                self.set_B(i-1, npc.tensordot(self.get_B(i-1, form='A'), U, axes=(['vR', 'vL'])), form='A')
+                self.set_SL(i, s)
+
+                err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i-1, trunc_par, dmt_par,
+                                                                   trace_env=trace_env, MPO_envs=MPO_envs,
+                                                                   svd_trunc_par_2=svd_trunc_par_2)
+                trunc_err += err1 + err2
+                self.norm *= renorm1 * renorm2
+
+        elif self.bc == 'infinite':
+            raise NotImplementedError("DMT with infinite boundary conditions is not (yet) supported.")
+        else:
+            raise NotImplementedError("unsupported boundary conditions " + repr(self.bc))
+        return trunc_err
+
+    def compress_dmt_canonical(self, trunc_par, dmt_par, move_right=True,
+                     trace_env=None, MPO_envs=None,
+                     svd_trunc_par_0=_machine_prec_trunc_par,
+                     svd_trunc_par_2=_machine_prec_trunc_par):
         """Compress `self` with a single sweep of DMT; in place.
-        
+
         Unlike :meth:`canonical_form_finite`, we DO NOT first do a lossless sweep right and then sweep
         left while truncating. Instead, we assume that if move_right==True (sweeping right), the (doubled)MPS
         is in B form, and vice-versa for sweeping left. The purpose of this function is to move the OC down
@@ -4482,38 +4536,42 @@ class MPS(BaseMPSExpectationValue):
             Parameters for truncation, see :cfg:config:`truncation`.
         """
         assert np.alltrue([type(s) == DoubledSite for s in self.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
-        
+
         trunc_err = TruncationError()
         if self.bc == 'infinite':
             raise NotImplementedError('DMT not implemented for infinite BCs for now.')
         elif self.bc != 'finite':
             raise NotImplementedError("unsupported boundary conditions " + repr(self.bc))
-            
+
         from ..algorithms import dmt_utils as dmt
         if move_right:
             for i in range(self.L - 1):
                 theta = self.get_B(i, form='Th')
-                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['vL', 'p']), trunc_par={'chi_max': 0})#_machine_prec_trunc_par)
+                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['vL', 'p']), svd_trunc_par_0)
                 self.set_B(i, U.split_legs(), form='A')
                 self.set_B(i+1, npc.tensordot(VH, self.get_B(i+1, form='B'), axes=(['vR', 'vL'])), form='B')
-                self.set_SR(i, s)               
-                
-                err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i, trunc_par, dmt_par, trace_env, MPO_envs)
+                self.set_SR(i, s)
+
+                err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i, trunc_par, dmt_par,
+                                                                   trace_env=trace_env, MPO_envs=MPO_envs,
+                                                                   svd_trunc_par_2=svd_trunc_par_2)
                 trunc_err += err1 + err2
                 self.norm *= renorm1 * renorm2
         else: # move_left == True
             for i in range(self.L - 1, 0, -1):
                 theta = self.get_B(i, form='Th')
-                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['p', 'vR']), trunc_par={'chi_max': 0})#_machine_prec_trunc_par)
+                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['p', 'vR']), svd_trunc_par_0)
                 self.set_B(i, VH.split_legs(), form='B')
                 self.set_B(i-1, npc.tensordot(self.get_B(i-1, form='A'), U, axes=(['vR', 'vL'])), form='A')
                 self.set_SL(i, s)
-                
-                err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i-1, trunc_par, dmt_par, trace_env, MPO_envs)
+
+                err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i-1, trunc_par, dmt_par,
+                                                                   trace_env=trace_env, MPO_envs=MPO_envs,
+                                                                   svd_trunc_par_2=svd_trunc_par_2)
                 trunc_err += err1 + err2
                 self.norm *= renorm1 * renorm2
         return trunc_err, trace_env, MPO_envs
-    
+
     def _parse_form(self, form):
         """Parse `form` = (list of) {tuple | key of _valid_forms} to list of tuples"""
         if isinstance(form, tuple):
