@@ -153,10 +153,12 @@ class DoubledMPS(MPS):
         Convert a doubled MPS to a regular MPS by combining together the 'p' and 'q' legs
         """
         # Build new site of squared dimension
-        doubled_sites = [DoubledSite(self.sites[0].dim)] * self.L
+        doubled_sites = [DoubledSite(s.dim) for s in self.sites]# * self.L
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
-        pipes = [B.get_leg('p') for B in new_Bs]
-        new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=self.norm)
+        #pipes = [B.get_leg('p') for B in new_Bs]
+        new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=1) #self.norm)
+        new_MPS.canonical_form(renormalize=False) # norm now contains the rescaling factor needed to establish
+        # newMPS as a normalized MPS.
         return new_MPS#, pipes
     
     def from_regular_MPS(self, reg_MPS): #, pipes):
@@ -249,9 +251,13 @@ class DoubledMPS(MPS):
     def entanglement_spectrum(self, by_charge=False):
         raise NotImplementedError()
         
-    def trace(self):
+    def trace(self, trace_env=None):
         # Needed for expectation values.
-        return self.get_rho_segment([]).squeeze()
+        #return self.get_rho_segment([]).squeeze()
+        if trace_env is None:
+            from ..algorithms import dmt_utils as dmt
+            trace_env = MPSEnvironment(dmt.trace_identity_DMPS(self), self) # Includes norm of self
+        return trace_env.full_contraction(0), trace_env
     
     def get_rho_segment(self, segment, proj_Bs=None):
         """Return reduced density matrix for a segment, treating the doubled MPS as a density
