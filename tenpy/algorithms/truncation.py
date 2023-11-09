@@ -173,6 +173,7 @@ def truncate(S, options, norm_old=1.):
     S : 1D array
         Schmidt values (as returned by an SVD), not necessarily sorted.
         Should be normalized to ``np.sum(S*S) == 1.``.
+        SAJANT - S no longer needs to be normalized
     options: dict-like
         Config with constraints for the truncation, see :cfg:config:`truncation`.
         If a constraint can not be fullfilled (without violating a previous one), it is ignored.
@@ -249,7 +250,7 @@ def truncate(S, options, norm_old=1.):
     cut = np.nonzero(good)[0][0]  # smallest possible cut: keep as many S as allowed
     mask = np.zeros(len(S), dtype=np.bool_)
     np.put(mask, piv[cut:], True)
-    norm_new = np.linalg.norm(S[mask])
+    norm_new = np.linalg.norm(S[mask]) # Absolute norm of S, not the ratio of new norm and old norm
     return mask, norm_new, TruncationError.from_S(S[np.logical_not(mask)], norm_old),
 
 
@@ -272,7 +273,9 @@ def svd_theta(theta, trunc_par, qtotal_LR=[None, None], inner_labels=['vR', 'vL'
         The total charges for the returned `U` and `VH`.
     inner_labels : (string, string)
         Labels for the `U` and `VH` on the newly-created bond.
-
+    renormalize : bool
+        Should we renormalize the singular values before truncating or not? In DMT, we want to truncate
+        according to the original SVs before normalization.
     Returns
     -------
     U : :class:`~tenpy.linalg.np_conserved.Array`
@@ -312,18 +315,17 @@ def svd_theta(theta, trunc_par, qtotal_LR=[None, None], inner_labels=['vR', 'vL'
         VHV = npc.tensordot(VH, VH.conj(), axes=[[1], [1]])
         msg += " |V V - 1| = {0:f}".format(npc.norm(VHV - npc.eye_like(VHV)))
         warnings.warn(msg, stacklevel=2)
-    
+
     if renormalize:
         S = S[piv] / new_norm
         renormalization *= new_norm
     else:
         # We have changed S by discarding some SVs, so return it to its original, possibly != 1 norm.
         S = S[piv]
-        renormalization = 1
+        renormalization = 1 # Since S isn't renormalized, we return a factor of 1
     U.iproject(piv, axes=1)  # U = U[:, piv]
     VH.iproject(piv, axes=0)  # VH = VH[piv, :]
     return U, S, VH, err, renormalization
-
 
 def _combine_constraints(good1, good2, warn):
     """return logical_and(good1, good2) if there remains at least one `True` entry.
