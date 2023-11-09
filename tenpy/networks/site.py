@@ -2001,37 +2001,37 @@ class DoubledSite(Site):
         (2) orthogonal - given two operators $\sigma_\alpha, \sigma_\beta$, we demand that
         $\langle \langle \sigma_\alpha | \sigma_\beta \rangle \rangle = Tr (\sigma_\alpha^\dagger \sigma_\beta) = \delta_{\alpha, \beta} $.
         (3) Mostly traceless - only the Identity operator has a non-zero trace (and by orthogonality).
-    
+
     How to we find such a basis? First, define a basis of $d^2$ Hermitian, mostly traceless (HMT)
-    (but not orthogonal) operators. Choose op[0] = Id, op[1 <= i < d] = |0><0| - |i><i|, 
-    op[d <= d + d(d-1)/2] = \sum_{i<j} |i><j| + |j><i|, 
+    (but not orthogonal) operators. Choose op[0] = Id, op[1 <= i < d] = |0><0| - |i><i|,
+    op[d <= d + d(d-1)/2] = \sum_{i<j} |i><j| + |j><i|,
     op[d + d(d-1)/2 <= d^2] = \sum_{i<j} i|i><j| - i|j><i|
-    
+
     These are just a basis of operators in the standard bra-ket basis. These are not HOMT, but we
     will make them so via a rotation and rescaling. Suppose we have a vector $\vec{v}$ in the standard
     bra-ket basis, where $\vec{v}$ represents a Hermitian density matrix or Hermitian operator.
-    To write $\vec{v}$ as a linear combination of our HMT operators defined above, note that 
+    To write $\vec{v}$ as a linear combination of our HMT operators defined above, note that
     $\vec{v} = BK \vec{s}$.
-    
+
     But we want the coefficients of $\vec{v}$ in a HOMT basis, so define $BK = QR$ and gauge-fix
     the $R$ such that all of the diagonals are positive. Then $Q$ defines an HOMT basis.
     So then let $\vec{v} = Q \vec{\lambda}$ where $\vec{\lambda} = R \vec{s}$. So $\vec{\lambda}$
     defines how to make $\vec{v}$ as a linear combinations of elements of the HOMT $Q$ basis.
-    
+
     Finally, given an operator $M$ that acts on the doubled Hilbert space vector $\vec{v}$, we map this
     operator to the HOMT basis $Q$ by $M \rightarrow Q^\dagger M Q$. Then $\vec{v}^\dagger M \vec{v}
     = \vec{w}^\dagger Q^\dagger M Q \vec{w}$.
-    
+
     Let us give an example for $d=2$. The Pauli operators $I, Z, Y, X$ define an HOMT basis already.
     The HMT operators we typically define are `already` the Pauli operators. So $BK = Q * 1$ is already
     unitary (the hallmark of an HOMT basis). The $R$ matrix is trivial. Then, to map from the
     computation, bra-ket basis to the basis in which index 0,1,2,3 corresponds to operators I, Z, X, Y,
     one must use $Q$.
-    
+
     For the general case, $R$ is non-trivial. While it seem paradoxical that we don't actually use $R$
     anywhere, we could by first finding $\vec{s} = BK^{-1} \vec{v}$ and then $\vec{\lambda} = R \vec{s}$,
     but this is equivalent to $\vec{\lambda} = Q^\dagger \vec{v}$.
-    
+
     =========================== ================================================
     operator                    description
     =========================== ================================================
@@ -2069,7 +2069,7 @@ class DoubledSite(Site):
         if conserve not in ['None']:
             raise ValueError("invalid `conserve`: " + repr(conserve))
         # How to properly define operators for U(1) number conserving charges
-        
+
         self.d = d
         self.BK_ops = BK_ops = []
         # Want legPipes, so let's do this with NPC.
@@ -2093,25 +2093,55 @@ class DoubledSite(Site):
         self.BK = self.BK.combine_legs([['q', 'q*'], ['p','p*']], qconj=[self.BK.get_leg('q').qconj, self.BK.get_leg('p').qconj]).itranspose(['(p.p*)', '(q.q*)'])
         self.BK.legs[1] = self.BK.legs[0].conj() # SAJANT - HACKY FIX
         self.BK.ireplace_labels(['(p.p*)', '(q.q*)'], ['p', 'p*'])
-                
+
         self.Q, self.R = npc.qr(self.BK, inner_labels=['p*', 'p'])
         self.sign_R = np.sign(np.diag(self.R.to_ndarray()))
         self.sign_R = npc.Array.from_ndarray(np.diag(self.sign_R), self.R.legs, labels=self.R.get_leg_labels())
+
         self.Q = npc.tensordot(self.Q, self.sign_R, axes=(['p*'], ['p']))
         self.R = npc.tensordot(self.sign_R, self.R, axes=(['p*'], ['p']))
-        
-        # Check that the Q basis is HOMT; it must be orthogonal from the QR
-        self.Q_ops = self.Q.replace_labels(['p', 'p*'], ['(p.p*)', '(q.q*)']).split_legs()
-        self.Q_ops = [self.Q_ops.take_slice([i, j], ['q', 'q*']) for i in range(d) for j in range(d)]
-        traces = []
-        for Q in self.Q_ops:
-            assert np.isclose(npc.norm(Q - Q.conj().transpose()), 0.0), f"{Q.to_ndarray()} is not Hermitian."
-            traces.append(npc.trace(Q, leg1=0, leg2=1))
+
+
+        # Check that the Q basis is HOMT
+        hermitian=False
+        while not hermitian:
+            self.Q_ops = self.Q.replace_labels(['p', 'p*'], ['(p.p*)', '(q.q*)']).split_legs()
+            self.Q_ops = [self.Q_ops.take_slice([i, j], ['q', 'q*']) for i in range(d) for j in range(d)]
+
+            traces = []
+            failed = False
+            for i, Q in enumerate(self.Q_ops):
+                try:
+                    assert np.isclose(npc.norm(Q - Q.conj().transpose()), 0.0), f"{Q.to_ndarray()} is not Hermitian."
+                except AssertionError as e:
+                    # For d > 9, for some reason the final operator in Q is not Hermitian. I cannot figure out why.
+                    # So we explicitly make it Hermitian where needed.
+                    print(f'Operator {i}')
+                    print(e)
+                    self.Q_ops[i] = Q = (Q + Q.conj().transpose())
+                    self.Q_ops[i] = Q = 1 / np.sqrt(npc.trace(npc.tensordot(Q, Q, axes=(['p*'], ['p'])))) * Q
+                    failed=True
+                traces.append(npc.trace(Q, leg1=0, leg2=1))
+            hermitian = not failed
+            if not hermitian: # Found an operator which is not Hermitian; need to reconstruct Q using the updated operator
+                self.Q_ops = [op.add_trivial_leg(axis=0, qconj=-1, label='q').add_trivial_leg(axis=1, qconj=-1, label='q*') for op in self.Q_ops] # Add dummy legs that will be for grouping
+                self.Q = npc.grid_concat(np.asarray(self.Q_ops, dtype=object).reshape(d,d), axes=([0,1]))
+                self.Q = self.Q.combine_legs([['q', 'q*'], ['p','p*']], qconj=[self.Q.get_leg('q').qconj, self.Q.get_leg('p').qconj]).itranspose(['(p.p*)', '(q.q*)'])
+                self.Q.legs[1] = self.Q.legs[0].conj() # SAJANT - HACKY FIX
+                self.Q.ireplace_labels(['(p.p*)', '(q.q*)'], ['p', 'p*'])
+
+        trace_mat = np.zeros((d**2,d**2), dtype=np.complex128)
+        for i in range(d**2):
+            for j in range(d**2):
+                trace_mat[i,j] = npc.trace(npc.tensordot(self.Q_ops[i], self.Q_ops[j], axes=(['p*'], ['p'])))
+        assert np.isclose(np.linalg.norm(trace_mat - np.eye(d**2)), 0.0)
+
         self.traces = traces = np.array(traces)
         self.traceful_ind = np.where(traces > 1.e-13)
         assert len(self.traceful_ind) == 1
         self.traceful_ind = self.traceful_ind[0].item()
-        
+        assert self.traceful_ind == 0, "Identity isn't in index 0"
+
         ops = dict()
         leg = npc.LegCharge.from_trivial(self.d**2)
         self.conserve = conserve
