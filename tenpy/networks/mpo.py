@@ -55,7 +55,7 @@ from .terms import OnsiteTerms, CouplingTerms, MultiCouplingTerms
 from ..tools.misc import add_with_None_0
 from ..tools.math import lcm
 from ..tools.params import asConfig
-from ..algorithms.truncation import TruncationError, svd_theta
+from ..algorithms.truncation import TruncationError, svd_theta, _machine_prec_trunc_par
 
 __all__ = [
     'MPO', 'make_W_II', 'MPOGraph', 'MPOEnvironment', 'MPOTransferMatrix', 'grid_insert_ops'
@@ -756,7 +756,7 @@ class MPO:
             A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
             Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
             Idd_npc = _combine_npc(Id_npc, Id_npc)
-            
+
             dW = np.empty((2*DL-2, 2*DR-2), dtype=object)
 
             # First Row
@@ -1224,7 +1224,10 @@ class MPO:
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
 
             self.apply_naively(psi)
-            return psi.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2)
+            trunc_err, trace_env, MPO_envs = psi.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2)
+            options['trace_env'] = trace_env
+            options['MPO_envs'] = MPO_envs
+            return trunc_err
         # TODO: zipup method infinite?
         raise ValueError("Unknown compression method: " + repr(method))
 

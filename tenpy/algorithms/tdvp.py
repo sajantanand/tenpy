@@ -291,7 +291,7 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
             theta = theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], new_axes=[0, 1],
                                        qconj=[+1, -1])
         qtotal_i0 = self.psi.get_B(i0, form=None).qtotal
-        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', __machine_prec_trunc_par)
+        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
         U, S, VH, err, renormalize = svd_theta(theta,
                                      svd_trunc_par_0,
                                      qtotal_LR=[qtotal_i0, None],
@@ -310,7 +310,7 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         dmt_par = self.options['dmt_par']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
-        svd_trunc_par_2 = self.options('svd_trunc_par_2', __machine_prec_trunc_par)
+        svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
 
         trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_par, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
         self.psi.norm *= renormalize

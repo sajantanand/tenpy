@@ -4410,7 +4410,7 @@ class MPS(BaseMPSExpectationValue):
             MPO_envs = options.get('MPO_envs', None)
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
-            
+
             return self.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2)
         #SAJANT - ADD DMT OPTION
         raise ValueError("Unknown compression method: " + repr(method))
@@ -4489,6 +4489,7 @@ class MPS(BaseMPSExpectationValue):
         trunc_par : dict
             Parameters for truncation, see :cfg:config:`truncation`.
         """
+        from ..algorithms import dmt_utils as dmt
         trunc_err = TruncationError()
         if self.bc == 'finite':
             # Do QR starting from the left
@@ -4520,7 +4521,7 @@ class MPS(BaseMPSExpectationValue):
             raise NotImplementedError("DMT with infinite boundary conditions is not (yet) supported.")
         else:
             raise NotImplementedError("unsupported boundary conditions " + repr(self.bc))
-        return trunc_err
+        return trunc_err, trace_env, MPO_envs # SAJANT - Do I need to return trace_env and MPO_envs?
 
     def compress_dmt_canonical(self, trunc_par, dmt_par, move_right=True,
                      trace_env=None, MPO_envs=None,
