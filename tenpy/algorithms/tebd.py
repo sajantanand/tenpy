@@ -606,7 +606,7 @@ class DMTTEBDEngine(TEBDEngine):
 
     def evolve_step(self, U_idx_dt, odd):
         raise NotImplementedError()
-    
+
     def update_bond_imag(self, i, U_bond):
         """Update a bond with a (possibly non-unitary) `U_bond`.
 
@@ -634,13 +634,13 @@ class DMTTEBDEngine(TEBDEngine):
         theta = self.psi.get_theta(i0, n=2)  # 'vL', 'vR', 'p0', 'p1'
         theta = npc.tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
         theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
-        
+
         if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
             #C.dtype = 'float64' # I think this may automatically be happening?
-        
-        
+
+
         # Perform the SVD and truncate the wavefunction
         U, S, V, trunc_err1, renormalize = svd_theta(theta,
                                                     {'chi_max': 0,
@@ -654,26 +654,26 @@ class DMTTEBDEngine(TEBDEngine):
         self.psi.set_B(i0, A_L, form='A')
         self.psi.set_B(i1, B_R, form='B')
         self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err1
-        
+
         # We've now applied the gate and split the two-site theta exactly via SVD. Now we need to use DMT to do truncation.
-        
+
         dmt_par = self.options['dmt_par']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
-                
+
         trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_par, trace_env, MPO_envs)
         self.psi.norm *= renormalize
         self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err2
-        
+
         # Need to keep track of the envs for use on future steps
         self.options['trace_env'] = trace_env
         self.options['MPO_envs'] = MPO_envs
-        
+
         return trunc_err1 + trunc_err2
-    
+
     def update_bond(self, i, U_bond):
         raise NotImplementedError()
-        
+
 class Engine(TEBDEngine):
     """Deprecated old name of :class:`TEBDEngine`.
 

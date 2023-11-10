@@ -146,9 +146,8 @@ def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
         symmetric = conjoined_par.get('symmetric', True)
         left_pairs, right_pairs = distribute_pairs(pairs, i, symmetric=symmetric)
         #print(left_pairs, right_pairs, i)
-        keep_L += np.sum([dMPS.dim[k]-1 for k in left_pairs]) + 1
-        keep_R += np.sum([dMPS.dim[k]-1 for k in right_pairs]) + 1
-
+        keep_L += int(np.sum([dMPS.dim[k]-1 for k in left_pairs])) + 1
+        keep_R += int(np.sum([dMPS.dim[k]-1 for k in right_pairs])) + 1
         # left
         # SAJANT - only need identity if we aren't using another method
         QR_L = trace_env.get_LP(i+1, store=False).replace_label('vR*', 'p') # Identity
@@ -202,7 +201,6 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     """
     # Make trace_env if none
     # Used to speed up identity contractions
-
     if trace_env is None:
         trace_env = MPSEnvironment(trace_identity_MPS(dMPS), dMPS)
     elif trace_env.ket is not dMPS:
@@ -224,9 +222,10 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     old_B = dMPS.get_B(i+1, form='B')
     old_S = S = dMPS.get_SR(i) # singular values to the right of site i
     chi = len(S)
+    if chi == 1:
+        return TruncationError(), 1, trace_env, MPO_envs
 
     QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs)
-
     Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
                           mode='complete',
                           inner_labels=['vR*', 'vR'],
@@ -276,11 +275,15 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     # Build M matrix, Eqn. 15 of paper
     M = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
 
+    connected = dmt_par.get('connected', True)
     # Connected component
-    if dmt_par.get('connected', True):
+    if connected:
         orig_M = M
-        M = orig_M - npc.outer(orig_M.take_slice([0], ['vR']),
-                               orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
+        if np.isclose(orig_M[0,0], 0.0):
+            connected = False
+        else:
+            M = orig_M - npc.outer(orig_M.take_slice([0], ['vR']),
+                                   orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
 
     # M_DR is lower right block of M
     M_DR = M.copy()
@@ -307,7 +310,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     M_trunc = M.copy()
     M_trunc[keep_L:, keep_R:] = M_DR_trunc
 
-    if dmt_par.get('connected', True):
+    if connected:
         M_trunc = M_trunc + npc.outer(orig_M.take_slice([0], ['vR']),
                                orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
 
