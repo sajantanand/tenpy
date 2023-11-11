@@ -642,9 +642,8 @@ class DMTTEBDEngine(TEBDEngine):
 
 
         # Perform the SVD and truncate the wavefunction
-        U, S, V, trunc_err1, renormalize = svd_theta(theta,
-                                                    {'chi_max': 0,
-                                                     'svd_min': 1.e-14},
+        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
+        U, S, V, trunc_err1, renormalize = svd_theta(theta, svd_trunc_par_0,
                                                     inner_labels=['vR', 'vL'])
         self.psi.norm *= renormalize
         # Split legs and update matrices
@@ -660,8 +659,9 @@ class DMTTEBDEngine(TEBDEngine):
         dmt_par = self.options['dmt_par']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
-
-        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_par, trace_env, MPO_envs)
+        svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
+        
+        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_par, trace_env, MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
         self.psi.norm *= renormalize
         self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err2
 

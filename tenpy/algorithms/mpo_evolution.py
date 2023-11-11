@@ -114,6 +114,10 @@ class ExpMPOEvolution(TimeEvolutionAlgorithm):
         trunc_err = TruncationError()
         for U_MPO in self._U_MPO:
             trunc_err += U_MPO.apply(self.psi, self.options)
+            MPO_envs = self.options.get('MPO_envs', None)
+            if MPO_envs is not None:
+                for Me in MPO_envs:
+                    Me.clear()
         return trunc_err
 
 

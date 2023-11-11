@@ -3988,7 +3988,9 @@ def qr(a,
         else:
             q_block, r_block = qr_li(block, cutoff)
         if pos_diag_R:
-            r_diag = np.diag(r_block)
+            r_diag = np.array(np.diag(r_block)) # Converted to np.array to remove the 0 elements
+            #r_diag = np.diag(r_block)
+            r_diag[r_diag==0.j] = 1
             phase = r_diag / np.abs(r_diag)
             K = len(r_diag)
             if K < q_block.shape[1]:

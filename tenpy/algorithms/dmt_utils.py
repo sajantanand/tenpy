@@ -7,6 +7,7 @@ from ..networks.mps import MPSEnvironment, MPS
 from ..networks.doubled_mps import DoubledMPS
 from ..networks.site import DoubledSite
 from ..linalg import np_conserved as npc
+from ..linalg.charges import LegPipe
 from ..algorithms.truncation import svd_theta, TruncationError, _machine_prec_trunc_par
 import warnings
 
@@ -112,7 +113,10 @@ def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
         QR_L = QR_L.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vR
         if k_local[0] == 0:
             # SAJANT - Assumes that the first index is the identity; use traceful_ind instead
-            QR_L.iproject([True] + [False] * QR_L.shape[QR_L.get_leg_index('p')], 'p')
+            p_index = QR_L.get_leg_index('p')
+            if isinstance(QR_L.legs[p_index], LegPipe):
+                QR_L.legs[p_index] = QR_L.legs[p_index].to_LegCharge()
+            QR_L.iproject([True] + [False] * QR_L.shape[p_index], 'p')
         QR_Ls.append(QR_L)
 
         QR_R = trace_env._contract_with_RP(dMPS.get_B(end_R-1, form='B'), end_R-1)
@@ -123,7 +127,11 @@ def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
         QR_R = QR_R.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vL
         if k_local[1] == 0:
             # SAJANT - Assumes that the first index is the identity; use traceful_ind instead
-            QR_R.iproject([True] + [False] * QR_R.shape[QR_R.get_leg_index('p')], 'p')
+            p_index = QR_R.get_leg_index('p')
+            if isinstance(QR_R.legs[p_index], LegPipe):
+                QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
+            QR_R.iproject([True] + [False] * QR_R.shape[p_index], 'p')
+            #QR_R.iproject([True] + [False] * QR_R.shape[QR_R.get_leg_index('p')], 'p')
         QR_Rs.append(QR_R)
 
     if MPO_envs is not None:
@@ -154,7 +162,10 @@ def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
         QR_Ls.append(QR_L)
         for lp in left_pairs:
             QR_L = trace_env._contract_with_LP(dMPS.get_B(lp, form='A'), lp)
-            QR_L.iproject([False] + [True] * QR_L.shape[QR_L.get_leg_index('p')], 'p') # Remove the identity leg
+            p_index = QR_L.get_leg_index('p')
+            if isinstance(QR_L.legs[p_index], LegPipe):
+                QR_L.legs[p_index] = QR_L.legs[p_index].to_LegCharge()
+            QR_L.iproject([False] + [True] * QR_L.shape[p_index], 'p') # Remove the identity leg
             # The QR rank reduction takes care of this.
             for j in range(lp+1, i+1):
                 TT = trace_env.bra.get_B(j)
@@ -169,7 +180,10 @@ def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
         QR_Rs.append(QR_R)
         for rp in right_pairs:
             QR_R = trace_env._contract_with_RP(dMPS.get_B(rp, form='B'), rp)
-            QR_R.iproject([False] + [True] * QR_R.shape[QR_R.get_leg_index('p')], 'p') # Remove the identity leg
+            p_index = QR_R.get_leg_index('p')
+            if isinstance(QR_R.legs[p_index], LegPipe):
+                QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
+            QR_R.iproject([False] + [True] * QR_R.shape[p_index], 'p') # Remove the identity leg
             # The QR rank reduction takes care of this.
             for j in reversed(range(i+1, rp)):
                 TT = trace_env.bra.get_B(j)
@@ -238,6 +252,11 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
                           #cutoff=1.e-12, # Need this to be none to have square Q
                           pos_diag_R=True,
                           inner_qconj=QR_R.get_leg('vL').conj().qconj)
+    """
+    If any of the diagonal elements of R_L/R are zero, we get the warning:
+    WARNING : /global/common/software/m3859/tenpy_sajant/tenpy/linalg/np_conserved.py:3993: RuntimeWarning: invalid value encountered in true_divide
+    phase = r_diag / np.abs(r_diag)
+    """
     # SAJANT - Do I need to worry about charge of Q and R? Q is chargeless by default.
 
     # SAJANT - Do this without converting to numpy array for charge conservation; not sure how to get diagonals of the R
@@ -247,6 +266,9 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     projs_L = np.diag(R_L.to_ndarray()) > R_cutoff
     projs_R = np.diag(R_R.to_ndarray()) > R_cutoff
     if np.any(projs_L == False) and R_truncate:
+        p_index = QR_L.get_leg_index('p')
+        if isinstance(QR_L.legs[p_index], LegPipe):
+            QR_L.legs[p_index] = QR_L.legs[p_index].to_LegCharge()
         QR_L.iproject(projs_L, 'p')
         keep_L = np.sum(projs_L)
         Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
@@ -257,6 +279,9 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
                           inner_qconj=QR_L.get_leg('vR').conj().qconj)
 
     if np.any(projs_R == False) and R_truncate:
+        p_index = QR_R.get_leg_index('p')
+        if isinstance(QR_R.legs[p_index], LegPipe):
+            QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
         QR_R.iproject(projs_R, 'p')
         keep_R = np.sum(projs_R)
         Q_R, R_R = npc.qr(QR_R.itranspose(['vL', 'p']),

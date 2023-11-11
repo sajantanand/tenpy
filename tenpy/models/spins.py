@@ -106,3 +106,31 @@ class SpinChain(SpinModel, NearestNeighborModel):
     """
     default_lattice = Chain
     force_default_lattice = True
+
+
+class ExponentiallyDecayingXXZ(CouplingMPOModel):
+    """
+    f(r) * [X_i X_{i+r} + Y_i Y_{i+r} + Delta*Z_i Z_{i+r}]
+    f(r) is approximated by a set of exponentials
+    bond dimension is 3 * num_exponentials + 2
+    """
+
+    def init_sites(self, model_params):
+        conserve = model_params.get('conserve', None)
+        
+        sort_charge = model_params.get('sort_charge', None)
+        S = model_params.get('S', 0.5)
+        
+        site = SpinSite(S=S, conserve=conserve, sort_charge=sort_charge)
+        return site
+
+    def init_terms(self, model_params):
+        lambdas = model_params['lambdas']
+        prefactors = model_params['prefactors']
+        delta = model_params.get('delta', 1)
+
+        for lam, pre in zip(lambdas, prefactors):
+            self.add_exponentially_decaying_coupling(pre*4, lam, 'Sx', 'Sx')
+            self.add_exponentially_decaying_coupling(pre*4, lam, 'Sy', 'Sy')
+            self.add_exponentially_decaying_coupling(pre*4*delta, lam, 'Sz', 'Sz')
+        # done
