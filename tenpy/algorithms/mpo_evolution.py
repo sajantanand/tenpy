@@ -106,6 +106,25 @@ class ExpMPOEvolution(TimeEvolutionAlgorithm):
             U1 = H_MPO.make_U(-(1. + 1j) / 2. * dt * 1j, approximation=approximation)
             U2 = H_MPO.make_U(-(1. - 1j) / 2. * dt * 1j, approximation=approximation)
             self._U_MPO = [U1, U2]
+        elif order == 3:
+            U1 = H_MPO.make_U(-(0.105662 - 0.394338j) * dt * 1j, approximation=approximation)
+            U2 = H_MPO.make_U(-(0.394338 + 0.105662j) * dt * 1j, approximation=approximation)
+            U3 = H_MPO.make_U(-(0.394338 - 0.105662j) * dt * 1j, approximation=approximation)
+            U4 = H_MPO.make_U(-(0.105662 + 0.394338j) * dt * 1j, approximation=approximation)
+            self._U_MPO = [U1, U2, U3, U4]
+        elif order == 2.5:
+            # Approximate 3rd order splitting; not cancelling all 3rd order terms
+            U1 = H_MPO.make_U(-0.626538 * dt * 1j, approximation=approximation)
+            U2 = H_MPO.make_U(-(0.186731 - 0.480774j) * dt * 1j, approximation=approximation)
+            U3 = H_MPO.make_U(-(0.186731 + 0.480774j) * dt * 1j, approximation=approximation)
+            self._U_MPO = [U1, U2, U3]
+        elif order == 3.5:
+            # Approximate 4th order splitting; not cancelling all 3rd and 4th order terms
+            U1 = H_MPO.make_U(-(0.0426267 - 0.394633j) * dt * 1j, approximation=approximation)
+            U2 = H_MPO.make_U(-(0.0426267 + 0.394633j) * dt * 1j, approximation=approximation)
+            U3 = H_MPO.make_U(-(0.457373 + 0.2351j) * dt * 1j, approximation=approximation)
+            U4 = H_MPO.make_U(-(0.457373 - 0.2351j) * dt * 1j, approximation=approximation)
+            self._U_MPO = [U1, U2, U3, U4]
         else:
             raise ValueError("order {0:d} not implemented".format(order=order))
         self.force_prepare_evolve = False
