@@ -303,10 +303,7 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         self.psi.set_B(i0, B0, form='A')  # left-canonical
         self.psi.set_B(i0 + 1, B1, form='B')  # right-canonical
         self.psi.set_SR(i0, S)
-        update_data = {'err': err, 'N': N, 'U': U, 'VH': VH}
-        # earlier update of environments, since they are needed for the one_site_update()
-        super().update_env(**update_data)  # new environments, e.g. LP[i0+1] on right move.
-
+        
         dmt_par = self.options['dmt_par']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
@@ -318,7 +315,12 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         # Need to keep track of the envs for use on future steps
         self.options['trace_env'] = trace_env
         self.options['MPO_envs'] = MPO_envs
-
+        
+        U = self.psi.get_B(i0, form='A').replace_label('p', 'p0').combine_legs(['vL', 'p'])
+        VH = self.psi.get_B(i0+1, form='B').replace_label('p', 'p1').combine_legs(['p1', 'vR'])
+        update_data = {'err': err+trunc_err2, 'N': N, 'U': U, 'VH': VH}
+        # earlier update of environments, since they are needed for the one_site_update()
+        super().update_env(**update_data)  # new environments, e.g. LP[i0+1] on right move.
 
         if self.move_right:
             # note that i0 == L-2 is left-moving
