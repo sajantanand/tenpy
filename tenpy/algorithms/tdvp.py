@@ -292,6 +292,7 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
                                        qconj=[+1, -1])
         qtotal_i0 = self.psi.get_B(i0, form=None).qtotal
         svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
         U, S, VH, err, renormalize = svd_theta(theta,
                                      svd_trunc_par_0,
                                      qtotal_LR=[qtotal_i0, None],
@@ -303,7 +304,7 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         self.psi.set_B(i0, B0, form='A')  # left-canonical
         self.psi.set_B(i0 + 1, B1, form='B')  # right-canonical
         self.psi.set_SR(i0, S)
-        
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
         dmt_par = self.options['dmt_par']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
@@ -316,26 +317,31 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         self.options['trace_env'] = trace_env
         self.options['MPO_envs'] = MPO_envs
         
-        U = self.psi.get_B(i0, form='A').replace_label('p', 'p0').combine_legs(['vL', 'p'])
+        U = self.psi.get_B(i0, form='A').replace_label('p', 'p0').combine_legs(['vL', 'p0'])
         VH = self.psi.get_B(i0+1, form='B').replace_label('p', 'p1').combine_legs(['p1', 'vR'])
         update_data = {'err': err+trunc_err2, 'N': N, 'U': U, 'VH': VH}
         # earlier update of environments, since they are needed for the one_site_update()
         super().update_env(**update_data)  # new environments, e.g. LP[i0+1] on right move.
-
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
+        self.env.clear()
+        print(self.psi.form)
         if self.move_right:
             # note that i0 == L-2 is left-moving
             self.one_site_update(i0 + 1, 0.5j * self.dt)
         elif (self.move_right is False):
             self.one_site_update(i0, 0.5j * self.dt)
         # for the last update of the sweep, where move_right is None, there is no one_site_update
-
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
+        print(self.psi.form)
         return update_data
 
     def one_site_update(self, i, dt):
         H1 = OneSiteH(self.env, i, combine=False)
         theta = self.psi.get_theta(i, n=1, cutoff=self.S_inv_cutoff)
         theta = H1.combine_theta(theta)
+        print(npc.norm(theta))
         theta, _ = LanczosEvolution(H1, theta, self.lanczos_options).run(dt)
+        print(npc.norm(theta))
         if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)

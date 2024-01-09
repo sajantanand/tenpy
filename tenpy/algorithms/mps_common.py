@@ -25,10 +25,13 @@ from .algorithm import Algorithm
 from ..linalg.sparse import NpcLinearOperator, SumNpcLinearOperator, OrthogonalNpcLinearOperator
 from ..networks.mpo import MPOEnvironment
 from ..networks.mps import MPSEnvironment, MPS
-from .truncation import truncate, svd_theta, TruncationError
+from ..networks.site import DoubledSite
+from .truncation import truncate, svd_theta, TruncationError, _machine_prec_trunc_par
 from ..linalg import np_conserved as npc
 from ..tools.params import asConfig
 from ..tools.misc import find_subclass
+from ..algorithms import dmt_utils as dmt
+
 import numpy as np
 import time
 import warnings
@@ -2001,11 +2004,14 @@ class VariationalCompression(Sweep):
         if min_sweeps == max_sweeps and tol_diff is not None:
             warnings.warn("VariationalCompression with min_sweeps=max_sweeps: "
                           "we recommend to set tol_theta_diff=None to avoid overhead")
-
+        print(f'Original trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        o_trace = dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2)
+        o_norm = self.psi.overlap(self.psi)
         for i in range(max_sweeps):
             self.renormalize = []
             self._theta_diff = []
             max_trunc_err = self.sweep()
+            print(f'Sweep {i} trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
             if i + 1 >= min_sweeps and tol_diff is not None:
                 max_diff = max(self._theta_diff[-(self.psi.L - self.n_optimize):])
                 if max_diff < tol_diff:
@@ -2013,7 +2019,11 @@ class VariationalCompression(Sweep):
                                 "with theta_diff=%.2e", i + 1, max_diff)
                     break
         if self.psi.finite:
+            print(self.renormalize)
             self.psi.norm *= max(self.renormalize)
+        print(f'Final trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        #self.psi.norm *= o_trace / (dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
+        print(f'Final trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
         self.mixer_cleanup()
         return TruncationError(max_trunc_err, 1. - 2. * max_trunc_err)
 
@@ -2098,6 +2108,199 @@ class VariationalCompression(Sweep):
         new_psi.set_SR(i0, S)
         return {'U': U, 'VH': VH, 'err': err}
 
+class VariationalCompressionDMT(VariationalCompression):
+    """Variational compression of an MPS (in place) using DMT.
+    """
+    EffectiveH = DummyTwoSiteH
+
+    def __init__(self, psi, options, resume_data=None):
+        assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+        super().__init__(psi, options, resume_data=resume_data)
+
+    def update_new_psi(self, theta):
+        """Given a new two-site wave function `theta`, split it and save it in :attr:`psi`."""
+        print(self.psi.form)
+        i0 = self.i0
+        new_psi = self.psi
+        
+        
+        
+        dmt_par = self.options['dmt_par']
+        trace_env = self.options.get('trace_env', None)
+        MPO_envs = self.options.get('MPO_envs', None)
+        
+        if trace_env is None:
+            trace_env = MPSEnvironment(dmt.trace_identity_MPS(self.psi), self.psi)
+        elif trace_env.ket is not self.psi:
+            raise ValueError("Ket in 'trace_env' is not the current doubled MPS.")
+        
+        trace_env.del_RP(i)
+        trace_env.del_LP(i+1)
+        if MPO_envs is not None:
+            for Me in MPO_envs:
+                Me.del_RP(i)
+                Me.del_LP(i+1)
+                
+        # Get existing theta; left and right virtual legs have fixed bond dimension, which will not change.
+        theta_orig = new_psi.get_theta(i0)
+        theta_orig_comb = theta_orig.combine_legs([['vL', 'p0'], ['p1', 'vR']])
+        old_A0 = new_psi.get_B(i0, form='A')
+        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
+        U_OC, S_OC, VH_OC, err_OC, renormalize_OC = svd_theta(theta_orig_comb,
+                                               svd_trunc_par_0,
+                                               qtotal_LR=[old_A0.qtotal, None],
+                                               inner_labels=['vR', 'vL'])
+        new_psi.norm *= renormalize_OC
+        
+        U_OC.ireplace_label('(vL.p0)', '(vL.p)')
+        VH_OC.ireplace_label('(p1.vR)', '(p.vR)')
+        A0_OC = U_OC.split_legs(['(vL.p)'])
+        B1_OC = VH_OC.split_legs(['(p.vR)'])
+        
+        # now set the new tensors to the MPS
+        new_psi.set_B(i0, A0_OC, form='A')  # left-canonical
+        new_psi.set_B(i0 + 1, B1_OC, form='B')  # right-canonical
+        new_psi.set_SR(i0, S_OC)
+        
+        
+        QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(new_psi, i, dmt_par, trace_env, MPO_envs)
+        if dmt_par.get('R_truncate', True):
+            Q_L, R_L, Q_R, R_R, keep_L, keep_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-14))
+        
+        if keep_L >= chi or keep_R >= chi:
+            # We cannot truncate, so return.
+            # Nothing is done to the MPS, we don't use the new theta
+            update_data = {'err': TruncationError(), 'U': U_OC, 'VH': VH_OC}
+            return update_data
+        
+        M_OC = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
+        
+        M_NC = npc.tensordot(npc.tensordot(A0_OC.conj(), theta, axes=([], [])), B1_OC.conj(), axes=([], []))
+        M_NC
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        #QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(new_psi, i0, dmt_par, trace_env, MPO_envs)
+        print(i0)
+        LP, keep_L, trace_env, MPO_envs = dmt.build_QR_matrix_L(self.psi, i0-1, dmt_par, trace_env, MPO_envs)
+        RP, keep_R, trace_env, MPO_envs = dmt.build_QR_matrix_R(self.psi, i0+1, dmt_par, trace_env, MPO_envs)
+        LP = trace_env.get_LP(i0)
+        RP = trace_env.get_RP(i0+1)
+        keep_L = 4
+        keep_R = 4
+        print("LP:", LP)
+        print("RP:", RP)
+        
+        theta_old = new_psi.get_theta(i0).combine_legs([['vL', 'p0'], ['p1', 'vR']])
+        theta_old_orig = theta_old.copy()
+        
+        #trace_env = MPSEnvironment(dmt.trace_identity_MPS(new_psi), new_psi)
+        #Id_tensor = trace_env.bra._B[i0].conj().squeeze()
+        #p_leg = trace_env.bra._B[i0].get_leg('p')
+        Id_tensor = npc.eye_like(trace_env.bra._B[i0], axis='p', labels=['p*', 'p'])
+        #LP = trace_env.get_LP(i0).squeeze('vR*')
+        QR_L = npc.outer(LP, Id_tensor).combine_legs([['vR', 'p*'], ['vR*', 'p']])#.add_trivial_leg(1, 'vL')
+        
+        #Id_tensor = trace_env.bra._B[i0+1].conj().squeeze()
+        #p_leg = trace_env.bra._B[i0+1].get_leg('p')
+        Id_tensor = npc.eye_like(trace_env.bra._B[i0+1], axis='p', labels=['p*', 'p'])
+        #RP = trace_env.get_RP(i0+1).squeeze('vL*')
+        QR_R = npc.outer(Id_tensor, RP).combine_legs([['p*', 'vL'], ['p', 'vL*']])#.add_trivial_leg(1, 'vR')
+        print(QR_L)
+        print(QR_R)
+        
+        print(npc.tensordot(npc.tensordot(QR_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), QR_R, axes=(['(p1.vR)', '(p*.vL)']))[0,0] * self.psi.norm * 32)
+        
+        Q_L, R_L = npc.qr(QR_L.transpose(['(vR.p*)', '(vR*.p)']),
+                          mode='complete',
+                          inner_labels=['(vL.p)', '(vL.p)*'],
+                          #cutoff=1.e-12, # Need this to be none to have square Q
+                          pos_diag_R=True,
+                          inner_qconj=QR_L.get_leg('(vR.p*)').conj().qconj)
+        Q_R, R_R = npc.qr(QR_R.transpose(['(p*.vL)', '(p.vL*)']),
+                          mode='complete',
+                          inner_labels=['(p.vR)', '(p.vR)*'],
+                          #cutoff=1.e-12, # Need this to be none to have square Q
+                          pos_diag_R=True,
+                          inner_qconj=QR_R.get_leg('(p*.vL)').conj().qconj)
+
+        
+        
+        theta_old_R = npc.tensordot(npc.tensordot(Q_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), Q_R, axes=(['(p1.vR)', '(p*.vL)']))
+
+        theta_new_R = npc.tensordot(npc.tensordot(Q_L, theta, axes=(['(vR.p*)'], ['(vL.p0)'])), Q_R, axes=(['(p1.vR)', '(p*.vL)']))
+        
+        print(keep_L, keep_R)
+        theta_old_R[keep_L:,keep_R:] = theta_new_R[keep_L:,keep_R:]
+        
+        theta_old = npc.tensordot(npc.tensordot(Q_L.conj(), theta_old_R, axes=(['(vL*.p*)'], ['(vL.p)'])), Q_R.conj(), axes=(['(p.vR)', '(p*.vR*)']))
+        theta_old.ireplace_labels(['(vR*.p)', '(p.vL*)'], ['(vL.p0)', '(p1.vR)'])
+        print(npc.tensordot(npc.tensordot(QR_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), QR_R, axes=(['(p1.vR)', '(p*.vL)']))[0,0] * self.psi.norm * 32)
+        
+        theta = theta_old
+        
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        old_A0 = new_psi.get_B(i0, form='A')
+        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
+        print(npc.norm(theta))
+        U, S, VH, err, renormalize = svd_theta(theta,
+                                               svd_trunc_par_0,
+                                               qtotal_LR=[old_A0.qtotal, None],
+                                               inner_labels=['vR', 'vL'])
+        new_psi.norm *= renormalize
+        print(np.linalg.norm(S), err)
+        
+        U.ireplace_label('(vL.p0)', '(vL.p)')
+        VH.ireplace_label('(p1.vR)', '(p.vR)')
+        A0 = U.split_legs(['(vL.p)'])
+        B1 = VH.split_legs(['(p.vR)'])
+        
+        # first compare to old best guess to check convergence of the sweeps
+        if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
+            theta_old = new_psi.get_theta(i0)
+        # now set the new tensors to the MPS
+        new_psi.set_B(i0, A0, form='A')  # left-canonical
+        new_psi.set_B(i0 + 1, B1, form='B')  # right-canonical
+        new_psi.set_SR(i0, S)
+        
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)       
+        
+        dmt_par = self.options['dmt_par']
+        trace_env = self.options.get('trace_env', None)
+        MPO_envs = self.options.get('MPO_envs', None)
+        svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
+
+        trunc_err2, renormalize2, trace_env, MPO_envs = dmt.dmt_theta(new_psi, i0, self.trunc_params, dmt_par, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
+
+        # Need to keep track of the envs for use on future steps
+        self.options['trace_env'] = trace_env
+        self.options['MPO_envs'] = MPO_envs
+
+        U = new_psi.get_B(i0, form='A').replace_label('p', 'p0').combine_legs(['vL', 'p0'])
+        VH = new_psi.get_B(i0+1, form='B').replace_label('p', 'p1').combine_legs(['p1', 'vR'])
+        
+        update_data = {'err': err+trunc_err2, 'U': U, 'VH': VH}
+        
+        # first compare to old best guess to check convergence of the sweeps
+        if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
+            theta_new_trunc = new_psi.get_theta(i0)
+            theta_new_trunc.iset_leg_labels(['vL', 'p0', 'p1', 'vR'])
+            ov = npc.inner(theta_new_trunc, theta_old, do_conj=True, axes='labels')
+            theta_diff = 1. - abs(ov)
+            print('theta_diff:', theta_diff)
+            self._theta_diff.append(theta_diff)
+        print(renormalize, renormalize2)
+        self.psi.norm *= renormalize2
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        self.renormalize.append(1) #renormalize * renormalize2)
+        return update_data
 
 class VariationalApplyMPO(VariationalCompression):
     """Variational compression for applying an MPO to an MPS (in place).
@@ -2203,3 +2406,12 @@ class VariationalApplyMPO(VariationalCompression):
         if not self.eff_H.combine:
             th = th.combine_legs([['vL', 'p0'], ['p1', 'vR']], qconj=[+1, -1])
         return self.update_new_psi(th)
+    
+class VariationalApplyMPODMT(VariationalApplyMPO,VariationalCompressionDMT):
+
+    def __init__(self, psi, U_MPO, options, **kwargs):
+        assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+        super().__init__(self, psi, U_MPO, options, **kwargs)
+    
+    def update_new_psi(self, theta):
+        return VariationalCompressionDMT.update_new_psi(self, theta)

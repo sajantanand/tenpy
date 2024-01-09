@@ -1213,6 +1213,9 @@ class MPO:
         elif method == 'variational':
             from ..algorithms.mps_common import VariationalApplyMPO
             return VariationalApplyMPO(psi, self, options).run()
+        elif method == 'variational_DMT':
+            from ..algorithms.mps_common import VariationalApplyMPODMT
+            return VariationalApplyMPODMT(psi, self, options).run()
         elif method == 'zip_up':
             trunc_err = self.apply_zipup(psi, options)
             return trunc_err + psi.compress_svd(trunc_params)
