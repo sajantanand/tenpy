@@ -12,6 +12,18 @@ from ..algorithms.truncation import svd_theta, TruncationError, _machine_prec_tr
 import warnings
 
 def double_model(H_MPO, NN=False, doubled=False, conjugate=False):
+    """
+    args:
+        NN: Boolean
+            Whether the model only contains NN terms and thus should be made into a `NearestNeighborModel` for TEBD
+        doubled: Boolean
+            Whether the model is already in doubled Hilbert space
+        conjugate: Boolean
+            Conjugate the MPO by change of basis matrices; typically one moves to Hermitian or charge-conserving basis
+    returns:
+        doubled_model: TeNPy model
+            Either `MPOModel` or `NearestNeighborModel` depending on the `NN` parameter
+    """
     if not doubled:
         doubled_MPO = H_MPO.make_doubled_MPO()
     else:
@@ -31,6 +43,19 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False):
     return doubled_model
 
 def generate_pairs(lat, key='nearest_neighbors'):
+    """
+    Generate pairs of couplings for 2D lattice with k-local conservation
+
+    args:
+        lat: TenPy Lattice
+            What lattice (square, chain, Kagome, etc.) is used for simulation
+        key: str
+            Which pairs are we interested in preserving
+
+    returns:
+        pairs: list
+            list of couplings we wish to preserve with DMT
+    """
     idXs, idYs = [], []
     for dx1, dx2, bv in lat.pairs[key]:
         idX, idY = lat.possible_couplings(dx1,dx2,bv)[:2]
@@ -40,6 +65,22 @@ def generate_pairs(lat, key='nearest_neighbors'):
     return pairs
 
 def distribute_pairs(pairs, bi, symmetric=True):
+    """
+    Distribute pairs on bond `bi` to left and right lists so we know which operators to preserve in which density matrix
+
+    args:
+        pairs: list
+            output from `generate_pairs`
+        bi: int
+            which bond we are currently truncating
+        symmetric: Boolean
+            Are bonds included in both left and right lists? `symmetric=True` requires larger bond dimension but is what is done in original DMT
+
+    returns:
+        left_points: list
+            on which sites to the left of the cut should we preserve operators
+        right_points: list
+    """
     cut_pairs = [a for a in pairs if a[0] <= bi and a[1] > bi]
     left_points, right_points =[], []
     if symmetric:
@@ -57,9 +98,10 @@ def distribute_pairs(pairs, bi, symmetric=True):
 
 # Bra for density matrix expectation value.
 def trace_identity_DMPS(DMPS, traceful_id=None):
+    assert traceful_id == None, "Not used here since the doubled MPS has both bra and ket legs"
     d = DMPS.sites[0].dim
     # We are in the computational / bra-ket basis. Make doubled MPS with two physical legs
-    # per site, using the identity
+    # per site, using the identity on each site
     I = np.eye(d).reshape(d, d, 1, 1)
     return DoubledMPS.from_Bflat(DMPS.sites,
                                [I] * DMPS.L,
@@ -70,12 +112,12 @@ def trace_identity_DMPS(DMPS, traceful_id=None):
                                form='B', # Form doesn't matter since it's a product state?
                                legL=None)
 
-# Bra for density matrix expectation value.
+# Bra for density matrix expectation value once flattened
 def trace_identity_MPS(DMPS, traceful_id=None):
     d = DMPS.sites[0].dim
     assert type(DMPS.sites[0]) is DoubledSite
     # In rotated, HOMT basis. Identity is vector vector with 1 at location specified by traceful_id
-    # SAJANT - Generalize this to case where the Identity isn't a unit vector.
+    # SAJANT TODO - Generalize this to case where the Identity isn't a unit vector.
     I = np.zeros((d,1,1))
     I[DMPS.sites[0].traceful_ind,0,0] = 1 # When taking the trace, we ought to account for the factor of
 
@@ -89,12 +131,44 @@ def trace_identity_MPS(DMPS, traceful_id=None):
                                legL=None)
 
 def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
+    """
+    Construct change of basis matrices for the right Hilbert space on bond `i`. There are three types of DMT that can be combined:
+    (1) Local DMT - preserve the tensor product of operators a desired `radius` from the truncated bond; radius can be different on left and right
+    (2) MPO DMT - preserve (sum of) operators specifieid by an MPO
+    (3) Conjoined DMT - prserve the direct sum of operators on specific sites given by physical, local connections on lattice
+
+    args:
+        dMPS: MPS (flattened to have just 1 physical leg)
+            The density matrix / operator that is to be truncated
+        i: int
+            Bond on which we truncate; bond `i` is to the right of site `i`
+        dmt_par: dictionary
+            collects all paramters for local and conjoined DMT
+        trace_env: TeNPy MPOEnvironment
+            Used to getting operators when taking trace against a state (presumably the identity, but this can be generalized to any state)
+        MPO_envs: list of TeNPy MPOEnvironments
+            Each MPO is SEPARATELY conserved
+
+    returns:
+        QR_R: npc Array
+            Matrix that defines the change of basis matrix once a QR is done
+        keep_R: int
+            How many independent sets of operators are preserved
+        trace_env: MPOEnvironment
+            Updated environment (what is stored has changed) for trace with respect to a particular state
+        MPO_envs: MPOEnvironments
+            Updated MPO environments
+    """
+    #############################################
+    # TODO - restructure DMT to only be phrased in terms of MPOs to preserve; then all types of DMT can be viewed as the exact same.
+    #############################################
+
     # Bond i between sites i and i+1; truncating bond i
     QR_Rs = []
     keep_R = 0
     local_par = dmt_par.get('k_local_par', None)
     conjoined_par = dmt_par.get('conjoined_par', None)
-    if i == dMPS.L-1:
+    if i == dMPS.L-1: # Bond to the right of last site; do nothing
         return trace_env.get_RP(i).replace_label('vL*', 'p'), 1, trace_env, MPO_envs
     if local_par is not None:
         k_local = local_par.get('k_local', (1,1)) # How many sites to include on either side of cut
@@ -112,7 +186,8 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_R = QR_R.combine_legs(['p', 'p1']).ireplace_label('(p.p1)', 'p')
         QR_R = QR_R.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vL
         if k_local[1] == 0:
-            # SAJANT - Assumes that the first index is the identity; use traceful_ind instead
+            # Keep only Ideneity to the right
+            # SAJANT TODO - Assumes that the first index is the identity; use traceful_ind instead
             p_index = QR_R.get_leg_index('p')
             if isinstance(QR_R.legs[p_index], LegPipe):
                 QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
@@ -126,6 +201,7 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
             # Maybe store them and delete them later if necessary.
             QR_R = Me.get_RP(i, store=True).squeeze().replace_label('wL', 'p')
             if np.linalg.norm([d.imag for d in QR_R._data]) < dmt_par.get('imaginary_cutoff', 1.e-12): # Remove small imaginary part
+                # SAJANT TODO - why?
                 QR_R.iunary_blockwise(np.real)
             QR_Rs.append(QR_R)
             keep_R += QR_R.shape[QR_R.get_leg_index('p')]
@@ -134,31 +210,35 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
         pairs = conjoined_par.get('pairs')
         symmetric = conjoined_par.get('symmetric', True)
         left_pairs, right_pairs = distribute_pairs(pairs, i, symmetric=symmetric)
-        #print(left_pairs, right_pairs, i)
+
+        # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
         keep_R += int(np.sum([dMPS.dim[k]-1 for k in right_pairs])) + 1
-        # right
-        # SAJANT - only need identity if we aren't using another method
-        QR_R = trace_env.get_RP(i, store=False).replace_label('vL*', 'p') # Identity
+        # SAJANT TODO - only need identity if we aren't using another method; hopefully is removed in the redundancy function
+        QR_R = trace_env.get_RP(i, store=False).replace_label('vL*', 'p') # Identity on right half
         QR_Rs.append(QR_R)
         for rp in right_pairs:
             QR_R = trace_env._contract_with_RP(dMPS.get_B(rp, form='B'), rp)
             p_index = QR_R.get_leg_index('p')
             if isinstance(QR_R.legs[p_index], LegPipe):
                 QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
-            QR_R.iproject([False] + [True] * QR_R.shape[p_index], 'p') # Remove the identity leg
+            QR_R.iproject([False] + [True] * QR_R.shape[p_index], 'p') # Remove the identity leg; for spin-1/2s, we have 3 non-trivial legs for X, Y, Z
             # The QR rank reduction takes care of this.
             for j in reversed(range(i+1, rp)):
-                TT = trace_env.bra.get_B(j)
-                B = npc.tensordot(TT.conj(), dMPS.get_B(j, form='B'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR
+                TT = trace_env.bra.get_B(j) # Tensor trace; the identity element used for tracing over a site;
+                B = npc.tensordot(TT.conj(), dMPS.get_B(j, form='B'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR # Trace over this site
                 QR_R = npc.tensordot(B, QR_R, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)
             QR_R = QR_R.squeeze()
             QR_Rs.append(QR_R)
         #print([q.shape for q in QR_Ls], [q.shape for q in QR_Rs])
     QR_R = npc.concatenate(QR_Rs, axis='p')
-
+    assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
     return QR_R, keep_R, trace_env, MPO_envs
 
 def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
+    """
+    See documentation for `build_QR_matrix_R`.
+    """
+
     QR_Ls = []
     keep_L = 0
     local_par = dmt_par.get('k_local_par', None)
@@ -166,7 +246,7 @@ def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
     print('LP:', i)
     if i == -1:
         return trace_env.get_LP(0).replace_label('vR*', 'p'), 1, trace_env, MPO_envs
-    
+
     if local_par is not None:
         k_local = local_par.get('k_local', (1,1)) # How many sites to include on either side of cut
         start_L = np.max([i+1-np.max([k_local[0], 1]), 0]) # include endpoint
@@ -226,16 +306,44 @@ def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_Ls.append(QR_L)
         #print([q.shape for q in QR_Ls], [q.shape for q in QR_Rs])
     QR_L = npc.concatenate(QR_Ls, axis='p')
-    print(keep_L)
+    assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
     return QR_L, keep_L, trace_env, MPO_envs
 
 def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
+    """
+    Actually call the functions above; see funcations above for documentation.
+    """
+
     QR_L, keep_L, trace_env, MPO_envs = build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs)
     QR_R, keep_R, trace_env, MPO_envs = build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs)
-    
+
     return QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs
 
 def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
+    """
+    We may have redundant copies of operators to preserve; most commonly, we will have several copies of the identity.
+    Here we remove them by doing a QR and seeing what is unneeded (i.e. zero diagonals)
+
+
+    args:
+        QR_L: npc Array
+            matrix defining change of basis on the left Hilbert space
+        QR_R: npc Array
+            matrix defining change of basis on the right Hilbert space
+        keep_L, keep_R: int, int
+            Number of independent operator combinations to preserve on left and right
+        R_cutoff: float
+            What do we consider 0 when removing redundancy
+
+    returns:
+        Q_L: npc Array
+            Rotation matrix for left Hilbert space
+        Q_R: npc Array
+            Rotation matrix for right Hilbert space
+        keep_L, keep_R: int, int
+            Number of independent operator combinations to preserve on left and right after redundancy removed
+    """
+
     Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
                           mode='complete',
                           inner_labels=['vR*', 'vR'],
@@ -253,11 +361,10 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
     WARNING : /global/common/software/m3859/tenpy_sajant/tenpy/linalg/np_conserved.py:3993: RuntimeWarning: invalid value encountered in true_divide
     phase = r_diag / np.abs(r_diag)
     """
-    # SAJANT - Do I need to worry about charge of Q and R? Q is chargeless by default.
+    # SAJANT TODO - Do I need to worry about charge of Q and R? Q is chargeless by default.
 
-    # SAJANT - Do this without converting to numpy array for charge conservation; not sure how to get diagonals of the R
+    # SAJANT TODO - Do this without converting to numpy array for charge conservation; not sure how to get diagonals of the R
     # QL may be rank difficient. Let's project out rows (p) that are unneeded, based on the QR
-    # SAJANT - avoid casting to np array
     projs_L = np.diag(R_L.to_ndarray()) > R_cutoff
     projs_R = np.diag(R_R.to_ndarray()) > R_cutoff
     if np.any(projs_L == False):
@@ -285,10 +392,12 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
                           #cutoff=1.e-12, # Need this to be none to have square Q
                           pos_diag_R=True,
                           inner_qconj=QR_R.get_leg('vL').conj().qconj)
-        
+
     return Q_L, R_L, Q_R, R_R, keep_L, keep_R
+
 """
-def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
+# TODO - Remove old code
+def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs)
     QR_Ls, QR_Rs = [], []
     keep_L, keep_R = 0, 0
     local_par = dmt_par.get('k_local_par', None)
@@ -399,6 +508,19 @@ def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
 """
 
 def truncate_M(M, svd_trunc_par, connected, keep_L, keep_R):
+    """
+    Truncate the lower right block once we've moved to desired basis
+
+    args:
+        M: npc Array
+            Bond tensor after moving into desired basis so that we can truncate lower right block
+        svd_trunc_par: dictionary
+            Standard TeNPy truncation parameters
+        connected: Boolean
+            Do we perform the operation in Eq. 25 of https://arxiv.org/pdf/1707.01506.pdf?
+        keep_L, keep_R: int, int
+            Number of independent operator combinations to preserve; needed to  extract lower right block
+    """
     # Connected component
     if connected:
         orig_M = M
@@ -436,24 +558,25 @@ def truncate_M(M, svd_trunc_par, connected, keep_L, keep_R):
     if connected:
         M_trunc = M_trunc + npc.outer(orig_M.take_slice([0], ['vR']),
                                orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
-    
+
     return M_trunc, err
 
 def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
               trace_env, MPO_envs,
               svd_trunc_par_2=_machine_prec_trunc_par): #, move_right=True):
-    """Performs Density Matrix Truncation (DMT) on an MPS representing a density matrix or operator.
+    """
+    Performs Density Matrix Truncation (DMT) on an MPS representing a density matrix or operator.
     We truncate on the bond between site i to the left and i+1 to the right. This however requires
     the entire state, as we use non-local properties to do the truncation.
 
     The DMT algorithm was propsed in https://arxiv.org/abs/1707.01506 and extended to 2D and
-    long range interactions in https://arxiv.org/abs/2312.XXXXX
+    long range interactions in https://arxiv.org/abs/2312.XXXXX; LOL; I should've known better.
 
     See documentation of svd_theta, which we follow.
 
     We assume that the orthogonality center is already on bond i of the MPS. So tensor i should be in left ('A')
     form while tensor i+1 should be in right ('B') form. TEBD moves the OC by applying gates, but if we want to
-    truncate a dMPS using this function, we need to explicitly move the OC.
+    only truncate a dMPS using this function, we need to explicitly move the OC.
     """
 
     # Check that the MPS has the proper form; need A to the left of (i,i+1) and B to the right
@@ -461,12 +584,12 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     assert dMPS.form[i+2:] == [(0.0, 1.0) for _ in range(dMPS.L - i - 2)], dMPS.form[i+2:]
 
     # Make trace_env if none
-    # Used to speed up identity contractions
+    # Used to speed up identity contractions as we can reuse environments
     if trace_env is None:
         trace_env = MPSEnvironment(trace_identity_MPS(dMPS), dMPS)
     elif trace_env.ket is not dMPS:
         raise ValueError("Ket in 'trace_env' is not the current doubled MPS.")
-    
+
     # We want to remove the environments containing the bond i
     trace_env.del_RP(i)
     trace_env.del_LP(i+1)
@@ -477,14 +600,14 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
 
     S = dMPS.get_SR(i) # singular values to the right of site i
     chi = len(S)
-    if chi == 1:
+    if chi == 1: # Cannot do any truncation, so give up.
         return TruncationError(), 1, trace_env, MPO_envs
 
     QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs)
     if dmt_par.get('R_truncate', True):
+        # Let's remove redundancy; always should do this
         Q_L, R_L, Q_R, R_R, keep_L, keep_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-14))
 
-    # SAJANT - Should this be moved until after we remove redundant rows?
     print(keep_L, keep_R)
     if keep_L >= chi or keep_R >= chi:
         # We cannot truncate, so return.
@@ -510,6 +633,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
         for Me in MPO_envs:
             Me.del_RP(i)
             Me.del_LP(i+1)
+    # Put new tensors back into the MPS
     new_A = npc.tensordot(npc.tensordot(dMPS.get_B(i, form='A'), Q_L.conj(), axes=(['vR', 'vR*'])), U, axes=(['vR', 'vL']))
     new_B = npc.tensordot(VH, npc.tensordot(Q_R.conj(), dMPS.get_B(i+1, form='B'), axes=(['vL*', 'vL'])),axes=(['vR', 'vL']))
     dMPS.set_SR(i, S)
