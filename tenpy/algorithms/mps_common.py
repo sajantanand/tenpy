@@ -2131,7 +2131,7 @@ class VariationalCompressionGuess(VariationalCompression):
         if resume_data is None:
             resume_data = {}
         init_env_data = resume_data.get("init_env_data", {})
-        old_psi = self.phi    # For ket, use phi
+        old_psi = self.phi.copy()    # For ket, use phi; make a copy in case phi == psi
         start_env_sites = self.options.get('start_env_sites', 2)
         if start_env_sites is not None and not self.psi.finite:
             init_env_data['start_env_sites'] = start_env_sites
@@ -2566,7 +2566,7 @@ class VariationalApplyGuessMPO(VariationalApplyMPO):
         if resume_data is None:
             resume_data = {}
         init_env_data = resume_data.get("init_env_data", {})
-        old_psi = self.phi
+        old_psi = self.phi.copy()
         start_env_sites = 0 if self.psi.finite else self.psi.L
         start_env_sites = self.options.get("start_env_sites", start_env_sites)
         if start_env_sites is not None:
