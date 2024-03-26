@@ -31,7 +31,6 @@ from ..linalg import np_conserved as npc
 from ..tools.params import asConfig
 from ..tools.misc import find_subclass
 from ..algorithms import dmt_utils as dmt
-
 import numpy as np
 import time
 import warnings
@@ -52,7 +51,11 @@ __all__ = [
     'DensityMatrixMixer',
     'SubspaceExpansion',
     'VariationalCompression',
+    'VariationalCompressionGuess',
+    'VariationalCompressionGuessDMT',
     'VariationalApplyMPO',
+    'VariationalApplyGuessMPO',
+    'VariationalApplyGuessMPODMT',
 ]
 
 
@@ -129,7 +132,7 @@ class Sweep(Algorithm):
     """
     DefaultMixer = None
     use_mixer_by_default = False  # The default for the "mixer" config option
-    
+
     def __init__(self, psi, model, options, *, orthogonal_to=None, **kwargs):
         if not hasattr(self, "EffectiveH"):
             raise NotImplementedError("Subclass needs to set EffectiveH")
@@ -432,7 +435,7 @@ class Sweep(Algorithm):
                     self.mixer_deactivate()
                 else:
                     self.mixer = mixer
-            
+
         return np.max(self.trunc_err_list)
 
     def get_sweep_schedule(self):
@@ -2004,14 +2007,11 @@ class VariationalCompression(Sweep):
         if min_sweeps == max_sweeps and tol_diff is not None:
             warnings.warn("VariationalCompression with min_sweeps=max_sweeps: "
                           "we recommend to set tol_theta_diff=None to avoid overhead")
-        print(f'Original trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-        o_trace = dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2)
-        o_norm = self.psi.overlap(self.psi)
+
         for i in range(max_sweeps):
             self.renormalize = []
             self._theta_diff = []
             max_trunc_err = self.sweep()
-            print(f'Sweep {i} trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
             if i + 1 >= min_sweeps and tol_diff is not None:
                 max_diff = max(self._theta_diff[-(self.psi.L - self.n_optimize):])
                 if max_diff < tol_diff:
@@ -2019,11 +2019,7 @@ class VariationalCompression(Sweep):
                                 "with theta_diff=%.2e", i + 1, max_diff)
                     break
         if self.psi.finite:
-            print(self.renormalize)
             self.psi.norm *= max(self.renormalize)
-        print(f'Final trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-        #self.psi.norm *= o_trace / (dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
-        print(f'Final trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
         self.mixer_cleanup()
         return TruncationError(max_trunc_err, 1. - 2. * max_trunc_err)
 
@@ -2049,7 +2045,7 @@ class VariationalCompression(Sweep):
         else:
             cache = self.env.cache
             cache.clear()
-        self.env = MPSEnvironment(self.psi, old_psi, cache=cache, **init_env_data)
+        self.env = MPSEnvironment(self.psi, old_psi, cache=cache, **init_env_data) # bra, ket
         self._init_ortho_to_envs(orthogonal_to, resume_data)
         self.reset_stats()
 
@@ -2108,39 +2104,131 @@ class VariationalCompression(Sweep):
         new_psi.set_SR(i0, S)
         return {'U': U, 'VH': VH, 'err': err}
 
-class VariationalCompressionDMT(VariationalCompression):
-    """Variational compression of an MPS (in place) using DMT.
+class VariationalCompressionGuess(VariationalCompression):
+    """Variational optimization of an MPS.
+
+    Given MPS |phi> at fixed bond dimension chi', find new MPS |psi> at bond dimension chi that best approximates
+    the original state |phi>. See documentation of :class:`VariationalCompression` for details. The only modification
+    is that the bra and ket of the MPS environment are not the same. This allows us to start with a guess for |psi>.
+    """
+
+    def __init__(self, psi, phi, options, resume_data=None):
+        self.phi = phi
+        super().__init__(psi, options, resume_data=resume_data) # Variational Compression Initialization
+        self.renormalize = []
+        self._theta_diff = []
+        print(self.env.bra)
+        print(self.env.ket)
+    
+    def init_env(self, model=None, resume_data=None, orthogonal_to=None):
+        """Initialize the environment.
+
+        Parameters
+        ----------
+        model, orthogonal_to :
+            Ignored, only there for compatibility with the :class:`Sweep` class.
+        resume_data : dict
+            May contain `init_env_data`.
+        """
+        if resume_data is None:
+            resume_data = {}
+        init_env_data = resume_data.get("init_env_data", {})
+        old_psi = self.phi    # For ket, use phi
+        start_env_sites = self.options.get('start_env_sites', 2)
+        if start_env_sites is not None and not self.psi.finite:
+            init_env_data['start_env_sites'] = start_env_sites
+        if self.env is None:
+            cache = self.cache.create_subcache('env')
+        else:
+            cache = self.env.cache
+            cache.clear()
+        self.env = MPSEnvironment(self.psi, old_psi, cache=cache, **init_env_data) # bra, ket
+        self._init_ortho_to_envs(orthogonal_to, resume_data)
+        self.reset_stats()
+
+class VariationalCompressionGuessDMT(VariationalCompressionGuess):
+    """
+    Variational optimization of an MPS using DMT.
+    Assume that self.psi is in canonical form as both A and B tensors are used
     """
     EffectiveH = DummyTwoSiteH
 
-    def __init__(self, psi, options, resume_data=None):
+    def __init__(self, psi, phi, options, resume_data=None):
         assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
-        super().__init__(psi, options, resume_data=resume_data)
+        super().__init__(psi, phi, options, resume_data=resume_data)
+
+    def run(self):
+        """Run the compression.
+
+        The state :attr:`psi` is compressed in place.
+
+        .. warning ::
+            Call this function directly after initializing the class, without modifying `psi`
+            inbetween. A copy of :attr:`psi` is made during :meth:`init_env`!
+
+        Returns
+        -------
+        max_trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
+            The maximal truncation error of a two-site wave function.
+        """
+        self.options.deprecated_alias("N_sweeps", "max_sweeps",
+                                      "Also check out the other new convergence parameters "
+                                      "min_N_sweeps and tol_theta_diff!")
+        max_sweeps = self.options.get("max_sweeps", 2)
+        min_sweeps = self.options.get("min_sweeps", 1)
+        tol_diff = self._tol_theta_diff = self.options.get("tol_theta_diff", 1.e-8)
+        if min_sweeps == max_sweeps and tol_diff is not None:
+            warnings.warn("VariationalCompression with min_sweeps=max_sweeps: "
+                          "we recommend to set tol_theta_diff=None to avoid overhead")
+        print(f'Original trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        o_trace = dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2)
+        o_norm = self.psi.overlap(self.psi)
+        for i in range(max_sweeps):
+            self.renormalize = []
+            self._theta_diff = []
+            max_trunc_err = self.sweep()
+            print(f'Sweep {i} trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+            if i + 1 >= min_sweeps and tol_diff is not None:
+                max_diff = max(self._theta_diff[-(self.psi.L - self.n_optimize):])
+                if max_diff < tol_diff:
+                    logger.debug("break VariationalCompression after %d sweeps "
+                                "with theta_diff=%.2e", i + 1, max_diff)
+                    break
+        if self.psi.finite:
+            print(self.renormalize)
+            self.psi.norm *= max(self.renormalize)
+        print(f'Final trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        #self.psi.norm *= o_trace / (dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
+        print(f'Final trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        self.mixer_cleanup()
+        return TruncationError(max_trunc_err, 1. - 2. * max_trunc_err)
 
     def update_new_psi(self, theta):
-        """Given a new two-site wave function `theta`, split it and save it in :attr:`psi`."""
-        print(self.psi.form)
+        """Given a new two-site wave function `theta`, split it and save it in :attr:`psi`.
+
+        We use the change of basis matrices defined by |psi> to find the desired block of the theta to use. We assume that |psi>
+        already has the properties we wish to keep preserved.
+        """
         i0 = self.i0
-        new_psi = self.psi
-        
-        
-        
+        print(i0, self.psi.form)
+        new_psi = self.psi    # This is the current guess for psi, the optimized wave function
+
         dmt_par = self.options['dmt_par']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
-        
+
         if trace_env is None:
             trace_env = MPSEnvironment(dmt.trace_identity_MPS(self.psi), self.psi)
         elif trace_env.ket is not self.psi:
             raise ValueError("Ket in 'trace_env' is not the current doubled MPS.")
-        
-        trace_env.del_RP(i)
-        trace_env.del_LP(i+1)
+
+        trace_env.del_RP(i0)
+        trace_env.del_LP(i0+1)
         if MPO_envs is not None:
             for Me in MPO_envs:
-                Me.del_RP(i)
-                Me.del_LP(i+1)
-                
+                Me.del_RP(i0)
+                Me.del_LP(i0+1)
+
         # Get existing theta; left and right virtual legs have fixed bond dimension, which will not change.
         theta_orig = new_psi.get_theta(i0)
         theta_orig_comb = theta_orig.combine_legs([['vL', 'p0'], ['p1', 'vR']])
@@ -2151,42 +2239,85 @@ class VariationalCompressionDMT(VariationalCompression):
                                                qtotal_LR=[old_A0.qtotal, None],
                                                inner_labels=['vR', 'vL'])
         new_psi.norm *= renormalize_OC
-        
+        chi = len(S_OC)
         U_OC.ireplace_label('(vL.p0)', '(vL.p)')
         VH_OC.ireplace_label('(p1.vR)', '(p.vR)')
         A0_OC = U_OC.split_legs(['(vL.p)'])
         B1_OC = VH_OC.split_legs(['(p.vR)'])
-        
+
         # now set the new tensors to the MPS
         new_psi.set_B(i0, A0_OC, form='A')  # left-canonical
         new_psi.set_B(i0 + 1, B1_OC, form='B')  # right-canonical
         new_psi.set_SR(i0, S_OC)
-        
-        
-        QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(new_psi, i, dmt_par, trace_env, MPO_envs)
-        if dmt_par.get('R_truncate', True):
-            Q_L, R_L, Q_R, R_R, keep_L, keep_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-14))
-        
+
+        # Get change of basis matrices using current |psi>.
+        QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = dmt.build_QR_matrices(new_psi, i0, dmt_par, trace_env, MPO_envs)
+        Q_L, R_L, Q_R, R_R, keep_L, keep_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-14))
+
         if keep_L >= chi or keep_R >= chi:
             # We cannot truncate, so return.
             # Nothing is done to the MPS, we don't use the new theta
             update_data = {'err': TruncationError(), 'U': U_OC, 'VH': VH_OC}
             return update_data
-        
+
+        # Q_L - vR*, vR; q_R = vL, vL*
         M_OC = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
-        
-        M_NC = npc.tensordot(npc.tensordot(A0_OC.conj(), theta, axes=([], [])), B1_OC.conj(), axes=([], []))
-        M_NC
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
+
+        M_NC = npc.tensordot(npc.tensordot(A0_OC.conj(), theta, axes=(['vL*', 'p*'], ['vL', 'p0'])), B1_OC.conj(), axes=(['vR', 'p1'], ['vR*', 'p*']))  # bond space tensor; vR*, vL*
+        M_NC = npc.tensordot(npc.tensordot(Q_L.conj(), M_NC, axes=(['vR'], ['vR*'])), Q_R.conj(), axes=(['vL*'], ['vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
+
+        # Now both bond matrices are in the desired gauge; replace the bottom right piece
+        M_OC[keep_L:,keep_R:] = M_NC[keep_L:,keep_R:]
+        M_norm = npc.norm(M_OC)
+        print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
+        # SAJANT TODO - do we want this to be normalized? Probably?
+        M_trunc, err = dmt.truncate_M(M_OC, svd_trunc_par, dmt_par.get('connected', True), keep_L, keep_R)
+
+        U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_par_2, renormalize=True)
+        err2 = TruncationError.from_norm(renormalization2, norm_old=M_norm)
+
+        # We want to remove the environments containing the bond i
+        trace_env.del_RP(i0)
+        trace_env.del_LP(i0+1)
+        if MPO_envs is not None:
+            for Me in MPO_envs:
+                Me.del_RP(i0)
+                Me.del_LP(i0+1)
+        # Put new tensors back into the MPS
+        new_A = npc.tensordot(npc.tensordot(dMPS.get_B(i0, form='A'), Q_L.conj(), axes=(['vR', 'vR*'])), U, axes=(['vR', 'vL']))
+        new_B = npc.tensordot(VH, npc.tensordot(Q_R.conj(), dMPS.get_B(i0+1, form='B'), axes=(['vL*', 'vL'])),axes=(['vR', 'vL']))
+        new_psi.set_SR(i0, S)
+        new_psi.set_B(i0, new_A, form='A')
+        new_psi.set_B(i0+1, new_B, form='B')
+
+        #return err + err2, renormalization2, trace_env, MPO_envs
+
+        #trunc_err2, renormalize2, trace_env, MPO_envs = dmt.dmt_theta(new_psi, i0, self.trunc_params, dmt_par, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
+
+        # Need to keep track of the envs for use on future steps
+        self.options['trace_env'] = trace_env
+        self.options['MPO_envs'] = MPO_envs
+
+        U = new_psi.get_B(i0, form='A').replace_label('p', 'p0').combine_legs(['vL', 'p0'])
+        VH = new_psi.get_B(i0+1, form='B').replace_label('p', 'p1').combine_legs(['p1', 'vR'])
+
+        update_data = {'err': err_OC+err2, 'U': U, 'VH': VH}
+
+        # first compare to old best guess to check convergence of the sweeps
+        if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
+            theta_new_trunc = new_psi.get_theta(i0)
+            theta_new_trunc.iset_leg_labels(['vL', 'p0', 'p1', 'vR'])
+            ov = npc.inner(theta_new_trunc, theta_old, do_conj=True, axes='labels')
+            theta_diff = 1. - abs(ov)
+            print('theta_diff:', theta_diff)
+            self._theta_diff.append(theta_diff)
+        print(renormalize_OC, renormalization2)
+        self.psi.norm *= renormalization2
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        self.renormalize.append(1) # We've already adjusted the norm of psi
+        return update_data
+
+        """
         #QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(new_psi, i0, dmt_par, trace_env, MPO_envs)
         print(i0)
         LP, keep_L, trace_env, MPO_envs = dmt.build_QR_matrix_L(self.psi, i0-1, dmt_par, trace_env, MPO_envs)
@@ -2197,17 +2328,17 @@ class VariationalCompressionDMT(VariationalCompression):
         keep_R = 4
         print("LP:", LP)
         print("RP:", RP)
-        
+
         theta_old = new_psi.get_theta(i0).combine_legs([['vL', 'p0'], ['p1', 'vR']])
         theta_old_orig = theta_old.copy()
-        
+
         #trace_env = MPSEnvironment(dmt.trace_identity_MPS(new_psi), new_psi)
         #Id_tensor = trace_env.bra._B[i0].conj().squeeze()
         #p_leg = trace_env.bra._B[i0].get_leg('p')
         Id_tensor = npc.eye_like(trace_env.bra._B[i0], axis='p', labels=['p*', 'p'])
         #LP = trace_env.get_LP(i0).squeeze('vR*')
         QR_L = npc.outer(LP, Id_tensor).combine_legs([['vR', 'p*'], ['vR*', 'p']])#.add_trivial_leg(1, 'vL')
-        
+
         #Id_tensor = trace_env.bra._B[i0+1].conj().squeeze()
         #p_leg = trace_env.bra._B[i0+1].get_leg('p')
         Id_tensor = npc.eye_like(trace_env.bra._B[i0+1], axis='p', labels=['p*', 'p'])
@@ -2215,9 +2346,9 @@ class VariationalCompressionDMT(VariationalCompression):
         QR_R = npc.outer(Id_tensor, RP).combine_legs([['p*', 'vL'], ['p', 'vL*']])#.add_trivial_leg(1, 'vR')
         print(QR_L)
         print(QR_R)
-        
+
         print(npc.tensordot(npc.tensordot(QR_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), QR_R, axes=(['(p1.vR)', '(p*.vL)']))[0,0] * self.psi.norm * 32)
-        
+
         Q_L, R_L = npc.qr(QR_L.transpose(['(vR.p*)', '(vR*.p)']),
                           mode='complete',
                           inner_labels=['(vL.p)', '(vL.p)*'],
@@ -2231,21 +2362,21 @@ class VariationalCompressionDMT(VariationalCompression):
                           pos_diag_R=True,
                           inner_qconj=QR_R.get_leg('(p*.vL)').conj().qconj)
 
-        
-        
+
+
         theta_old_R = npc.tensordot(npc.tensordot(Q_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), Q_R, axes=(['(p1.vR)', '(p*.vL)']))
 
         theta_new_R = npc.tensordot(npc.tensordot(Q_L, theta, axes=(['(vR.p*)'], ['(vL.p0)'])), Q_R, axes=(['(p1.vR)', '(p*.vL)']))
-        
+
         print(keep_L, keep_R)
         theta_old_R[keep_L:,keep_R:] = theta_new_R[keep_L:,keep_R:]
-        
+
         theta_old = npc.tensordot(npc.tensordot(Q_L.conj(), theta_old_R, axes=(['(vL*.p*)'], ['(vL.p)'])), Q_R.conj(), axes=(['(p.vR)', '(p*.vR*)']))
         theta_old.ireplace_labels(['(vR*.p)', '(p.vL*)'], ['(vL.p0)', '(p1.vR)'])
         print(npc.tensordot(npc.tensordot(QR_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), QR_R, axes=(['(p1.vR)', '(p*.vL)']))[0,0] * self.psi.norm * 32)
-        
+
         theta = theta_old
-        
+
         print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
         old_A0 = new_psi.get_B(i0, form='A')
         svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
@@ -2256,12 +2387,12 @@ class VariationalCompressionDMT(VariationalCompression):
                                                inner_labels=['vR', 'vL'])
         new_psi.norm *= renormalize
         print(np.linalg.norm(S), err)
-        
+
         U.ireplace_label('(vL.p0)', '(vL.p)')
         VH.ireplace_label('(p1.vR)', '(p.vR)')
         A0 = U.split_legs(['(vL.p)'])
         B1 = VH.split_legs(['(p.vR)'])
-        
+
         # first compare to old best guess to check convergence of the sweeps
         if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
             theta_old = new_psi.get_theta(i0)
@@ -2269,9 +2400,9 @@ class VariationalCompressionDMT(VariationalCompression):
         new_psi.set_B(i0, A0, form='A')  # left-canonical
         new_psi.set_B(i0 + 1, B1, form='B')  # right-canonical
         new_psi.set_SR(i0, S)
-        
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)       
-        
+
+        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+
         dmt_par = self.options['dmt_par']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
@@ -2285,9 +2416,9 @@ class VariationalCompressionDMT(VariationalCompression):
 
         U = new_psi.get_B(i0, form='A').replace_label('p', 'p0').combine_legs(['vL', 'p0'])
         VH = new_psi.get_B(i0+1, form='B').replace_label('p', 'p1').combine_legs(['p1', 'vR'])
-        
+
         update_data = {'err': err+trunc_err2, 'U': U, 'VH': VH}
-        
+
         # first compare to old best guess to check convergence of the sweeps
         if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
             theta_new_trunc = new_psi.get_theta(i0)
@@ -2301,7 +2432,7 @@ class VariationalCompressionDMT(VariationalCompression):
         print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
         self.renormalize.append(1) #renormalize * renormalize2)
         return update_data
-
+        """
 class VariationalApplyMPO(VariationalCompression):
     """Variational compression for applying an MPO to an MPS (in place).
 
@@ -2342,7 +2473,7 @@ class VariationalApplyMPO(VariationalCompression):
     Parameters
     ----------
     psi : :class:`~tenpy.networks.mps.MPS`
-        The state to which
+        The state to which the MPO is applied.
     U_MPO : :class:`~tenpy.networks.mpo.MPO`
         MPO to be applied to the state.
     options : dict
@@ -2406,12 +2537,49 @@ class VariationalApplyMPO(VariationalCompression):
         if not self.eff_H.combine:
             th = th.combine_legs([['vL', 'p0'], ['p1', 'vR']], qconj=[+1, -1])
         return self.update_new_psi(th)
-    
-class VariationalApplyMPODMT(VariationalApplyMPO,VariationalCompressionDMT):
 
-    def __init__(self, psi, U_MPO, options, **kwargs):
-        assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+
+class VariationalApplyGuessMPO(VariationalApplyMPO):
+    """
+    Same as above but with different psi and phi; allows for initial guess
+    """
+    EffectiveH = TwoSiteH
+
+    def __init__(self, psi, phi, U_MPO, options, **kwargs):
+        self.phi = phi
         super().__init__(self, psi, U_MPO, options, **kwargs)
-    
+
+    def init_env(self, U_MPO, resume_data=None, orthogonal_to=None):
+        """Initialize the environment.
+
+        Parameters
+        ----------
+        U_MPO : :class:`~tenpy.networks.mpo.MPO`
+            The MPO to be applied to the sate.
+        resume_data : dict
+            May contain `init_env_data`.
+        orthogonal_to :
+            Ignored.
+        """
+        if resume_data is None:
+            resume_data = {}
+        init_env_data = resume_data.get("init_env_data", {})
+        old_psi = self.phi
+        start_env_sites = 0 if self.psi.finite else self.psi.L
+        start_env_sites = self.options.get("start_env_sites", start_env_sites)
+        if start_env_sites is not None:
+            init_env_data['start_env_sites'] = start_env_sites
+        # note: we need explicit `start_env_sites` since `bra` != `ket`, so we can't converge
+        # with MPOTransferMatrix.find_init_LP_RP
+        self.env = MPOEnvironment(self.psi, U_MPO, old_psi, **init_env_data)
+        self.reset_stats()
+
+class VariationalApplyGuessMPODMT(VariationalApplyGuessMPO,VariationalCompressionGuessDMT):
+
+    def __init__(self, psi, phi, U_MPO, options, **kwargs):
+        assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+        super().__init__(self, psi, phi, U_MPO, options, **kwargs)
+
     def update_new_psi(self, theta):
-        return VariationalCompressionDMT.update_new_psi(self, theta)
+        return VariationalCompressionGuessDMT.update_new_psi(self, theta)
+

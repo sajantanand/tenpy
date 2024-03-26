@@ -117,7 +117,7 @@ class TruncationError(Hdf5Exportable):
         """
         eps = np.sum(np.square(S_discarded))
         if norm_old:
-            eps /= norm_old * norm_old
+            eps /= (norm_old * norm_old)
         return cls(eps, 1. - 2. * eps)
 
     def __add__(self, other):

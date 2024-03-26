@@ -4613,11 +4613,12 @@ class MPS(BaseMPSExpectationValue):
     def compress_dmt(self, trunc_par, dmt_par,
                      trace_env=None, MPO_envs=None,
                      svd_trunc_par_0=_machine_prec_trunc_par,
-                     svd_trunc_par_2=_machine_prec_trunc_par):
+                     svd_trunc_par_2=_machine_prec_trunc_par,):
         """Compress `self` with a single sweep of SVDs; in place.
 
         Perform a single right-sweep of QR/SVD without truncation, followed by a left-sweep with DMT
-        truncation, very much like :meth:`canonical_form_finite`.
+        truncation, very much like :meth:`canonical_form_finite`. If one doesn't want to do the QR sweeps first,
+        use the function below.
 
         .. warning ::
             In case of a strong compression, this does not find the optimal, global solution.
@@ -4628,7 +4629,7 @@ class MPS(BaseMPSExpectationValue):
             Parameters for truncation, see :cfg:config:`truncation`.
         """
         assert np.alltrue([type(s) == DoubledSite for s in self.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
-        
+
         from ..algorithms import dmt_utils as dmt
         trunc_err = TruncationError()
         if self.bc == 'finite':
@@ -4636,13 +4637,14 @@ class MPS(BaseMPSExpectationValue):
             B = self.get_B(0, form='Th')
             for i in range(self.L - 1):
                 #B = B.combine_legs(['vL', 'p'])
-                B = B.combine_legs(['vL'] + self._p_label) # SAJANT - modify to work for multiple physical legs
+                B = B.combine_legs(['vL'] + self._p_label) # SAJANT TODO - modify to work for multiple physical legs
                 q, r = npc.qr(B, inner_labels=['vR', 'vL'])
                 B = q.split_legs()
                 self.set_B(i, B, form='A')
                 B = self.get_B(i + 1, form='B')
                 B = npc.tensordot(r, B, axes=('vR', 'vL'))
             self.set_B(i+1, B, form='Th')
+
             # Do DMT from right to left & truncate
             for i in range(self.L - 1, 0, -1):
                 theta = self.get_B(i, form='Th')
@@ -4667,7 +4669,7 @@ class MPS(BaseMPSExpectationValue):
                      trace_env=None, MPO_envs=None,
                      svd_trunc_par_0=_machine_prec_trunc_par,
                      svd_trunc_par_2=_machine_prec_trunc_par):
-        """Compress `self` with a single sweep of DMT; in place.
+        """Compress `self` with a single sweep of DMT without canonicalizing first; in place.
 
         Unlike :meth:`canonical_form_finite`, we DO NOT first do a lossless sweep right and then sweep
         left while truncating. Instead, we assume that if move_right==True (sweeping right), the (doubled)MPS

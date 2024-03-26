@@ -2101,7 +2101,6 @@ class DoubledSite(Site):
         self.Q = npc.tensordot(self.Q, self.sign_R, axes=(['p*'], ['p']))
         self.R = npc.tensordot(self.sign_R, self.R, axes=(['p*'], ['p']))
 
-
         # Check that the Q basis is HOMT
         hermitian=False
         while not hermitian:
