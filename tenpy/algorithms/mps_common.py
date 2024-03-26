@@ -2117,8 +2117,6 @@ class VariationalCompressionGuess(VariationalCompression):
         super().__init__(psi, options, resume_data=resume_data) # Variational Compression Initialization
         self.renormalize = []
         self._theta_diff = []
-        print(self.env.bra)
-        print(self.env.ket)
     
     def init_env(self, model=None, resume_data=None, orthogonal_to=None):
         """Initialize the environment.
@@ -2261,18 +2259,22 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
             return update_data
 
         # Q_L - vR*, vR; q_R = vL, vL*
-        M_OC = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
-
+        M_OC = npc.tensordot(Q_L, Q_R.scale_axis(S_OC, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
+        theta = theta.split_legs() # split the legs from vL.p0, p1.vR -> vL, p0, p1, vR
         M_NC = npc.tensordot(npc.tensordot(A0_OC.conj(), theta, axes=(['vL*', 'p*'], ['vL', 'p0'])), B1_OC.conj(), axes=(['vR', 'p1'], ['vR*', 'p*']))  # bond space tensor; vR*, vL*
         M_NC = npc.tensordot(npc.tensordot(Q_L.conj(), M_NC, axes=(['vR'], ['vR*'])), Q_R.conj(), axes=(['vL*'], ['vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
 
+    
+        print("Norm of original M (hopefully this is 1):", npc.norm(M_OC))
+        print("Norm of update M (hopefully this is 1):", npc.norm(M_NC))
         # Now both bond matrices are in the desired gauge; replace the bottom right piece
         M_OC[keep_L:,keep_R:] = M_NC[keep_L:,keep_R:]
         M_norm = npc.norm(M_OC)
         print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
-        M_trunc, err = dmt.truncate_M(M_OC, svd_trunc_par, dmt_par.get('connected', True), keep_L, keep_R)
+        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_par.get('connected', True), keep_L, keep_R)
 
+        svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
         U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_par_2, renormalize=True)
         err2 = TruncationError.from_norm(renormalization2, norm_old=M_norm)
 
@@ -2284,8 +2286,8 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
                 Me.del_RP(i0)
                 Me.del_LP(i0+1)
         # Put new tensors back into the MPS
-        new_A = npc.tensordot(npc.tensordot(dMPS.get_B(i0, form='A'), Q_L.conj(), axes=(['vR', 'vR*'])), U, axes=(['vR', 'vL']))
-        new_B = npc.tensordot(VH, npc.tensordot(Q_R.conj(), dMPS.get_B(i0+1, form='B'), axes=(['vL*', 'vL'])),axes=(['vR', 'vL']))
+        new_A = npc.tensordot(npc.tensordot(new_psi.get_B(i0, form='A'), Q_L.conj(), axes=(['vR', 'vR*'])), U, axes=(['vR', 'vL']))
+        new_B = npc.tensordot(VH, npc.tensordot(Q_R.conj(), new_psi.get_B(i0+1, form='B'), axes=(['vL*', 'vL'])),axes=(['vR', 'vL']))
         new_psi.set_SR(i0, S)
         new_psi.set_B(i0, new_A, form='A')
         new_psi.set_B(i0+1, new_B, form='B')
@@ -2307,7 +2309,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
             theta_new_trunc = new_psi.get_theta(i0)
             theta_new_trunc.iset_leg_labels(['vL', 'p0', 'p1', 'vR'])
-            ov = npc.inner(theta_new_trunc, theta_old, do_conj=True, axes='labels')
+            ov = npc.inner(theta_new_trunc, theta_orig, do_conj=True, axes='labels')
             theta_diff = 1. - abs(ov)
             print('theta_diff:', theta_diff)
             self._theta_diff.append(theta_diff)
