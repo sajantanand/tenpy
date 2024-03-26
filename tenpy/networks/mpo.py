@@ -56,6 +56,7 @@ from ..tools.misc import add_with_None_0
 from ..tools.math import lcm
 from ..tools.params import asConfig
 from ..algorithms.truncation import TruncationError, svd_theta, _machine_prec_trunc_par
+from ..algorithms import dmt_utils as dmt
 
 __all__ = [
     'MPO', 'make_W_II', 'MPOGraph', 'MPOEnvironment', 'MPOTransferMatrix', 'grid_insert_ops'
@@ -1215,6 +1216,7 @@ class MPO:
             return VariationalApplyMPO(psi, self, options).run()
         elif method == 'zip_up':
             trunc_err = self.apply_zipup(psi, options)
+            #print("After zip_up: ", psi.chi)
             return trunc_err + psi.compress_svd(trunc_params)
         elif method == 'DMT_naive':
             # SAJANT TODO; this is bad!!! We don't want to naively contract the MPO naively into the MPS since the QR will be of cost O(chi^3 D^3)
@@ -1231,32 +1233,36 @@ class MPO:
             options['MPO_envs'] = MPO_envs
             return trunc_err
         elif method == 'DMT_zip_up':
+            trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
+            print("After DMT zip_up: ", psi.chi)
+            # psi is NOT in canonical form. Tensors are in A form. 
+            
             dmt_params = options['dmt_par']
             trace_env = options.get('trace_env', None)
             MPO_envs = options.get('MPO_envs', None)
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
-
-            trunc_err1, trace_env, MPO_envs = self.apply_zipup(psi, options, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2)
-            trunc_err2, trace_env, MPO_envs = psi.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2, A_form=False) # DO QR sweep to re-establish form before truncating final time
+            trunc_err2, trace_env, MPO_envs = psi.compress_dmt_canonical(trunc_params, dmt_params, move_right=False, 
+                                                                         trace_env=trace_env, MPO_envs=MPO_envs, 
+                                                                         svd_trunc_params_0=svd_trunc_params_0, 
+                                                                         svd_trunc_params_2=svd_trunc_params_2) # NO QR sweep to re-establish form before truncating final time
+            #psi.canonical_form() # Is this needed?
+            
             options['trace_env'] = trace_env
             options['MPO_envs'] = MPO_envs
             return trunc_err1 + trunc_err2
         elif method == 'DMT_variational':
-            raise NotImplementedError()
-            dmt_params = options['dmt_par']
-            trace_env = options.get('trace_env', None)
-            MPO_envs = options.get('MPO_envs', None)
-            svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
-            svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
-
+            orig_psi = psi.copy()
             # Should truncate immediately to chi since variational will improve result at fixed chi
-            trunc_err1, trace_env, MPO_envs = self.apply_zipup(psi, options, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2)
-            psi.canonical_form() # Re-establish canonical form before doing variational compression
-
-            from ..algorithms.mps_common import VariationalApplyMPODMT
-            return VariationalApplyMPODMT(psi, self, options).run() # This is the only error since zipup is just used for initial guess
-
+            trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
+            psi.canonical_form() # Re-establish canonical form before doing variational compression since both forms are needed
+            #print("After DMT zip_up: ", psi.chi)
+            #print("Original: ", orig_psi.chi)
+            options['trace_env'] = trace_env
+            options['MPO_envs'] = MPO_envs
+            
+            from ..algorithms.mps_common import VariationalApplyGuessMPODMT
+            return VariationalApplyGuessMPODMT(psi, orig_psi, self, options).run() # This is the only error since zipup is just used for initial guess
         # TODO: zipup method infinite?
         raise ValueError("Unknown compression method: " + repr(method))
 
@@ -1404,7 +1410,7 @@ class MPO:
 
         return trunc_err
 
-    def apply_zipup_DMT(self, psi, options, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2):
+    def apply_zipup_DMT(self, psi, options):
         """
         Apply MPO to MPS naively but rather than doing exact QR to re-establish the form, do truncating DMT sweeps to the right.
         FUTURE IMPROVEMENT - rather than first naively contracting MPO and MPS together, we should do this only when needed.
@@ -1414,6 +1420,13 @@ class MPO:
         See documentation of `apply_zipup` for details
         """
 
+        dmt_params = options['dmt_par']
+        trace_env = options.get('trace_env', None)
+        MPO_envs = options.get('MPO_envs', None)
+        svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
+        svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
+
+        # TODO - this is not as efficient as possible
         self.apply_naively(psi) # Put MPO directly into MPS (in place)
 
         options = asConfig(options, "zip_up")
@@ -1436,7 +1449,7 @@ class MPO:
             raise NotImplementedError("Can't use explicit_plus_hc with apply_zipup")
 
         for i in range(psi.L - 1):
-            B = psi.get_B(i, 'th') # Include SVs from the left; these are trivial to begin with from apply_naive
+            B = psi.get_B(i, 'Th') # Include SVs from the left; these are trivial to begin with from apply_naive
             B = B.combine_legs(['vL', 'p'], qconj=[+1]) # SAJANT TODO - what qconj to use?
             U, S, VH, err, norm_new = svd_theta(B, svd_trunc_params_0) # Don't do any any truncation
             trunc_err += err        # Trivial
@@ -1448,11 +1461,11 @@ class MPO:
             psi.set_B(i+1, npc.tensordot(VH, psi.get_B(i+1, 'B'), axes=(['vR'], ['vL'])), 'B')
 
             # Do DMT
-            err, renorm, trace_env, MPO_envs = dmt_theta(psi, i, relax_trunc, dmt_par,
+            err, renorm, trace_env, MPO_envs = dmt.dmt_theta(psi, i, relax_trunc, dmt_params,
                                                          trace_env, MPO_envs,
-                                                         svd_trunc_par_2=_machine_prec_trunc_par)
+                                                         svd_trunc_params_2=svd_trunc_params_2)
 
-            turnc_err += err
+            trunc_err += err
             psi.norm *= renorm
         return trunc_err, trace_env, MPO_envs
 

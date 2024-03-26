@@ -465,7 +465,7 @@ def truncate_M(M, svd_trunc_par, connected, keep_L, keep_R):
 
 def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
               trace_env, MPO_envs,
-              svd_trunc_par_2=_machine_prec_trunc_par):
+              svd_trunc_params_2=_machine_prec_trunc_par):
     """
     Performs Density Matrix Truncation (DMT) on an MPS representing a density matrix or operator.
     We truncate on the bond between site i to the left and i+1 to the right. This however requires
@@ -524,7 +524,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
 
     # SAJANT - Set svd_min to 0 to make sure no SVs are dropped? Or do we need some cutoff to remove the
     # SVs corresponding to the rank we removed earlier from M_DR
-    U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_par_2, renormalize=True)
+    U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
     err2 = TruncationError.from_norm(renormalization2, norm_old=M_norm)
     # M_trunc (if normalized) would have norm 1 (or the original norm) if we did no truncation; so the new norm (given by `renormalization2`) is akin to
     # the error.

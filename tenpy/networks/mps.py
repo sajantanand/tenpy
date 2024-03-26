@@ -4612,8 +4612,8 @@ class MPS(BaseMPSExpectationValue):
 
     def compress_dmt(self, trunc_par, dmt_par,
                      trace_env=None, MPO_envs=None,
-                     svd_trunc_par_0=_machine_prec_trunc_par,
-                     svd_trunc_par_2=_machine_prec_trunc_par,):
+                     svd_trunc_params_0=_machine_prec_trunc_par,
+                     svd_trunc_params_2=_machine_prec_trunc_par,):
         """Compress `self` with a single sweep of SVDs; in place.
 
         Perform a single right-sweep of QR/SVD without truncation, followed by a left-sweep with DMT
@@ -4648,14 +4648,14 @@ class MPS(BaseMPSExpectationValue):
             # Do DMT from right to left & truncate
             for i in range(self.L - 1, 0, -1):
                 theta = self.get_B(i, form='Th')
-                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['p', 'vR']), svd_trunc_par_0)
+                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['p', 'vR']), svd_trunc_params_0)
                 self.set_B(i, VH.split_legs(), form='B')
                 self.set_B(i-1, npc.tensordot(self.get_B(i-1, form='A'), U, axes=(['vR', 'vL'])), form='A')
                 self.set_SL(i, s)
 
                 err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i-1, trunc_par, dmt_par,
                                                                    trace_env=trace_env, MPO_envs=MPO_envs,
-                                                                   svd_trunc_par_2=svd_trunc_par_2)
+                                                                   svd_trunc_params_2=svd_trunc_params_2)
                 trunc_err += err1 + err2
                 self.norm *= renorm1 * renorm2
 
@@ -4667,8 +4667,8 @@ class MPS(BaseMPSExpectationValue):
 
     def compress_dmt_canonical(self, trunc_par, dmt_par, move_right=True,
                      trace_env=None, MPO_envs=None,
-                     svd_trunc_par_0=_machine_prec_trunc_par,
-                     svd_trunc_par_2=_machine_prec_trunc_par):
+                     svd_trunc_params_0=_machine_prec_trunc_par,
+                     svd_trunc_params_2=_machine_prec_trunc_par):
         """Compress `self` with a single sweep of DMT without canonicalizing first; in place.
 
         Unlike :meth:`canonical_form_finite`, we DO NOT first do a lossless sweep right and then sweep
@@ -4698,27 +4698,27 @@ class MPS(BaseMPSExpectationValue):
         if move_right:
             for i in range(self.L - 1):
                 theta = self.get_B(i, form='Th')
-                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['vL', 'p']), svd_trunc_par_0)
+                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['vL', 'p']), svd_trunc_params_0)
                 self.set_B(i, U.split_legs(), form='A')
                 self.set_B(i+1, npc.tensordot(VH, self.get_B(i+1, form='B'), axes=(['vR', 'vL'])), form='B')
                 self.set_SR(i, s)
 
                 err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i, trunc_par, dmt_par,
                                                                    trace_env=trace_env, MPO_envs=MPO_envs,
-                                                                   svd_trunc_par_2=svd_trunc_par_2)
+                                                                   svd_trunc_params_2=svd_trunc_params_2)
                 trunc_err += err1 + err2
                 self.norm *= renorm1 * renorm2
         else: # move_left == True
             for i in range(self.L - 1, 0, -1):
                 theta = self.get_B(i, form='Th')
-                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['p', 'vR']), svd_trunc_par_0)
+                U, s, VH, err1, renorm1 = svd_theta(theta.combine_legs(['p', 'vR']), svd_trunc_params_0)
                 self.set_B(i, VH.split_legs(), form='B')
                 self.set_B(i-1, npc.tensordot(self.get_B(i-1, form='A'), U, axes=(['vR', 'vL'])), form='A')
                 self.set_SL(i, s)
 
                 err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i-1, trunc_par, dmt_par,
                                                                    trace_env=trace_env, MPO_envs=MPO_envs,
-                                                                   svd_trunc_par_2=svd_trunc_par_2)
+                                                                   svd_trunc_params_2=svd_trunc_params_2)
                 trunc_err += err1 + err2
                 self.norm *= renorm1 * renorm2
         return trunc_err, trace_env, MPO_envs

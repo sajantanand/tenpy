@@ -2155,52 +2155,6 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
         super().__init__(psi, phi, options, resume_data=resume_data)
 
-    def run(self):
-        """Run the compression.
-
-        The state :attr:`psi` is compressed in place.
-
-        .. warning ::
-            Call this function directly after initializing the class, without modifying `psi`
-            inbetween. A copy of :attr:`psi` is made during :meth:`init_env`!
-
-        Returns
-        -------
-        max_trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
-            The maximal truncation error of a two-site wave function.
-        """
-        self.options.deprecated_alias("N_sweeps", "max_sweeps",
-                                      "Also check out the other new convergence parameters "
-                                      "min_N_sweeps and tol_theta_diff!")
-        max_sweeps = self.options.get("max_sweeps", 2)
-        min_sweeps = self.options.get("min_sweeps", 1)
-        tol_diff = self._tol_theta_diff = self.options.get("tol_theta_diff", 1.e-8)
-        if min_sweeps == max_sweeps and tol_diff is not None:
-            warnings.warn("VariationalCompression with min_sweeps=max_sweeps: "
-                          "we recommend to set tol_theta_diff=None to avoid overhead")
-        print(f'Original trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-        o_trace = dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2)
-        o_norm = self.psi.overlap(self.psi)
-        for i in range(max_sweeps):
-            self.renormalize = []
-            self._theta_diff = []
-            max_trunc_err = self.sweep()
-            print(f'Sweep {i} trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-            if i + 1 >= min_sweeps and tol_diff is not None:
-                max_diff = max(self._theta_diff[-(self.psi.L - self.n_optimize):])
-                if max_diff < tol_diff:
-                    logger.debug("break VariationalCompression after %d sweeps "
-                                "with theta_diff=%.2e", i + 1, max_diff)
-                    break
-        if self.psi.finite:
-            print(self.renormalize)
-            self.psi.norm *= max(self.renormalize)
-        print(f'Final trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-        #self.psi.norm *= o_trace / (dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
-        print(f'Final trace, norm:', dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-        self.mixer_cleanup()
-        return TruncationError(max_trunc_err, 1. - 2. * max_trunc_err)
-
     def update_new_psi(self, theta):
         """Given a new two-site wave function `theta`, split it and save it in :attr:`psi`.
 
@@ -2208,7 +2162,6 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         already has the properties we wish to keep preserved.
         """
         i0 = self.i0
-        print(i0, self.psi.form)
         new_psi = self.psi    # This is the current guess for psi, the optimized wave function
 
         dmt_par = self.options['dmt_par']
@@ -2264,13 +2217,13 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         M_NC = npc.tensordot(npc.tensordot(A0_OC.conj(), theta, axes=(['vL*', 'p*'], ['vL', 'p0'])), B1_OC.conj(), axes=(['vR', 'p1'], ['vR*', 'p*']))  # bond space tensor; vR*, vL*
         M_NC = npc.tensordot(npc.tensordot(Q_L.conj(), M_NC, axes=(['vR'], ['vR*'])), Q_R.conj(), axes=(['vL*'], ['vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
 
-    
-        print("Norm of original M (hopefully this is 1):", npc.norm(M_OC))
-        print("Norm of update M (hopefully this is 1):", npc.norm(M_NC))
+        #print("Bond: ", i0)
+        #print("Norm of original M (hopefully this is 1):", npc.norm(M_OC))
+        #print("Norm of update M (hopefully this is 1):", npc.norm(M_NC))
         # Now both bond matrices are in the desired gauge; replace the bottom right piece
         M_OC[keep_L:,keep_R:] = M_NC[keep_L:,keep_R:]
         M_norm = npc.norm(M_OC)
-        print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
+        #print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
         M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_par.get('connected', True), keep_L, keep_R)
 
@@ -2311,11 +2264,11 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
             theta_new_trunc.iset_leg_labels(['vL', 'p0', 'p1', 'vR'])
             ov = npc.inner(theta_new_trunc, theta_orig, do_conj=True, axes='labels')
             theta_diff = 1. - abs(ov)
-            print('theta_diff:', theta_diff)
+            #print('theta_diff:', theta_diff)
             self._theta_diff.append(theta_diff)
-        print(renormalize_OC, renormalization2)
+        #print(renormalize_OC, renormalization2)
         self.psi.norm *= renormalization2
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
+        #print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
         self.renormalize.append(1) # We've already adjusted the norm of psi
         return update_data
 
@@ -2549,7 +2502,7 @@ class VariationalApplyGuessMPO(VariationalApplyMPO):
 
     def __init__(self, psi, phi, U_MPO, options, **kwargs):
         self.phi = phi
-        super().__init__(self, psi, U_MPO, options, **kwargs)
+        super().__init__(psi, U_MPO, options, **kwargs)
 
     def init_env(self, U_MPO, resume_data=None, orthogonal_to=None):
         """Initialize the environment.
@@ -2580,7 +2533,7 @@ class VariationalApplyGuessMPODMT(VariationalApplyGuessMPO,VariationalCompressio
 
     def __init__(self, psi, phi, U_MPO, options, **kwargs):
         assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
-        super().__init__(self, psi, phi, U_MPO, options, **kwargs)
+        super().__init__(psi, phi, U_MPO, options, **kwargs)
 
     def update_new_psi(self, theta):
         return VariationalCompressionGuessDMT.update_new_psi(self, theta)
