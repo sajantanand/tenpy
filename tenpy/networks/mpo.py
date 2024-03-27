@@ -751,7 +751,7 @@ class MPO:
         for i in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
             W = self.get_W(i).itranspose(labels)
-            assert np.all(W.qtotal == trivial)
+            assert np.all(W.qtotal == trivial) # Need to make this work with charges.
             DL, DR, d, d = W.shape
 
             A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
@@ -775,12 +775,12 @@ class MPO:
                 dW[i+1+DL-2, -1] = -1*_combine_npc(Id_npc, B_npc[i,0])
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d))
+            sites.append(DoubledSite(d, conserve=self.sites[i].conserve))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
         # SAJANT - What if different sites have different dimensions?
-        dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim, conserve=self.sites[0].conserve)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
                              #) #[DoubledSite(self.sites[0].dim)] * self.L
         # return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range) #[DoubledSite(self.sites[0].dim)] * self.L
         dMPO.rotated_basis = False
@@ -842,37 +842,39 @@ class MPO:
                 dW[i+1, -1] = _combine_npc(B_npc[i,0], Id_npc)
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d))
+            sites.append(DoubledSite(d, conserve=self.sites[i].conserve))
             U.append(dW)
             #print(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
-        dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim, conserve=self.sites[0].conserve)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         dMPO.rotated_basis = False
         return dMPO
 
-    def conjugate_MPO(self, Us):
-        """Conjugate MPO M with unitary U on each site.
+    def conjugate_MPO(self, Ms, Minvs):
+        """Conjugate MPO M with matrices M on each site. M is not guaranteed to be unitary, e.g. if we work with a charge conserved basis.
 
         This leaves the block structure of U intact, as we are acting on the physical legs."""
         #assert U.ndim == 2
         #assert np.isclose(npc.norm(npc.tensordot(U, U.conj(), axes=([1],[1])) - npc.eye_like(U)), 0), "U is not unitary."
 
         for i in range(self.L):
-            U = Us[i % len(Us)]
+            M = Ms[i % len(Ms)]
+            Minv = Minvs[i % len(Minvs)]
             W = self.get_W(i)
             W_labels = W.get_leg_labels()
-            W = npc.tensordot(U, W, axes=(['p*'], ['p']))
-            W = npc.tensordot(W, U.conj(), axes=(['p*'], ['p']))
+            W = npc.tensordot(M, W, axes=(['p*'], ['p']))
+            W = npc.tensordot(W, Minv, axes=(['p*'], ['p']))
             W.itranspose(W_labels)
             self.set_W(i, W)
-
+        """
         # SAJANT - THIS ISN'T USED I THINK>
         try:
             self.rotated_basis = not self.rotated_basis
         except AttributeError:
             self.rotated_basis = True
-
+        """
+        
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
         """Calculate ``<psi|self|psi>/<psi|psi>`` (or density for infinite).
 
