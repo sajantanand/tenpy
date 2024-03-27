@@ -30,7 +30,7 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False):
         doubled_MPO = deepcopy(H_MPO)
 
     if conjugate:
-        doubled_MPO.conjugate_MPO([s.Q.conj() for s in doubled_MPO.sites])
+        doubled_MPO.conjugate_MPO([s.s2d for s in doubled_MPO.sites], [s.d2s for s in doubled_MPO.sites])
 
     #doubled_lat = lat(H_MPO.L, doubled_MPO.sites[0]) # SAJANT - what if we have different types of sites in the lattice?
     doubled_lat = TrivialLattice(doubled_MPO.sites) # Trivial lattice uses the sites of the doubled MPO.
@@ -100,7 +100,7 @@ def distribute_pairs(pairs, bi, symmetric=True):
 def trace_identity_DMPS(DMPS, traceful_id=None):
     assert traceful_id == None, "Not used here since the doubled MPS has both bra and ket legs"
     d = DMPS.sites[0].dim
-    # We are in the computational / bra-ket basis. Make doubled MPS with two physical legs
+    # We are in the computational / standard basis. Make doubled MPS with two physical legs
     # per site, using the identity on each site
     I = np.eye(d).reshape(d, d, 1, 1)
     return DoubledMPS.from_Bflat(DMPS.sites,
@@ -113,14 +113,16 @@ def trace_identity_DMPS(DMPS, traceful_id=None):
                                legL=None)
 
 # Bra for density matrix expectation value once flattened
-def trace_identity_MPS(DMPS, traceful_id=None):
+def trace_identity_MPS(DMPS):#, traceful_id=None):
     d = DMPS.sites[0].dim
     assert type(DMPS.sites[0]) is DoubledSite
-    # In rotated, HOMT basis. Identity is vector vector with 1 at location specified by traceful_id
+    # In rotated, HOMT basis. Identity is unit vector with 1 at location specified by traceful_id.
+    # For a systme with charge consdervation and d > 2, there can (and will) be more than one
+    # opertator with trace 1 (operators are normalized). So we need to include the contribution from
+    # several slices of the tensor.
     # SAJANT TODO - Generalize this to case where the Identity isn't a unit vector.
     I = np.zeros((d,1,1))
-    I[DMPS.sites[0].traceful_ind,0,0] = 1 # When taking the trace, we ought to account for the factor of
-
+    I[DMPS.sites[0].traceful_ind,0,0] = 1 # 1 for every operator with trace 1.
     return MPS.from_Bflat(DMPS.sites,
                                [I] * DMPS.L,
                                SVs=None,
@@ -196,13 +198,20 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_R = QR_R.combine_legs(['p', 'p1']).ireplace_label('(p.p1)', 'p')
         QR_R = QR_R.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vL
         if k_local[1] == 0:
-            # Keep only Ideneity to the right
+            trace_tensor = trace_identity_MPS(dMPS)._B[i]
+            #print(trace_tensor)
+            trace_tensor = trace_tensor.squeeze('vR')
+            QR_R = npc.tensordot(QR_R, trace_tensor.conj(), axes=(['p'], ['p*'])).replace_label('vL*', 'p')
+            #print(QR_L)
+            """
+            # Keep only Identity to the right
             # SAJANT TODO - Assumes that the first index is the identity; use traceful_ind instead
             p_index = QR_R.get_leg_index('p')
             if isinstance(QR_R.legs[p_index], LegPipe):
                 QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
             QR_R.iproject([True] + [False] * QR_R.shape[p_index], 'p')
             #QR_R.iproject([True] + [False] * QR_R.shape[QR_R.get_leg_index('p')], 'p')
+            """
         QR_Rs.append(QR_R)
 
     if MPO_envs is not None:
@@ -274,11 +283,18 @@ def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_L = QR_L.combine_legs(['p', 'p1']).ireplace_label('(p.p1)', 'p')
         QR_L = QR_L.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vR
         if k_local[0] == 0:
+            trace_tensor = trace_identity_MPS(dMPS)._B[i]
+            #print(trace_tensor)
+            trace_tensor = trace_tensor.squeeze('vL')
+            QR_L = npc.tensordot(trace_tensor.conj(), QR_L, axes=(['p*'], ['p'])).replace_label('vR*', 'p') # p, vR
+            #print(QR_L)
+            """
             # SAJANT - Assumes that the first index is the identity; use traceful_ind instead
             p_index = QR_L.get_leg_index('p')
             if isinstance(QR_L.legs[p_index], LegPipe):
                 QR_L.legs[p_index] = QR_L.legs[p_index].to_LegCharge()
             QR_L.iproject([True] + [False] * QR_L.shape[p_index], 'p')
+            """
         QR_Ls.append(QR_L)
 
     if MPO_envs is not None:
@@ -313,7 +329,7 @@ def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
                 A = npc.tensordot(TT.conj(), dMPS.get_B(j, form='A'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR
                 QR_L = npc.tensordot(QR_L, A, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)
             QR_L = QR_L.squeeze()
-            QR_Ls.append(QR_L)
+            QR_Ls.append(QR_L) # p, vR
         #print([q.shape for q in QR_Ls], [q.shape for q in QR_Rs])
     QR_L = npc.concatenate(QR_Ls, axis='p')
     assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
