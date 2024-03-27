@@ -2066,83 +2066,165 @@ class DoubledSite(Site):
     def __init__(self, d, conserve=None, sort_charge=None):
         if not conserve:
             conserve = 'None'
-        if conserve not in ['None']:
+        if conserve not in ['None', 'U(1)']:
             raise ValueError("invalid `conserve`: " + repr(conserve))
-        # How to properly define operators for U(1) number conserving charges
-
         self.d = d
-        self.BK_ops = BK_ops = []
-        # Want legPipes, so let's do this with NPC.
-        BK_ops.append(npc.Array.from_ndarray_trivial(np.eye(d, dtype=np.complex128), labels=['p', 'p*']))
+        if conserve == 'U(1)':
+            # How to properly define operators for U(1) number conserving charges
+            #assert d == 2, "Charge conservation only works for qubits where the basis is [I, Z, S^+, S^-]"
+            # For d > 2, multiple operators may have trace. . .
+            ss_op = SpinSite(S=(d-1)/2, conserve='Sz')
+            def npc_pow(A, B, p):
+                """
+                return B = B * A^p, where multiplication is (square) matrix multiplication.
+                """
+                for i in range(0, p):
+                    B = npc.tensordot(B, A, axes=(['p*'], ['p']))
+                return B
+            BK_ops = []
+            charges = []
+            BK_ops.append(ss_op.get_op('Id'))
+            charges.append(0)
+            for i in range(1,d):
+                BK_ops.append(npc_pow(ss_op.get_op('Sz'), ss_op.get_op('Id'), i))
+                charges.append(0)
+            for i in range(0,d):
+                for j in range(0,d):
+                    if i != j:
+                        arg1 = npc_pow(ss_op.get_op('Sp'), ss_op.get_op('Id'), i)
+                        arg2 = npc_pow(ss_op.get_op('Sm'), ss_op.get_op('Id'), j)
+                        BK_ops.append(npc.tensordot(arg1, arg2, axes=(['p*'], ['p'])))
+                        charges.append(i - j)
+            assert len(BK_ops) == d**2
+            assert len(charges) == d**2
+            print("Charges pre sort:", charges)
+            charge_index = np.argsort(charges)
+            charges = [charges[ci] for ci in charge_index]
+            print(charge_index)
+            self.identity_ind = list(charge_index).index(0)
+            self.BK_ops = BK_ops = [BK_ops[ci] for ci in charge_index] # IDENTITY OPERATOR MOVED! TRACEFUL_IND != 0
+            print("Charges post sort:", charges)
+            #print([op.to_ndarray() for op in BK_ops])
+            
+            leg1 = ss_op.get_op('Id').combine_legs(['p', 'p*']).get_leg('(p.p*)')
+            charge1 = leg1.chinfo
+            #print(leg1)
 
-        for i in range(1, d):
-            BK_ops.append(npc.Array.from_ndarray_trivial(np.diag([1+0.j] + (i-1)*[0] + [-1] + [0] * (d-1-i)), labels=['p', 'p*']))
+            # If we just use the grouped leg for both dimensions of BK_ops_augmented, things work?
+            """
+            charge2 = charge1 #npc.ChargeInfo([1], ['Op'])
+            leg2 = npc.LegCharge.from_qflat(charge2, [[ch] for ch in charges], qconj=-1)
+            # Not bunched, not blocked, sorted
+            print(leg2, leg2.is_bunched(), leg2.is_blocked(), leg2.is_sorted())
+            _, leg2 = leg2.bunch()
+            # Bunched, blocked, sorted
+            print(leg2, leg2.is_bunched(), leg2.is_blocked(), leg2.is_sorted())
+            """
+            BK_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in BK_ops])
+            #print(BK_ops_augmented)
+            self.BK = npc.Array.from_ndarray(BK_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
+            #print(self.BK._data)
+        else:
+            self.BK_ops = BK_ops = []
+            # Want legPipes, so let's do this with NPC.
+            BK_ops.append(npc.Array.from_ndarray_trivial(np.eye(d, dtype=np.complex128), labels=['p', 'p*']))
+            self.identity_ind = 0
+            for i in range(1, d):
+                BK_ops.append(npc.Array.from_ndarray_trivial(np.diag([1+0.j] + (i-1)*[0] + [-1] + [0] * (d-1-i)), labels=['p', 'p*']))
+    
+            for j in range(0, d-1):
+                for i in range(j+1, d):
+                    op = np.zeros((d,d), dtype=np.complex128)
+                    op[j,i] = 1
+                    BK_ops.append(npc.Array.from_ndarray_trivial(op + op.conj().T, labels=['p', 'p*']))
+    
+                    op *= -1.j
+                    BK_ops.append(npc.Array.from_ndarray_trivial(op + op.conj().T, labels=['p', 'p*']))
 
-        for j in range(0, d-1):
-            for i in range(j+1, d):
-                op = np.zeros((d,d), dtype=np.complex128)
-                op[j,i] = 1
-                BK_ops.append(npc.Array.from_ndarray_trivial(op + op.conj().T, labels=['p', 'p*']))
+            # Put the d (p) x d (p) operators into a d (q) x d (q*) x d (p) x d (p*) tensor, where the q and q* legs are for indexing the d^2 operators.
+            BK_ops_augmented = [op.add_trivial_leg(axis=0, qconj=-1, label='q').add_trivial_leg(axis=1, qconj=-1, label='q*') for op in BK_ops] # Add dummy legs that will be for grouping
+            self.BK = npc.grid_concat(np.asarray(BK_ops_augmented, dtype=object).reshape(d,d), axes=([0,1]))
+            self.BK = self.BK.combine_legs([['q', 'q*'], ['p','p*']], qconj=[self.BK.get_leg('q').qconj, self.BK.get_leg('p').qconj]).itranspose(['(p.p*)', '(q.q*)'])
+            self.BK.legs[1] = self.BK.legs[0].conj() # SAJANT - HACKY FIX
+            self.BK.ireplace_labels(['(p.p*)', '(q.q*)'], ['p', 'p*'])
 
-                op *= -1.j
-                BK_ops.append(npc.Array.from_ndarray_trivial(op + op.conj().T, labels=['p', 'p*']))
-
-        # Put the d (p) x d (p) operators into a d (q) x d (q*) x d (p) x d (p*) tensor, where the q and q* legs are for indexing the d^2 operators.
-        BK_ops = [op.add_trivial_leg(axis=0, qconj=-1, label='q').add_trivial_leg(axis=1, qconj=-1, label='q*') for op in BK_ops] # Add dummy legs that will be for grouping
-        self.BK = npc.grid_concat(np.asarray(BK_ops, dtype=object).reshape(d,d), axes=([0,1]))
-        self.BK = self.BK.combine_legs([['q', 'q*'], ['p','p*']], qconj=[self.BK.get_leg('q').qconj, self.BK.get_leg('p').qconj]).itranspose(['(p.p*)', '(q.q*)'])
-        self.BK.legs[1] = self.BK.legs[0].conj() # SAJANT - HACKY FIX
-        self.BK.ireplace_labels(['(p.p*)', '(q.q*)'], ['p', 'p*'])
-
-        self.Q, self.R = npc.qr(self.BK, inner_labels=['p*', 'p'])
-        self.sign_R = np.sign(np.diag(self.R.to_ndarray()))
-        self.sign_R = npc.Array.from_ndarray(np.diag(self.sign_R), self.R.legs, labels=self.R.get_leg_labels())
-
-        self.Q = npc.tensordot(self.Q, self.sign_R, axes=(['p*'], ['p']))
-        self.R = npc.tensordot(self.sign_R, self.R, axes=(['p*'], ['p']))
-
-        # Check that the Q basis is HOMT
-        hermitian=False
-        while not hermitian:
-            self.Q_ops = self.Q.replace_labels(['p', 'p*'], ['(p.p*)', '(q.q*)']).split_legs()
-            self.Q_ops = [self.Q_ops.take_slice([i, j], ['q', 'q*']) for i in range(d) for j in range(d)]
-
+        if conserve == 'None':
+            self.Q, self.R = npc.qr(self.BK, inner_labels=['p*', 'p'])
+            self.sign_R = np.sign(np.diag(self.R.to_ndarray()))
+            self.sign_R = npc.Array.from_ndarray(np.diag(self.sign_R), self.R.legs, labels=self.R.get_leg_labels())
+    
+            self.Q = npc.tensordot(self.Q, self.sign_R, axes=(['p*'], ['p']))
+            self.R = npc.tensordot(self.sign_R, self.R, axes=(['p*'], ['p']))
+    
+            # Check that the Q basis is HOMT
+            hermitian=False
+            while not hermitian:
+                self.new_ops = self.Q.replace_labels(['p', 'p*'], ['(p.p*)', '(q.q*)']).split_legs()
+                self.new_ops = [self.new_ops.take_slice([i, j], ['q', 'q*']) for i in range(d) for j in range(d)]
+    
+                traces = []
+                failed = False
+                for i, Q in enumerate(self.new_ops):
+                    try:
+                        assert np.isclose(npc.norm(Q - Q.conj().transpose()), 0.0), f"{Q.to_ndarray()} is not Hermitian."
+                    except AssertionError as e:
+                        # For d > 9, for some reason the final operator in Q is not Hermitian. I cannot figure out why.
+                        # So we explicitly make it Hermitian where needed.
+                        print(f'Operator {i}')
+                        print(e)
+                        self.new_ops[i] = Q = (Q + Q.conj().transpose())
+                        self.new_ops[i] = Q = 1 / np.sqrt(npc.trace(npc.tensordot(Q, Q, axes=(['p*'], ['p'])))) * Q
+                        failed=True
+                    traces.append(npc.trace(Q, leg1=0, leg2=1))
+                hermitian = not failed
+                if not hermitian: # Found an operator which is not Hermitian; need to reconstruct Q using the updated operator
+                    self.new_ops = [op.add_trivial_leg(axis=0, qconj=-1, label='q').add_trivial_leg(axis=1, qconj=-1, label='q*') for op in self.new_ops] # Add dummy legs that will be for grouping
+                    self.Q = npc.grid_concat(np.asarray(self.new_ops, dtype=object).reshape(d,d), axes=([0,1]))
+                    self.Q = self.Q.combine_legs([['q', 'q*'], ['p','p*']], qconj=[self.Q.get_leg('q').qconj, self.Q.get_leg('p').qconj]).itranspose(['(p.p*)', '(q.q*)'])
+                    self.Q.legs[1] = self.Q.legs[0].conj() # SAJANT - HACKY FIX
+                    self.Q.ireplace_labels(['(p.p*)', '(q.q*)'], ['p', 'p*'])
+            self.s2d = self.Q.conj().transpose()
+            self.d2s = self.Q
+        else:
             traces = []
-            failed = False
-            for i, Q in enumerate(self.Q_ops):
-                try:
-                    assert np.isclose(npc.norm(Q - Q.conj().transpose()), 0.0), f"{Q.to_ndarray()} is not Hermitian."
-                except AssertionError as e:
-                    # For d > 9, for some reason the final operator in Q is not Hermitian. I cannot figure out why.
-                    # So we explicitly make it Hermitian where needed.
-                    print(f'Operator {i}')
-                    print(e)
-                    self.Q_ops[i] = Q = (Q + Q.conj().transpose())
-                    self.Q_ops[i] = Q = 1 / np.sqrt(npc.trace(npc.tensordot(Q, Q, axes=(['p*'], ['p'])))) * Q
-                    failed=True
+            for i, Q in enumerate(self.BK_ops):
                 traces.append(npc.trace(Q, leg1=0, leg2=1))
-            hermitian = not failed
-            if not hermitian: # Found an operator which is not Hermitian; need to reconstruct Q using the updated operator
-                self.Q_ops = [op.add_trivial_leg(axis=0, qconj=-1, label='q').add_trivial_leg(axis=1, qconj=-1, label='q*') for op in self.Q_ops] # Add dummy legs that will be for grouping
-                self.Q = npc.grid_concat(np.asarray(self.Q_ops, dtype=object).reshape(d,d), axes=([0,1]))
-                self.Q = self.Q.combine_legs([['q', 'q*'], ['p','p*']], qconj=[self.Q.get_leg('q').qconj, self.Q.get_leg('p').qconj]).itranspose(['(p.p*)', '(q.q*)'])
-                self.Q.legs[1] = self.Q.legs[0].conj() # SAJANT - HACKY FIX
-                self.Q.ireplace_labels(['(p.p*)', '(q.q*)'], ['p', 'p*'])
+            self.new_ops = self.BK_ops
+            self.d2s = self.BK
+            self.s2d = npc.pinv(self.BK) # pseudoinverse should be the same as the inverse if the inverse exists
+        # Check that the matrices are inverses as desired
+        assert np.isclose(npc.norm(npc.tensordot(self.d2s, self.s2d, axes=(['p*'], ['p'])) - npc.eye_like(self.d2s)), 0.0)
+        assert np.isclose(npc.norm(npc.tensordot(self.d2s, self.s2d, axes=(['p*'], ['p'])) - npc.eye_like(self.d2s)), 0.0)
 
-        trace_mat = np.zeros((d**2,d**2), dtype=np.complex128)
+        self.trace_mat = trace_mat = np.zeros((d**2,d**2), dtype=np.complex128)
         for i in range(d**2):
             for j in range(d**2):
-                trace_mat[i,j] = npc.trace(npc.tensordot(self.Q_ops[i], self.Q_ops[j], axes=(['p*'], ['p'])))
-        assert np.isclose(np.linalg.norm(trace_mat - np.eye(d**2)), 0.0)
+                trace_mat[i,j] = npc.trace(npc.tensordot(self.new_ops[i], self.new_ops[j], axes=(['p*'], ['p'])))
+        if not np.isclose(np.linalg.norm(trace_mat - np.eye(d**2)), 0.0):
+            assert conserve == 'U(1)'
+            print("WARNING: The operators are not orthogonal! This is to be expected ONLY when we use charge conservation.")
+            print("Trace matrix:", trace_mat)
+            
 
         self.traces = traces = np.array(traces)
-        self.traceful_ind = np.where(traces > 1.e-13)
-        assert len(self.traceful_ind) == 1
+        self.traceful_ind = np.where(traces > 1.e-13)[0]
+        if len(self.traceful_ind) != 1:
+            assert conserve == 'U(1)'
+            print(f"WARNING: More than one operator has non-zero trace. This is to be expected ONLY when we use charge conservation with d>2.")
+            print(f"Traces={traces}, traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}")
         self.traceful_ind = self.traceful_ind[0].item()
-        assert self.traceful_ind == 0, "Identity isn't in index 0"
-
+        if self.traceful_ind != 0:
+            assert conserve == 'U(1)'
+            print(f"WARNING: Identity isn't in index 0, but instead is in index {self.traceful_ind}. This is to be expected when ONLY we use charge conservation.")
+            assert self.traceful_ind == self.identity_ind, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
+        else:
+            assert self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
+            
         ops = dict()
-        leg = npc.LegCharge.from_trivial(self.d**2)
+        if conserve == 'None':
+            leg = npc.LegCharge.from_trivial(self.d**2)
+        else:
+            leg = leg1
         self.conserve = conserve
         # Specify Hermitian conjugates
         Site.__init__(self, leg, [str(i) for i in range(self.d**2)], sort_charge=sort_charge, **ops)
