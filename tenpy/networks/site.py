@@ -9,6 +9,8 @@ import numpy as np
 import itertools
 import copy
 import warnings
+import logging
+logger = logging.getLogger(__name__)
 
 from ..linalg import np_conserved as npc
 from ..tools.misc import inverse_permutation, find_subclass
@@ -2063,6 +2065,222 @@ class DoubledSite(Site):
         Defines what is conserved, see table above.
     """
 
+    # Generalize this to double ANY type of site. Need to take in kwargs for the desired type
+    # of site and pass them on to the class initialization. This will be needed for bosons.
+    def __init__(self, d, conserve=None, sort_charge=True, hermitian=True):
+        if not conserve:
+            conserve = 'None'
+        if conserve not in ['None', 'Sz', 'parity']:
+            raise ValueError("invalid `conserve`: " + repr(conserve))
+        if hermitian:
+            assert conserve == 'None'
+        self.d = d # Dimension of original Hilbert space
+        self.hermitian = hermitian
+        if not hermitian:
+            # If we don't care about having a Hermitian basis, let us just make a basis of operators |i><j|.
+            # There will be $d$ traceful operators (the diagonal ones).
+            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=sort_charge)
+            leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
+            self.BK_ops = BK_ops = []
+            self.charges = charges = []
+            for i in range(d):
+                for j in range(d):
+                    op = np.zeros((d,d), dtype=np.complex128)
+                    op[i,j] = 1.0
+                    op = npc.Array.from_ndarray(op, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*'])
+                    BK_ops.append(op)
+                    if conserve != 'None':
+                        charges.append(op.qtotal.item())
+            
+            self.BK = npc.diag(1, leg1, dtype=np.complex128, labels=['p', 'p*'])
+            self.identity_ind = None # No identity operator with this basis; it's the sum of the diagonal $d$ operators
+        else:
+            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=sort_charge)
+            leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
+            self.BK_ops = BK_ops = []
+            # Want legPipes, so let's do this with NPC.
+            BK_ops.append(npc.Array.from_ndarray(np.eye(d, dtype=np.complex128), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+            self.identity_ind = 0
+            for i in range(1, d):
+                BK_ops.append(npc.Array.from_ndarray(np.diag([1+0.j] + (i-1)*[0] + [-1] + [0] * (d-1-i)), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+    
+            for j in range(0, d-1):
+                for i in range(j+1, d):
+                    op = np.zeros((d,d), dtype=np.complex128)
+                    op[j,i] = 1
+                    BK_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+    
+                    op *= -1.j
+                    BK_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+
+            BK_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in BK_ops])
+            self.BK = npc.Array.from_ndarray(BK_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
+
+        if hermitian:
+            self.Q, self.R = npc.qr(self.BK, inner_labels=['p*', 'p'])
+            self.sign_R = np.sign(np.diag(self.R.to_ndarray())) # no charges anyway
+            self.sign_R = npc.Array.from_ndarray(np.diag(self.sign_R), self.R.legs, labels=self.R.get_leg_labels())
+    
+            self.Q = npc.tensordot(self.Q, self.sign_R, axes=(['p*'], ['p']))
+            self.R = npc.tensordot(self.sign_R, self.R, axes=(['p*'], ['p']))
+            # Check that the Q basis is HOMT
+            hermitian=False
+            while not hermitian:
+                self.new_ops = self.Q.replace_labels(['p', 'p*'], ['(p.p*)', '(q.q*)']).split_legs()
+                self.new_ops = [self.new_ops.take_slice([i, j], ['q', 'q*']) for i in range(d) for j in range(d)]
+    
+                traces = []
+                failed = False
+                for i, Q in enumerate(self.new_ops):
+                    try:
+                        assert np.isclose(npc.norm(Q - Q.conj().transpose()), 0.0), f"{Q.to_ndarray()} is not Hermitian."
+                    except AssertionError as e:
+                        # For d > 9, for some reason the final operator in Q is not Hermitian. I cannot figure out why.
+                        # So we explicitly make it Hermitian where needed.
+                        print(f'Operator {i}')
+                        print(e)
+                        self.new_ops[i] = Q = (Q + Q.conj().transpose())
+                        self.new_ops[i] = Q = 1 / np.sqrt(npc.trace(npc.tensordot(Q, Q, axes=(['p*'], ['p'])))) * Q
+                        failed=True
+                    traces.append(npc.trace(Q, leg1=0, leg2=1))
+                hermitian = not failed
+                if not hermitian: # Found an operator which is not Hermitian; need to reconstruct Q using the updated operator
+                    new_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in self.new_ops])
+                    self.Q = npc.Array.from_ndarray(new_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
+            self.s2d = self.Q.conj().transpose()
+            self.d2s = self.Q
+        else:
+            traces = []
+            for i, Q in enumerate(self.BK_ops):
+                traces.append(npc.trace(Q, leg1=0, leg2=1))
+            self.new_ops = self.BK_ops
+            self.d2s = self.BK
+            self.s2d = self.BK.conj() #npc.pinv(self.BK) # pseudoinverse should be the same as the inverse if the inverse exists
+        # Check that the matrices are inverses as desired
+        assert np.isclose(npc.norm(npc.tensordot(self.d2s, self.s2d, axes=(['p*'], ['p'])) - npc.eye_like(self.d2s)), 0.0)
+        assert np.isclose(npc.norm(npc.tensordot(self.d2s, self.s2d, axes=(['p*'], ['p'])) - npc.eye_like(self.d2s)), 0.0)
+
+        self.trace_mat = trace_mat = np.zeros((d**2,d**2), dtype=np.complex128)
+        for i in range(d**2):
+            for j in range(d**2):
+                # $trace_mat[i,j] = Tr (op_i^\dagger op_j)$
+                # NOTE: We conjugate one operator! Then, for the non-Hermitian case, $Tr(|i><j| |j><i|) = 1$.
+                trace_mat[i,j] = npc.trace(npc.tensordot(self.new_ops[i].conj(), self.new_ops[j], axes=(['p*'], ['p'])))
+        assert np.isclose(np.linalg.norm(trace_mat - np.eye(d**2)), 0.0)
+        #if not np.isclose(np.linalg.norm(trace_mat - np.eye(d**2)), 0.0):
+            #assert conserve != 'None'
+            #print("WARNING: The operators are not orthogonal! This is to be expected ONLY when we use charge conservation.")
+            #print("Trace matrix:", trace_mat)
+            
+        self.traces = traces = np.array(traces)
+        self.traceful_ind = np.where(traces > 1.e-13)[0]
+        if len(self.traceful_ind) != 1:
+            assert hermitian == False
+            # print(f"WARNING: More than one operator has non-zero trace. This is to be expected if we are not using a Hermitian basis.")
+            ## d=2 could have a non-hermitian but single trace basis (I, Z, S+, S-), but we don't use this.
+            # print(f"Traces={traces}, traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}")
+        else:
+            self.traceful_ind = self.traceful_ind[0].item()
+            assert self.traceful_ind == self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
+        """
+        assert False
+        if self.traceful_ind != 0:
+            assert hermitian == False # Probably need to change this to assert hermitian == False
+            print(f"WARNING: Identity isn't in index 0, but instead is in index {self.traceful_ind}. This is to be expected when ONLY we use charge conservation.")
+            assert self.traceful_ind == self.identity_ind, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
+        else:
+            assert self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
+        """
+        
+        ops = dict()
+        self.conserve = conserve
+        # Specify Hermitian conjugates
+        Site.__init__(self, leg1, [str(i) for i in range(self.d**2)], sort_charge=sort_charge, **ops)
+
+    def __repr__(self):
+        """Debug representation of self."""
+        return f'DoubledSite(q={self.d}, conserve={self.conserve}, sort_charge={self.leg.sorted}, hermitian={self.hermitian})'
+
+
+
+
+
+
+
+
+class DoubledSiteOld(Site):
+    r"""Doubled site for Heisenberg or density matrix evolution.
+
+    Given some physical Hilbert space of dimenison $d$, we want to define the vectorized,
+    doubled Hilbert space of dimension $d^2$. We want to define a basis of Hermitian,
+    orthogonal, and mostly traceless (HOMT) operators for use in DMT and DAOE.
+    What do these words mean?
+        (1) Hermitian - this is self-evident.
+        (2) orthogonal - given two operators $\sigma_\alpha, \sigma_\beta$, we demand that
+        $\langle \langle \sigma_\alpha | \sigma_\beta \rangle \rangle = Tr (\sigma_\alpha^\dagger \sigma_\beta) = \delta_{\alpha, \beta} $.
+        (3) Mostly traceless - only the Identity operator has a non-zero trace (and by orthogonality).
+
+    How to we find such a basis? First, define a basis of $d^2$ Hermitian, mostly traceless (HMT)
+    (but not orthogonal) operators. Choose op[0] = Id, op[1 <= i < d] = |0><0| - |i><i|,
+    op[d <= d + d(d-1)/2] = \sum_{i<j} |i><j| + |j><i|,
+    op[d + d(d-1)/2 <= d^2] = \sum_{i<j} i|i><j| - i|j><i|
+
+    These are just a basis of operators in the standard bra-ket basis. These are not HOMT, but we
+    will make them so via a rotation and rescaling. Suppose we have a vector $\vec{v}$ in the standard
+    bra-ket basis, where $\vec{v}$ represents a Hermitian density matrix or Hermitian operator.
+    To write $\vec{v}$ as a linear combination of our HMT operators defined above, note that
+    $\vec{v} = BK \vec{s}$.
+
+    But we want the coefficients of $\vec{v}$ in a HOMT basis, so define $BK = QR$ and gauge-fix
+    the $R$ such that all of the diagonals are positive. Then $Q$ defines an HOMT basis.
+    So then let $\vec{v} = Q \vec{\lambda}$ where $\vec{\lambda} = R \vec{s}$. So $\vec{\lambda}$
+    defines how to make $\vec{v}$ as a linear combinations of elements of the HOMT $Q$ basis.
+
+    Finally, given an operator $M$ that acts on the doubled Hilbert space vector $\vec{v}$, we map this
+    operator to the HOMT basis $Q$ by $M \rightarrow Q^\dagger M Q$. Then $\vec{v}^\dagger M \vec{v}
+    = \vec{w}^\dagger Q^\dagger M Q \vec{w}$.
+
+    Let us give an example for $d=2$. The Pauli operators $I, Z, Y, X$ define an HOMT basis already.
+    The HMT operators we typically define are `already` the Pauli operators. So $BK = Q * 1$ is already
+    unitary (the hallmark of an HOMT basis). The $R$ matrix is trivial. Then, to map from the
+    computation, bra-ket basis to the basis in which index 0,1,2,3 corresponds to operators I, Z, X, Y,
+    one must use $Q$.
+
+    For the general case, $R$ is non-trivial. While it seem paradoxical that we don't actually use $R$
+    anywhere, we could by first finding $\vec{s} = BK^{-1} \vec{v}$ and then $\vec{\lambda} = R \vec{s}$,
+    but this is equivalent to $\vec{\lambda} = Q^\dagger \vec{v}$.
+
+    =========================== ================================================
+    operator                    description
+    =========================== ================================================
+    We don't define operators as the usual physical operators can be used once
+    we rotate back to the original, bra-ket basis.
+    =========================== ================================================
+
+    ============== ====  ============================
+    `conserve`     qmod  *excluded* onsite operators
+    ============== ====  ============================
+    ``'None'``     []    --
+    ============== ====  ============================
+
+    Parameters
+    ----------
+    d : int
+        Number of states per site in the physical (undoubled) Hilbert space
+    conserve : str | None
+        Defines what is conserved, see table above.
+    sort_charge : bool
+        Whether :meth:`sort_charge` should be called at the end of initialization.
+        This is usually a good idea to reduce potential overhead when using charge conservation.
+        Note that this permutes the order of the local basis states!
+        For backwards compatibility with existing data, it is not (yet) enabled by default.
+
+    Attributes
+    ----------
+    conserve : str
+        Defines what is conserved, see table above.
+    """
+
     def __init__(self, d, conserve=None, sort_charge=None):
         if not conserve:
             conserve = 'None'
@@ -2074,7 +2292,6 @@ class DoubledSite(Site):
             #assert d == 2, "Charge conservation only works for qubits where the basis is [I, Z, S^+, S^-]"
             # For d > 2, multiple operators may have trace. . .
             ss_op = SpinSite(S=(d-1)/2, conserve=conserve)
-            print(ss_op)
             def npc_pow(A, B, p):
                 """
                 return B = B * A^p, where multiplication is (square) matrix multiplication.
@@ -2102,23 +2319,18 @@ class DoubledSite(Site):
                 tr = npc.trace(BK_ops[i], leg1=0, leg2=1)
                 BK_ops[i] /= tr if tr > 0 else 1
             
-            #if conserve != 'None':
             charges = [op.qtotal.item() for op in BK_ops]
             assert len(charges) == d**2
-            print("Charges pre sort:", charges)
+            #logger.warn(f"Charges pre sort: {charges}.")
             charge_index = np.argsort(charges)
             charges = [charges[ci] for ci in charge_index]
-            print("Index of sorted charges:", charge_index)
+            #logger.warn(f"Index of sorted charges: {charge_index}.")
             self.identity_ind = list(charge_index).index(0)
             self.BK_ops = BK_ops = [BK_ops[ci] for ci in charge_index] # IDENTITY OPERATOR MOVED! TRACEFUL_IND != 0
-            print("Charges post sort:", charges)
-            #else:
-            #    self.identity_ind = 0
-            #    self.BK_ops = BK_ops
+            #logger.warn(f"Charges post sort: {charges}.")
             
             leg1 = ss_op.get_op('Id').combine_legs(['p', 'p*']).get_leg('(p.p*)')
             charge1 = leg1.chinfo
-            #print(leg1)
 
             # If we just use the grouped leg for both dimensions of BK_ops_augmented, things work?
             # So there is no need to make a new leg.
@@ -2213,20 +2425,20 @@ class DoubledSite(Site):
                 trace_mat[i,j] = npc.trace(npc.tensordot(self.new_ops[i], self.new_ops[j], axes=(['p*'], ['p'])))
         if not np.isclose(np.linalg.norm(trace_mat - np.eye(d**2)), 0.0):
             assert conserve == 'Sz'
-            print("WARNING: The operators are not orthogonal! This is to be expected ONLY when we use charge conservation.")
-            print("Trace matrix:", trace_mat)
+            #print("WARNING: The operators are not orthogonal! This is to be expected ONLY when we use charge conservation.")
+            #print("Trace matrix:", trace_mat)
             
 
         self.traces = traces = np.array(traces)
         self.traceful_ind = np.where(traces > 1.e-13)[0]
         if len(self.traceful_ind) != 1:
             assert conserve == 'Sz'
-            print(f"WARNING: More than one operator has non-zero trace. This is to be expected ONLY when we use charge conservation with d>2.")
+            #print(f"WARNING: More than one operator has non-zero trace. This is to be expected ONLY when we use charge conservation with d>2.")
             print(f"Traces={traces}, traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}")
         self.traceful_ind = self.traceful_ind[0].item()
         if self.traceful_ind != 0:
             assert conserve == 'Sz'
-            print(f"WARNING: Identity isn't in index 0, but instead is in index {self.traceful_ind}. This is to be expected when ONLY we use charge conservation.")
+            #print(f"WARNING: Identity isn't in index 0, but instead is in index {self.traceful_ind}. This is to be expected when ONLY we use charge conservation.")
             assert self.traceful_ind == self.identity_ind, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
         else:
             assert self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."

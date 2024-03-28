@@ -714,7 +714,7 @@ class MPO:
         Id = [0] * (self.L + 1)
         return MPO(self.sites, U, self.bc, Id, Id, max_range=self.max_range)
 
-    def make_doubled_MPO(self):
+    def make_doubled_MPO(self, hermitian=True):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
@@ -775,18 +775,20 @@ class MPO:
                 dW[i+1+DL-2, -1] = -1*_combine_npc(Id_npc, B_npc[i,0])
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[i].conserve))
+            sites.append(DoubledSite(d, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sort, hermitian=hermitian))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
         # SAJANT - What if different sites have different dimensions?
-        dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim, conserve=self.sites[0].conserve)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        #dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim, conserve=self.sites[0].conserve, sort_charge=self.sites[0].used_sort_charge, hermitian=hermitian)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        #dMPO = MPO.from_grids([DoubledSite(ss.dim, conserve=ss.conserve, sort_charge=ss.used_sort_charge, hermitian=hermitian) for ss in self.sites], U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
                              #) #[DoubledSite(self.sites[0].dim)] * self.L
         # return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range) #[DoubledSite(self.sites[0].dim)] * self.L
-        dMPO.rotated_basis = False
+        #dMPO.rotated_basis = False
         return dMPO
 
-    def make_embedded_MPO(self):
+    def make_embedded_MPO(self, hermitian=True):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
@@ -842,25 +844,28 @@ class MPO:
                 dW[i+1, -1] = _combine_npc(B_npc[i,0], Id_npc)
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[i].conserve))
+            sites.append(DoubledSite(d, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sorted, hermitian=hermitian))
             U.append(dW)
             #print(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
-        dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim, conserve=self.sites[0].conserve)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
-        dMPO.rotated_basis = False
+        #dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim, conserve=self.sites[0].conserve)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        #dMPO = MPO.from_grids([DoubledSite(ss.dim, conserve=ss.conserve, sort_charge=ss.used_sort_charge) for ss in self.sites], U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        #dMPO.rotated_basis = False
         return dMPO
 
-    def conjugate_MPO(self, Ms, Minvs):
-        """Conjugate MPO M with matrices M on each site. M is not guaranteed to be unitary, e.g. if we work with a charge conserved basis.
+    def conjugate_MPO(self, Ms):
+        """Conjugate MPO M with matrices M on each site. M is guaranteed to be unitary.
 
-        This leaves the block structure of U intact, as we are acting on the physical legs."""
+        This leaves the block structure of U intact, as we are acting on the physical legs.
+        """
         #assert U.ndim == 2
         #assert np.isclose(npc.norm(npc.tensordot(U, U.conj(), axes=([1],[1])) - npc.eye_like(U)), 0), "U is not unitary."
 
         for i in range(self.L):
             M = Ms[i % len(Ms)]
-            Minv = Minvs[i % len(Minvs)]
+            Minv = M.conj()
             W = self.get_W(i)
             W_labels = W.get_leg_labels()
             W = npc.tensordot(M, W, axes=(['p*'], ['p']))
@@ -2975,7 +2980,7 @@ def _combine_npc(T1, T2):
     legs ('(p0.p1)', '(p0*,p1*)').
 
     When you conjugate a npc tensor, the labels pick up a star (*) mod 2 (** = nothing). So if you use labels to refer to the
-    legs, conjugation actually implies truncation at the same time. So below for T2, I relabel the p leg (after conjugation)
+    legs, conjugation actually implies transposition at the same time. So below for T2, I relabel the p leg (after conjugation)
     to p1* so that we take the original p* leg to p1*.
     """
     T = npc.outer(T1.replace_labels(['p', 'p*'],['p0', 'p0*']), T2.conj().replace_labels(['p', 'p*'],['p1*', 'p1']))

@@ -429,7 +429,8 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         # Construct the theta matrix
         C = self.psi.get_theta(i0, n=2, formL=0.)  # the two B without the S on the left
         C = npc.tensordot(U_bond, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))  # apply U
-        if np.linalg.norm([d.imag for d in C._data]) < self.imaginary_cutoff: # Remove small imaginary part
+        if npc.norm(C.unary_blockwise(np.imag)) < self.imaginary_cutoff:
+        #if np.linalg.norm([d.imag for d in C._data]) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             C.iunary_blockwise(np.real)
             #C.dtype = 'float64' # I think this may automatically be happening?
@@ -635,7 +636,8 @@ class DMTTEBDEngine(TEBDEngine):
         theta = npc.tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
         theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
 
-        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff:
+        #if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
             #C.dtype = 'float64' # I think this may automatically be happening?

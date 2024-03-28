@@ -148,12 +148,12 @@ class DoubledMPS(MPS):
                       bc='finite'):
         raise NotImplementedError()
     
-    def to_regular_MPS(self):
+    def to_regular_MPS(self, hermitian=True):
         """
         Convert a doubled MPS to a regular MPS by combining together the 'p' and 'q' legs
         """
         # Build new site of squared dimension
-        doubled_sites = [DoubledSite(s.dim) for s in self.sites]# * self.L
+        doubled_sites = [DoubledSite(s.dim, s.conserve, s.leg.sorted, hermitian) for s in self.sites]# * self.L
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
         #pipes = [B.get_leg('p') for B in new_Bs]
         new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=1) #self.norm)

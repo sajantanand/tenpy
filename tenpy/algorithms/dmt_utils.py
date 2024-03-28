@@ -11,26 +11,26 @@ from ..linalg.charges import LegPipe
 from ..algorithms.truncation import svd_theta, TruncationError, _machine_prec_trunc_par
 import warnings
 
-def double_model(H_MPO, NN=False, doubled=False, conjugate=False):
+def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True):
     """
     args:
         NN: Boolean
             Whether the model only contains NN terms and thus should be made into a `NearestNeighborModel` for TEBD
         doubled: Boolean
-            Whether the model is already in doubled Hilbert space
+            Whether the model is ALREADY in doubled Hilbert space
         conjugate: Boolean
-            Conjugate the MPO by change of basis matrices; typically one moves to Hermitian or charge-conserving basis
+            Do we conjugate the MPO by change of basis matrices; typically one moves to Hermitian or charge-conserving basis
     returns:
         doubled_model: TeNPy model
             Either `MPOModel` or `NearestNeighborModel` depending on the `NN` parameter
     """
     if not doubled:
-        doubled_MPO = H_MPO.make_doubled_MPO()
+        doubled_MPO = H_MPO.make_doubled_MPO(hermitian)
     else:
         doubled_MPO = deepcopy(H_MPO)
 
     if conjugate:
-        doubled_MPO.conjugate_MPO([s.s2d for s in doubled_MPO.sites], [s.d2s for s in doubled_MPO.sites])
+        doubled_MPO.conjugate_MPO([s.s2d for s in doubled_MPO.sites])
 
     #doubled_lat = lat(H_MPO.L, doubled_MPO.sites[0]) # SAJANT - what if we have different types of sites in the lattice?
     doubled_lat = TrivialLattice(doubled_MPO.sites) # Trivial lattice uses the sites of the doubled MPO.
@@ -99,38 +99,44 @@ def distribute_pairs(pairs, bi, symmetric=True):
 # Bra for density matrix expectation value.
 def trace_identity_DMPS(DMPS, traceful_id=None):
     assert traceful_id == None, "Not used here since the doubled MPS has both bra and ket legs"
-    d = DMPS.sites[0].dim
+    #d = DMPS.sites[0].dim
     # We are in the computational / standard basis. Make doubled MPS with two physical legs
     # per site, using the identity on each site
-    I = np.eye(d).reshape(d, d, 1, 1)
+    Is = [np.eye(ds.dim).reshape(ds.dim, ds.dim, 1, 1) for ds in DMPS.sites]
     return DoubledMPS.from_Bflat(DMPS.sites,
-                               [I] * DMPS.L,
-                               SVs=None,
-                               bc='finite',
-                               dtype=None,
-                               permute=True,
-                               form='B', # Form doesn't matter since it's a product state?
-                               legL=None)
+                                 Is,
+                                 SVs=None,
+                                 bc='finite',
+                                 dtype=None,
+                                 permute=False, # TODO: WHY DOES THIS NEED TO BE FALSE FOR CHARGES???
+                                 form='B', # Form doesn't matter since it's a product state?
+                                 legL=None)
 
 # Bra for density matrix expectation value once flattened
 def trace_identity_MPS(DMPS):#, traceful_id=None):
-    d = DMPS.sites[0].dim
-    assert type(DMPS.sites[0]) is DoubledSite
+    #d = DMPS.sites[0].dim
+    for ds in DMPS.sites:
+        assert type(ds) is DoubledSite
     # In rotated, HOMT basis. Identity is unit vector with 1 at location specified by traceful_id.
     # For a systme with charge consdervation and d > 2, there can (and will) be more than one
     # opertator with trace 1 (operators are normalized). So we need to include the contribution from
     # several slices of the tensor.
     # SAJANT TODO - Generalize this to case where the Identity isn't a unit vector.
-    I = np.zeros((d,1,1))
-    I[DMPS.sites[0].traceful_ind,0,0] = 1 # 1 for every operator with trace 1.
+    Is = []
+    for ds in DMPS.sites:
+        I = np.zeros((ds.dim,1,1))
+        ch_ind = list(np.argsort(ds.charges))
+        ti = [ch_ind.index(i) for i in ds.traceful_ind]
+        I[ti,0,0] = 1 # 1 for every operator with trace 1.
+        Is.append(I)
     return MPS.from_Bflat(DMPS.sites,
-                               [I] * DMPS.L,
-                               SVs=None,
-                               bc='finite',
-                               dtype=None,
-                               permute=True,
-                               form='B', # Form doesn't matter since it's a product state?
-                               legL=None)
+                          Is,
+                          SVs=None,
+                          bc='finite',
+                          dtype=None,
+                          permute=False, # It appears that DoubledSite.perm is trivial
+                          form='B', # Form doesn't matter since it's a product state?
+                          legL=None)
 
 """
 In principle we could combine all DMT methods into just the MPO method and use a different MPO for EACH operator we wish to preserve.
