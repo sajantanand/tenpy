@@ -1241,7 +1241,7 @@ class MPO:
             return trunc_err
         elif method == 'DMT_zip_up':
             trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
-            print("After DMT zip_up: ", psi.chi)
+            # print("After DMT zip_up: ", psi.chi)
             # psi is NOT in canonical form. Tensors are in A form. 
             
             dmt_params = options['dmt_par']
@@ -1262,6 +1262,7 @@ class MPO:
             orig_psi = psi.copy()
             # Should truncate immediately to chi since variational will improve result at fixed chi
             trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
+
             psi.canonical_form() # Re-establish canonical form before doing variational compression since both forms are needed
             #print("After DMT zip_up: ", psi.chi)
             #print("Original: ", orig_psi.chi)

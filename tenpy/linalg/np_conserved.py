@@ -1904,7 +1904,7 @@ class Array:
                     new_data_ind = qdata.setdefault(tuple(new_qindices), len(data))
                     if new_data_ind == len(data):
                         # insert new block
-                        data.append(np.zeros(res._get_block_shape(new_qindices)))
+                        data.append(np.zeros(res._get_block_shape(new_qindices), dtype=self.dtype))
                     new_block = data[new_data_ind]
                     # copy data
                     new_block_idx[axis] = within_new

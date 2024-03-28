@@ -108,7 +108,7 @@ class DoubledMPS(MPS):
         for i, site in enumerate(sites):
             B = np.array(Bflat[i], dtype)
             if permute:
-                B = B[site.perm, :, :]
+                B = B[site.perm, :, :, :][:, site.perm, :, :]
             # calculate the LegCharge of the right leg
             # Modified to account for the two physical legs
             legs = [site.leg, site.leg.conj(), legL, None]  # other legs are known

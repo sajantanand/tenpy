@@ -2079,8 +2079,17 @@ class DoubledSite(Site):
         if not hermitian:
             # If we don't care about having a Hermitian basis, let us just make a basis of operators |i><j|.
             # There will be $d$ traceful operators (the diagonal ones).
-            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=sort_charge)
+            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
+            # Bunch doesn't matter if we don't sort since the neighboring charges are not the same
+            # If we are to sort the charges, it should be done now so that we still have a leg pipe.
+            # If we just sort at the end when calling the Site initializer, the leg pipe will get replaced
+            # with a leg charge, meaning that we cannot split the leg later.
             leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
+            # leg1._perm is the index of where the charge GOES; i.e. _perm[0] is the new index of charges[0] after sorting
+            if conserve == 'Sz':
+                # The site should record the permutation done.
+                self.perm = leg1._perm
+            
             self.BK_ops = BK_ops = []
             self.charges = charges = []
             for i in range(d):
@@ -2095,8 +2104,9 @@ class DoubledSite(Site):
             self.BK = npc.diag(1, leg1, dtype=np.complex128, labels=['p', 'p*'])
             self.identity_ind = None # No identity operator with this basis; it's the sum of the diagonal $d$ operators
         else:
-            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=sort_charge)
+            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
             leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
+            
             self.BK_ops = BK_ops = []
             # Want legPipes, so let's do this with NPC.
             BK_ops.append(npc.Array.from_ndarray(np.eye(d, dtype=np.complex128), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))

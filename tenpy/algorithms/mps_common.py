@@ -2203,7 +2203,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
 
         # Get change of basis matrices using current |psi>.
         QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = dmt.build_QR_matrices(new_psi, i0, dmt_par, trace_env, MPO_envs)
-        Q_L, R_L, Q_R, R_R, keep_L, keep_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-14))
+        Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = dmt.remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-14))
 
         if keep_L >= chi or keep_R >= chi:
             # We cannot truncate, so return.
@@ -2220,12 +2220,20 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         #print("Bond: ", i0)
         #print("Norm of original M (hopefully this is 1):", npc.norm(M_OC))
         #print("Norm of update M (hopefully this is 1):", npc.norm(M_NC))
+        
+        # We need to permute both bond matrices to have the lower right block be the preserved piece
+        M_OC = M_OC.permute(perm_L, 'vL').permute(perm_R, 'vR')
+        M_NC = M_NC.permute(perm_L, 'vL').permute(perm_R, 'vR')
         # Now both bond matrices are in the desired gauge; replace the bottom right piece
         M_OC[keep_L:,keep_R:] = M_NC[keep_L:,keep_R:]
+        # Undo the permutation; this is slow
+        # TODO - how do we avoid this slowdown?
+        M_OC = M_OC.permute(np.argsort(perm_L), 'vL').permute(np.argsort(perm_R), 'vR')
+        
         M_norm = npc.norm(M_OC)
         #print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
-        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_par.get('connected', True), keep_L, keep_R)
+        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_par.get('connected', False), keep_L, keep_R, perm_L, perm_R)
 
         svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
         U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_par_2, renormalize=True)
