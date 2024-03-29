@@ -219,65 +219,10 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
             # Why? Maybe this reduces overhead if the pipe is very deep?
             QR_R.legs[p_index] = QR_R.get_leg('p').to_LegCharge()
         QR_R.itranspose(['vL', 'p'])
-        QR_Rs.append(QR_R)
-        """
-        # Define basis change matrices - Eqn. 16 of paper
-        # Get env strictly to the right of site i and contract the B form site i tensor to it.
-        QR_R = trace_env._contract_with_RP(dMPS.get_B(end_R-1, form='B'), end_R-1)
-        for k, j in enumerate(reversed(range(i+1, end_R-1))):
-            B = dMPS.get_B(j, form='B').replace_label('p', 'p1')
-            QR_R = npc.tensordot(B, QR_R, axes=['vR', 'vL'])  # axes_p + (vL, vL*)
-            QR_R = QR_R.combine_legs(['p', 'p1']).ireplace_label('(p.p1)', 'p')
-            # p legs point in
-        QR_R = QR_R.squeeze() # Remove dummy leg associated with the trace state; remaining legs should be p, vL
-        if k_local[1] == 0:
-            #trace_tensor = trace_identity_MPS(dMPS)._B[i]
-            #trace_tensor = trace_tensor.squeeze('vR')
-            #QR_R = npc.tensordot(QR_R, trace_tensor.conj(), axes=(['p'], ['p*'])).replace_label('vL*', 'p')
-            QR_R = trace_env.get_RP(i, store=False).replace_label('vL*', 'p')
-            # vL* points out
-            #print(QR_L)
-            """
-        """
-        # Keep only Identity to the right
-        # SAJANT TODO - Assumes that the first index is the identity; use traceful_ind instead
-        p_index = QR_R.get_leg_index('p')
-        if isinstance(QR_R.legs[p_index], LegPipe):
-            QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
-        QR_R.iproject([True] + [False] * QR_R.shape[p_index], 'p')
-        #QR_R.iproject([True] + [False] * QR_R.shape[QR_R.get_leg_index('p')], 'p')
-        """
-        
+        QR_Rs.append(QR_R)       
 
     if MPO_envs is not None:
         for Me in MPO_envs:
-            """
-            # Don't store envs since we are about to change the bond?
-            # Maybe store them and delete them later if necessary.
-            QR_R = Me.get_RP(i, store=True).squeeze().replace_label('wL', 'p')
-            if npc.norm(QR_R.unary_blockwise(np.imag)) < dmt_par.get('imaginary_cutoff', 1.e-12):
-            #if np.linalg.norm([d.imag for d in QR_R._data]) < dmt_par.get('imaginary_cutoff', 1.e-12): # Remove small imaginary part
-                # SAJANT TODO - why?
-                QR_R.iunary_blockwise(np.real)
-            # The p leg of QR_R should ALREADY point in since this is the wL leg of W.
-            #QR_R = QR_R.gauge_total_charge('p', new_qconj=QR_R.legs[QR_R.get_leg_index('p')].qconj*-1)
-            #QR_R.legs[QR_R.get_leg_index('p')] = QR_R.legs[QR_R.get_leg_index('p')].conj()
-            QR_Rs.append(QR_R)
-            keep_R += QR_R.shape[QR_R.get_leg_index('p')]
-            # Produced QR_R has labels=('vL', 'p'), qconj=(+1, +1)
-            """
-            """
-            # Don't store envs since we are about to change the bond?
-            # Maybe store them and delete them later if necessary.
-            QR_R = Me.get_RP(i, store=True).squeeze().replace_label('wL', 'p')
-            if npc.norm(QR_R.unary_blockwise(np.imag)) < dmt_par.get('imaginary_cutoff', 1.e-12):
-                # SAJANT TODO - why?
-                QR_R.iunary_blockwise(np.real)
-            # The p leg of QR_R should ALREADY point in since this is the wL leg of W.
-            QR_Rs.append(QR_R)
-            keep_R += QR_R.shape[QR_R.get_leg_index('p')]
-            # Produced QR_R has labels=('vL', 'p'), qconj=(+1, +1)
-            """
             # Need to flip the leg of the W wL tensor, as this becomes the p leg of QR_L
             QR_R = Me.get_RP(i+1, store=True) # vL (ket), wL, vL* (bra)
             B = dMPS.get_B(i+1, form='B')
@@ -299,9 +244,6 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
         # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
         #keep_R += int(np.sum([dMPS.dim[k]-1 for k in right_pairs])) + 1
         keep_R += int(np.sum([dMPS.dim[k] for k in right_pairs]))
-        # SAJANT TODO - only need identity if we aren't using another method; hopefully is removed in the redundancy function
-        # QR_R = trace_env.get_RP(i, store=True).replace_label('vL*', 'p') # Identity on right half
-        # QR_Rs.append(QR_R)
 
         # TODO won't work if taking trace against non-trivial rho
         for rp in right_pairs:
@@ -319,26 +261,8 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
                 QR_R = npc.tensordot(B, QR_R, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)
             QR_R = QR_R.squeeze('vL*').transpose(['vL', 'p'])
             QR_Rs.append(QR_R)
-            """
-            _contract_with_RP(dMPS.get_B(rp, form='B'), rp)
-            p_index = QR_R.get_leg_index('p')
-            if isinstance(QR_R.legs[p_index], LegPipe):
-                QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
-            # Not safe since there may not be a single Identity leg
-            # QR_R.iproject([False] + [True] * QR_R.shape[p_index], 'p') # Remove the identity leg; for spin-1/2s, we have 3 non-trivial legs for X, Y, Z
-            # The QR rank reduction takes care of this.
-            for j in reversed(range(i+1, rp)):
-                TT = trace_env.bra.get_B(j) # Tensor trace; the identity element used for tracing over a site;
-                B = npc.tensordot(TT.conj(), dMPS.get_B(j, form='B'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR # Trace over this site
-                QR_R = npc.tensordot(B, QR_R, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)
-            QR_R = QR_R.squeeze()
-            QR_Rs.append(QR_R)
-            """
-        #print([q.shape for q in QR_Ls], [q.shape for q in QR_Rs])
     
     # QR_L: labels=('vL', 'p), qconj=(+1, -1)
-    # For non-MPO methods, the p leg comes from the vL* leg of the trace tensor. vL would point in (right),
-    # so vR* points out
     print('QR Legs:', [(qr_R, qr_R.legs) for qr_R in QR_Rs])
     QR_R = npc.concatenate(QR_Rs, axis='p')
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
