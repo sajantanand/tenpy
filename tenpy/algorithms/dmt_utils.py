@@ -375,7 +375,6 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
     We may have redundant copies of operators to preserve; most commonly, we will have several copies of the identity.
     Here we remove them by doing a QR and seeing what is unneeded (i.e. zero diagonals)
 
-
     args:
         QR_L: npc Array
             matrix defining change of basis on the left Hilbert space
@@ -394,6 +393,7 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
         keep_L, keep_R: int, int
             Number of independent operator combinations to preserve on left and right after redundancy removed
     """
+    assert False, "Use 'remove_redundancy_SVD' instead."
     
     Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
                           mode='complete',
@@ -677,7 +677,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     #Q_L, R_L, Q_R, R_R, keep_L, keep_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 0))#1.e-14))
     #perm_L = np.arange(chi)
     #perm_R = np.arange(chi)
-    Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-14))
+    Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-18))
     #print('Keeps:', keep_L, keep_R)
     #print('Perms:', perm_L, perm_R)
     
