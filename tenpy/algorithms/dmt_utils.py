@@ -214,10 +214,6 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
                 B = B.gauge_total_charge('p1', new_qconj=B.get_leg('p1').qconj*-1) # +1 -> -1
                 QR_R = npc.tensordot(B, QR_R, axes=['vR', 'vL'])  # axes_p + vL
                 QR_R = QR_R.combine_legs(['p', 'p1'], qconj=QR_R.get_leg('p').qconj).ireplace_label('(p.p1)', 'p')
-        p_index = QR_R.get_leg_index('p')
-        if isinstance(QR_R.get_leg('p'), LegPipe):
-            # Why? Maybe this reduces overhead if the pipe is very deep?
-            QR_R.legs[p_index] = QR_R.get_leg('p').to_LegCharge()
         QR_R.itranspose(['vL', 'p'])
         QR_Rs.append(QR_R)       
 
@@ -239,22 +235,24 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
     if conjoined_par is not None:
         pairs = conjoined_par.get('pairs')
         symmetric = conjoined_par.get('symmetric', True)
-        left_pairs, right_pairs = distribute_pairs(pairs, i, symmetric=symmetric)
+        _, right_pairs = distribute_pairs(pairs, i, symmetric=symmetric)
 
         # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
         #keep_R += int(np.sum([dMPS.dim[k]-1 for k in right_pairs])) + 1
         keep_R += int(np.sum([dMPS.dim[k] for k in right_pairs]))
 
+        if len(right_pairs) == 0:
+            # If we are at edge of chain and have no right sites assigned, preserve the identity operator.
+            QR_R = trace_env.get_RP(i, store=True).replace_label('vL*', 'p')
+            QR_Rs.append(QR_R)
+            keep_R += 1
         # TODO won't work if taking trace against non-trivial rho
         for rp in right_pairs:
             QR_R = trace_env.get_RP(rp, store=True) #.squeeze('vL*')
             B = dMPS.get_B(rp, form='B')
             B = B.gauge_total_charge('p', new_qconj=B.get_leg('p').qconj*-1) # +1 -> -1
             QR_R = npc.tensordot(B, QR_R, axes=['vR', 'vL'])  # axes_p + vL + vL* (technically vL* is from site rp+1, but it doesn't matter since it's trivial)
-            p_index = QR_R.get_leg_index('p')
-            if isinstance(QR_R.get_leg('p'), LegPipe):
-                # Why?
-                QR_R.legs[p_index] = QR_R.get_leg('p').to_LegCharge()
+
             for j in reversed(range(i+1, rp)):
                 TT = trace_env.bra.get_B(j) # Tensor trace; the identity element used for tracing over a site;
                 B = npc.tensordot(TT.conj(), dMPS.get_B(j, form='B'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR # Trace over this site
@@ -262,32 +260,124 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_R = QR_R.squeeze('vL*').transpose(['vL', 'p'])
             QR_Rs.append(QR_R)
     
-    # QR_L: labels=('vL', 'p), qconj=(+1, -1)
-    print('QR Legs:', [(qr_R, qr_R.legs) for qr_R in QR_Rs])
+    for QR_R in QR_Rs:
+        if npc.norm(QR_R.unary_blockwise(np.imag)) < dmt_par.get('imaginary_cutoff', 1.e-12):
+            QR_R.iunary_blockwise(np.real)
+        p_index = QR_R.get_leg_index('p')
+        if isinstance(QR_R.get_leg('p'), LegPipe):
+            # Why? Maybe this reduces overhead if the pipe is very deep?
+            QR_R.legs[p_index] = QR_R.get_leg('p').to_LegCharge()
+    # QR_R: labels=('vL', 'p), qconj=(+1, -1)
+    #print('QR Legs:', [(qr_R, qr_R.legs) for qr_R in QR_Rs])
     QR_R = npc.concatenate(QR_Rs, axis='p')
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
     return QR_R, keep_R, trace_env, MPO_envs
 
 def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
     """
-    See documentation for `build_QR_matrix_R`.
+    See documentation for build_QR_matrix_R
     """
 
+    # Bond i between sites i and i+1; truncating bond i
     QR_Ls = []
     keep_L = 0
     local_par = dmt_par.get('k_local_par', None)
     conjoined_par = dmt_par.get('conjoined_par', None)
-    #print('LP:', i)
-    if i == -1:
+    if i == -1: # Bond to the left of first site; do nothing
         return trace_env.get_LP(0).replace_label('vR*', 'p'), 1, trace_env, MPO_envs
-        
     if local_par is not None:
         k_local = local_par.get('k_local', (1,1)) # How many sites to include on either side of cut
         start_L = np.max([i+1-np.max([k_local[0], 1]), 0]) # include endpoint
-        #print(start_L)
+
         # Accounts for non-uniform local Hilbert space
         keep_L += np.prod([1] + [dMPS.dim[k] for k in range(start_L, i+1)]) if k_local[0] > 0 else 1
 
+        if k_local[0] == 0:
+            QR_L = trace_env.get_LP(i+1, store=True).replace_label('vR*', 'p')
+            # vR* points in
+        else:
+            # TODO won't work if taking trace against non-trivial rho
+            QR_L = trace_env.get_LP(start_L, store=True).add_trivial_leg(0, 'p', qconj=+1).squeeze('vR*') # strictly left of start_L
+            for j in range(start_L, i+1):
+                A = dMPS.get_B(j, form='A').replace_label('p', 'p1')
+                QR_L = npc.tensordot(QR_L, A, axes=['vR', 'vL'])  # axes_p + vL
+                QR_L = QR_L.combine_legs(['p', 'p1'], qconj=QR_L.get_leg('p').qconj).ireplace_label('(p.p1)', 'p')
+        QR_L.itranspose(['p','vR'])
+        QR_Ls.append(QR_L)
+
+    if MPO_envs is not None:
+        for Me in MPO_envs:
+            # Need to flip the leg of the W wR tensor, as this becomes the p leg of QR_L
+            QR_L = Me.get_LP(i, store=True) # vR (ket), wR, vR* (bra)
+            A = dMPS.get_B(i, form='A')
+            QR_L = npc.tensordot(QR_L, A, axes=(['vR'], ['vL'])) #  vR (ket, including site i), p, wR, vR* (bra)
+            W = Me.H.get_W(i)
+            W = W.gauge_total_charge('wR', new_qconj=W.get_leg('wR').qconj*-1) # -1 -> 1
+            QR_L = npc.tensordot(QR_L, W, axes=(['wR', 'p'], ['wL', 'p*'])) # vR (ket, including site i), p (from MPO on site i), wR (including site i), vR* (bra)
+            trace_tensor = trace_identity_MPS(dMPS).get_B(i)
+            QR_L = npc.tensordot(trace_tensor.conj(), QR_L, axes=(['p*', 'vL*'], ['p', 'vR*'])) # vR (ket), wR , vR* (bra); all including site i
+            QR_L = QR_L.combine_legs(['vR*', 'wR'], qconj=+1).replace_label('(vR*.wR)', 'p').transpose(['p', 'vR'])
+            QR_Ls.append(QR_L)
+            keep_L += QR_L.shape[QR_L.get_leg_index('p')]
+            
+    if conjoined_par is not None:
+        pairs = conjoined_par.get('pairs')
+        symmetric = conjoined_par.get('symmetric', True)
+        left_pairs, _ = distribute_pairs(pairs, i, symmetric=symmetric)
+
+        # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
+        #keep_R += int(np.sum([dMPS.dim[k]-1 for k in left_pairs]))
+        keep_L += int(np.sum([dMPS.dim[k] for k in left_pairs]))
+
+        if len(left_pairs) == 0:
+            # If we are at edge of chain and have no left sites assigned, preserve the identity operator.
+            QR_L = trace_env.get_LP(i+1, store=True).replace_label('vR*', 'p')
+            QR_Ls.append(QR_L)
+            keep_L += 1
+        # TODO won't work if taking trace against non-trivial rho
+        for lp in left_pairs:
+            QR_L = trace_env.get_LP(lp, store=True) #.squeeze('vR*')
+            A = dMPS.get_B(lp, form='A')
+            QR_L = npc.tensordot(QR_L, A, axes=['vR', 'vL'])  # axes_p + vR + vR* (technically vR* is from site sp-1, but it doesn't matter since it's trivial)
+            
+            for j in range(lp+1, i+1):
+                TT = trace_env.bra.get_B(j) # Tensor trace; the identity element used for tracing over a site;
+                A = npc.tensordot(TT.conj(), dMPS.get_B(j, form='A'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR # Trace over this site
+                QR_L = npc.tensordot(QR_L, A, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)
+            QR_L = QR_L.squeeze('vR*').transpose(['p', 'vR'])
+            QR_Ls.append(QR_L)
+            
+    for QR_L in QR_Ls:
+        if npc.norm(QR_L.unary_blockwise(np.imag)) < dmt_par.get('imaginary_cutoff', 1.e-12):
+            QR_L.iunary_blockwise(np.real)
+        p_index = QR_L.get_leg_index('p')
+        if isinstance(QR_L.get_leg('p'), LegPipe):
+            # Why? Maybe this reduces overhead if the pipe is very deep?
+            QR_L.legs[p_index] = QR_L.get_leg('p').to_LegCharge()
+    # QR_L: labels=('p', 'vR), qconj=(+1, -1)
+    #print('QL Legs:', [(qr_L, qr_L.legs) for qr_L in QR_Ls])
+    QR_L = npc.concatenate(QR_Ls, axis='p')
+    assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
+    return QR_L, keep_L, trace_env, MPO_envs
+
+def build_QR_matrix_L_old(dMPS, i, dmt_par, trace_env, MPO_envs):
+    """
+    See documentation for `build_QR_matrix_R`.
+    """
+    
+    # Bond i between sites i and i+1; truncating bond i
+    QR_Ls = []
+    keep_L = 0
+    local_par = dmt_par.get('k_local_par', None)
+    conjoined_par = dmt_par.get('conjoined_par', None)
+    if i == -1:
+        return trace_env.get_LP(0).replace_label('vR*', 'p'), 1, trace_env, MPO_envs
+    if local_par is not None:
+        k_local = local_par.get('k_local', (1,1)) # How many sites to include on either side of cut
+        start_L = np.max([i+1-np.max([k_local[0], 1]), 0]) # include endpoint
+
+        # Accounts for non-uniform local Hilbert space
+        keep_L += np.prod([1] + [dMPS.dim[k] for k in range(start_L, i+1)]) if k_local[0] > 0 else 1        
         # Define basis change matrices - Eqn. 16 of paper
         # Get env strictly to the left of site i and contract the A form site i tensor to it.
 

@@ -185,10 +185,9 @@ class TwoSiteTDVPEngine(TDVPEngine):
             dt = 2. * dt  # instead of updating the last pair of sites twice, we double the time
         # update two-site wavefunction
         theta, N = LanczosEvolution(self.eff_H, theta, self.lanczos_options).run(-0.5j * dt)
-        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
-            #C.dtype = 'float64' # I think this may automatically be happening?
         if self.combine:
             theta.itranspose(['(vL.p0)', '(p1.vR)'])  # shouldn't do anything
         else:
@@ -229,10 +228,9 @@ class TwoSiteTDVPEngine(TDVPEngine):
         theta = self.psi.get_theta(i, n=1, cutoff=self.S_inv_cutoff)
         theta = H1.combine_theta(theta)
         theta, _ = LanczosEvolution(H1, theta, self.lanczos_options).run(dt)
-        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
-            #C.dtype = 'float64' # I think this may automatically be happening?
         self.psi.set_B(i, theta.replace_label('p0', 'p'), form='Th')
 
     def post_update_local(self, err, **update_data):
@@ -281,10 +279,9 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
             dt = 2. * dt  # instead of updating the last pair of sites twice, we double the time
         # update two-site wavefunction
         theta, N = LanczosEvolution(self.eff_H, theta, self.lanczos_options).run(-0.5j * dt)
-        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
-            #C.dtype = 'float64' # I think this may automatically be happening?
         if self.combine:
             theta.itranspose(['(vL.p0)', '(p1.vR)'])  # shouldn't do anything
         else:
@@ -342,10 +339,9 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         print(npc.norm(theta))
         theta, _ = LanczosEvolution(H1, theta, self.lanczos_options).run(dt)
         print(npc.norm(theta))
-        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
-            #C.dtype = 'float64' # I think this may automatically be happening?
         self.psi.set_B(i, theta.replace_label('p0', 'p'), form='Th')
 
 class SingleSiteTDVPEngine(TDVPEngine):
@@ -402,10 +398,9 @@ class SingleSiteTDVPEngine(TDVPEngine):
 
         # update one-site wavefunction
         theta, N = LanczosEvolution(self.eff_H, theta, self.lanczos_options).run(-0.5j * dt)
-        if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
-            #C.dtype = 'float64' # I think this may automatically be happening?
         if self.move_right:
             self.right_moving_update(i0, theta)
         else:
