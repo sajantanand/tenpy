@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 from .algorithm import TimeEvolutionAlgorithm, TimeDependentHAlgorithm
 from ..linalg import np_conserved as npc
-from .truncation import svd_theta, TruncationError, truncate
+from .truncation import svd_theta, TruncationError, truncate, _machine_prec_trunc_par
 from ..linalg import random_matrix
 from ..algorithms import dmt_utils as dmt
 
@@ -636,16 +636,14 @@ class DMTTEBDEngine(TEBDEngine):
         theta = npc.tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
         theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
 
-        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff:
-        #if np.linalg.norm([d.imag for d in theta._data]) < self.imaginary_cutoff: # Remove small imaginary part
+        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
             #C.dtype = 'float64' # I think this may automatically be happening?
 
-
         # Perform the SVD and truncate the wavefunction
-        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
-        U, S, V, trunc_err1, renormalize = svd_theta(theta, svd_trunc_par_0,
+        svd_trunc_params_0 = self.options.get('svd_trunc_params_0', _machine_prec_trunc_par)
+        U, S, V, trunc_err1, renormalize = svd_theta(theta, svd_trunc_params_0,
                                                     inner_labels=['vR', 'vL'])
         self.psi.norm *= renormalize
         # Split legs and update matrices
@@ -658,12 +656,12 @@ class DMTTEBDEngine(TEBDEngine):
 
         # We've now applied the gate and split the two-site theta exactly via SVD. Now we need to use DMT to do truncation.
 
-        dmt_par = self.options['dmt_par']
+        dmt_params = self.options['dmt_params']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
-        svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
+        svd_trunc_params_2 = self.options.get('svd_trunc_params_2', _machine_prec_trunc_par)
         
-        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_par, trace_env, MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
+        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_2=svd_trunc_params_2)
         self.psi.norm *= renormalize
         self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err2
 

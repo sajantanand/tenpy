@@ -525,13 +525,14 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
     #print(R_L)
 
     np_R_L = R_L.to_ndarray()
-    perm_L = np.ones(np_R_L.shape[0], dtype=np.bool_)
+    #perm_L = np.ones(np_R_L.shape[0], dtype=np.bool_)
     # We want the rows that are non-zero.
     # So for each column, check which rows are non-zero.
     # TODO - There has to be a better way to do this.
-    for i in range(np_R_L.shape[1]):
-        for j in np.nonzero(np_R_L[:,i])[0]:
-            perm_L[j] = False
+    #for i in range(np_R_L.shape[1]):
+    #    for j in np.nonzero(np_R_L[:,i])[0]:
+    #        perm_L[j] = False
+    perm_L = np.logical_not(np.any(np_R_L, axis=1))
     perm_L = np.argsort(perm_L)
     #print('perm_L:', perm_L)
 
@@ -539,10 +540,11 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
     #print(R_R)
     
     np_R_R = R_R.to_ndarray()
-    perm_R = np.ones(np_R_R.shape[0], dtype=np.bool_)
-    for i in range(np_R_R.shape[1]):
-        for j in np.nonzero(np_R_R[:,i])[0]:
-            perm_R[j] = False
+    #perm_R = np.ones(np_R_R.shape[0], dtype=np.bool_)
+    #for i in range(np_R_R.shape[1]):
+    #    for j in np.nonzero(np_R_R[:,i])[0]:
+    #        perm_R[j] = False
+    perm_R = np.logical_not(np.any(np_R_R, axis=1))
     perm_R = np.argsort(perm_R)
     #print('perm_R:', perm_L)
     return Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R
@@ -613,6 +615,8 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
     M_trunc[keep_L:, keep_R:] = M_DR_trunc
     #print('M_trunc 1:', M_trunc)
     M_trunc = M_trunc.permute(np.argsort(perm_L), 'vL').permute(np.argsort(perm_R), 'vR')
+    #M_trunc = M.sort_legcharge()[1]
+    
     #print('permutted M_trunc 1:', M_trunc)
     if connected:
         M_trunc = M_trunc + npc.outer(orig_M.take_slice([0], ['vR']),

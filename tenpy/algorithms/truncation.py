@@ -335,7 +335,7 @@ def _combine_constraints(good1, good2, warn):
     res = np.logical_and(good1, good2)
     if np.any(res):
         return res
-    warnings.warn("truncation: can't satisfy constraint for " + warn, stacklevel=3)
+    #warnings.warn("truncation: can't satisfy constraint for " + warn, stacklevel=3)
     return good1
 
 
