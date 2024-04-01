@@ -879,7 +879,7 @@ class MPO:
         except AttributeError:
             self.rotated_basis = True
         """
-        
+
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
         """Calculate ``<psi|self|psi>/<psi|psi>`` (or density for infinite).
 
@@ -1215,6 +1215,7 @@ class MPO:
         options = asConfig(options, "ApplyMPO")
         method = options['compression_method']
         trunc_params = options.subconfig('trunc_params')
+        #print('Before compression:', psi.chi)
         if method == 'SVD':
             self.apply_naively(psi)
             return psi.compress_svd(trunc_params)
@@ -1228,7 +1229,7 @@ class MPO:
         elif method == 'DMT_naive':
             # SAJANT TODO; this is bad!!! We don't want to naively contract the MPO naively into the MPS since the QR will be of cost O(chi^3 D^3)
             # where $D$ is the MPO bond dimension and $\chi$ is the MPS bond dimension.
-            dmt_params = options['dmt_par']
+            dmt_params = options['dmt_params']
             trace_env = options.get('trace_env', None)
             MPO_envs = options.get('MPO_envs', None)
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
@@ -1240,37 +1241,78 @@ class MPO:
             options['MPO_envs'] = MPO_envs
             return trunc_err
         elif method == 'DMT_zip_up':
-            trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
-            # print("After DMT zip_up: ", psi.chi)
-            # psi is NOT in canonical form. Tensors are in A form. 
-            
-            dmt_params = options['dmt_par']
+            dmt_params = options['dmt_params']
             trace_env = options.get('trace_env', None)
             MPO_envs = options.get('MPO_envs', None)
+            # Remove any existing environments, since applying the MPO will mess them up.
+            if trace_env is not None:
+                trace_env.clear()
+                options['trace_env'] = trace_env
+            if MPO_envs is not None:
+                for ME in MPO_envs:
+                    ME.clear()
+                options['MPO_envs'] = MPO_envs
+
+            # Sweeps right; uses any existing RPs and leaves LPs behind
+            # RPs from previous left compression are no longer valid!
+            trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
+            #print("After DMT zip_up: ", psi.chi)
+            # psi is NOT in canonical form. Tensors are in A form.
+            
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
-            trunc_err2, trace_env, MPO_envs = psi.compress_dmt_canonical(trunc_params, dmt_params, move_right=False, 
-                                                                         trace_env=trace_env, MPO_envs=MPO_envs, 
-                                                                         svd_trunc_params_0=svd_trunc_params_0, 
+            # Sweeps left; leaves RPs behind.
+            trunc_err2, trace_env, MPO_envs = psi.compress_dmt_canonical(trunc_params, dmt_params, move_right=False,
+                                                                         trace_env=trace_env, MPO_envs=MPO_envs,
+                                                                         svd_trunc_params_0=svd_trunc_params_0,
                                                                          svd_trunc_params_2=svd_trunc_params_2) # NO QR sweep to re-establish form before truncating final time
             #psi.canonical_form() # Is this needed?
+
             
             options['trace_env'] = trace_env
             options['MPO_envs'] = MPO_envs
             return trunc_err1 + trunc_err2
         elif method == 'DMT_variational':
+            raise NotImplementedError('Something is not right.')
             orig_psi = psi.copy()
-            # Should truncate immediately to chi since variational will improve result at fixed chi
-            trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
+            print('Original:', psi.chi)
+            dmt_params = options['dmt_params']
+            trace_env = options.get('trace_env', None)
+            MPO_envs = options.get('MPO_envs', None)
+            # Remove any existing environments, since applying the MPO will mess them up.
+            if trace_env is not None:
+                trace_env.clear()
+                options['trace_env'] = trace_env
+            if MPO_envs is not None:
+                for ME in MPO_envs:
+                    ME.clear()
+                options['MPO_envs'] = MPO_envs
 
-            psi.canonical_form() # Re-establish canonical form before doing variational compression since both forms are needed
-            #print("After DMT zip_up: ", psi.chi)
-            #print("Original: ", orig_psi.chi)
+            # Sweeps right; uses any existing RPs and leaves LPs behind
+            # RPs from previous left compression are no longer valid!
+            trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
+            print("After DMT zip_up: ", psi.chi)
+            # psi is NOT in canonical form. Tensors are in A form.
+            
+            svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
+            svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
+            # Sweeps left; leaves RPs behind.
+            trunc_err2, trace_env, MPO_envs = psi.compress_dmt_canonical(trunc_params, dmt_params, move_right=False,
+                                                                         trace_env=trace_env, MPO_envs=MPO_envs,
+                                                                         svd_trunc_params_0=svd_trunc_params_0,
+                                                                         svd_trunc_params_2=svd_trunc_params_2) # NO QR sweep to re-establish form before truncating final time
+            #psi.canonical_form() # Is this needed?
+            print(psi.norm_test())
+            
             options['trace_env'] = trace_env
             options['MPO_envs'] = MPO_envs
-            
+
             from ..algorithms.mps_common import VariationalApplyGuessMPODMT
-            return VariationalApplyGuessMPODMT(psi, orig_psi, self, options).run() # This is the only error since zipup is just used for initial guess
+            err =  VariationalApplyGuessMPODMT(psi, orig_psi, self, options).run() # This is the only error since zipup is just used for initial guess
+            print("After DMT variational: ", psi.chi)
+            print(psi.norm_test())
+            #psi.canonical_form()
+            return err
         # TODO: zipup method infinite?
         raise ValueError("Unknown compression method: " + repr(method))
 
@@ -1428,7 +1470,7 @@ class MPO:
         See documentation of `apply_zipup` for details
         """
 
-        dmt_params = options['dmt_par']
+        dmt_params = options['dmt_params']
         trace_env = options.get('trace_env', None)
         MPO_envs = options.get('MPO_envs', None)
         svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
@@ -1436,7 +1478,7 @@ class MPO:
 
         # TODO - this is not as efficient as possible
         self.apply_naively(psi) # Put MPO directly into MPS (in place)
-
+        
         options = asConfig(options, "zip_up")
         m_temp = options.get('m_temp', 2)
         trunc_weight = options.get('trunc_weight', 1.)

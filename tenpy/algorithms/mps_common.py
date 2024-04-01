@@ -2164,7 +2164,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         i0 = self.i0
         new_psi = self.psi    # This is the current guess for psi, the optimized wave function
 
-        dmt_par = self.options['dmt_par']
+        dmt_params = self.options['dmt_params']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
 
@@ -2202,10 +2202,13 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         new_psi.set_SR(i0, S_OC)
 
         # Get change of basis matrices using current |psi>.
-        QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = dmt.build_QR_matrices(new_psi, i0, dmt_par, trace_env, MPO_envs)
-        Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = dmt.remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-14))
-
+        QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = dmt.build_QR_matrices(new_psi, i0, dmt_params, trace_env, MPO_envs)
+        Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = dmt.remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
         if keep_L >= chi or keep_R >= chi:
+            # On the left sweep (updating RP), track change of theta)
+            if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
+                self._theta_diff.append(0.0) # No change in theta
+            self.renormalize.append(1)
             # We cannot truncate, so return.
             # Nothing is done to the MPS, we don't use the new theta
             update_data = {'err': TruncationError(), 'U': U_OC, 'VH': VH_OC}
@@ -2233,7 +2236,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         M_norm = npc.norm(M_OC)
         #print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
-        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_par.get('connected', False), keep_L, keep_R, perm_L, perm_R)
+        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, perm_L, perm_R)
 
         svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
         U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_par_2, renormalize=True)
@@ -2255,7 +2258,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
 
         #return err + err2, renormalization2, trace_env, MPO_envs
 
-        #trunc_err2, renormalize2, trace_env, MPO_envs = dmt.dmt_theta(new_psi, i0, self.trunc_params, dmt_par, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
+        #trunc_err2, renormalize2, trace_env, MPO_envs = dmt.dmt_theta(new_psi, i0, self.trunc_params, dmt_params, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
 
         # Need to keep track of the envs for use on future steps
         self.options['trace_env'] = trace_env
@@ -2281,10 +2284,10 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         return update_data
 
         """
-        #QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(new_psi, i0, dmt_par, trace_env, MPO_envs)
+        #QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(new_psi, i0, dmt_params, trace_env, MPO_envs)
         print(i0)
-        LP, keep_L, trace_env, MPO_envs = dmt.build_QR_matrix_L(self.psi, i0-1, dmt_par, trace_env, MPO_envs)
-        RP, keep_R, trace_env, MPO_envs = dmt.build_QR_matrix_R(self.psi, i0+1, dmt_par, trace_env, MPO_envs)
+        LP, keep_L, trace_env, MPO_envs = dmt.build_QR_matrix_L(self.psi, i0-1, dmt_params, trace_env, MPO_envs)
+        RP, keep_R, trace_env, MPO_envs = dmt.build_QR_matrix_R(self.psi, i0+1, dmt_params, trace_env, MPO_envs)
         LP = trace_env.get_LP(i0)
         RP = trace_env.get_RP(i0+1)
         keep_L = 4
@@ -2366,12 +2369,12 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
 
         print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
 
-        dmt_par = self.options['dmt_par']
+        dmt_params = self.options['dmt_params']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
         svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
 
-        trunc_err2, renormalize2, trace_env, MPO_envs = dmt.dmt_theta(new_psi, i0, self.trunc_params, dmt_par, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
+        trunc_err2, renormalize2, trace_env, MPO_envs = dmt.dmt_theta(new_psi, i0, self.trunc_params, dmt_params, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
 
         # Need to keep track of the envs for use on future steps
         self.options['trace_env'] = trace_env
@@ -2545,4 +2548,3 @@ class VariationalApplyGuessMPODMT(VariationalApplyGuessMPO,VariationalCompressio
 
     def update_new_psi(self, theta):
         return VariationalCompressionGuessDMT.update_new_psi(self, theta)
-
