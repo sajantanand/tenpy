@@ -271,6 +271,11 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
     """
 
     def update_local(self, theta, **kwargs):
+        """
+        The trace can change when doing TDVP since we evolve the entirety of the Theta matrix.
+        In principle, we could evolve all of the Theta matrix except for the (0,0) entry so that the
+        norm is guaranteed to be unchanged. I'm not sure how to do this in practice.
+        """
         i0 = self.i0
         L = self.psi.L
 
@@ -288,10 +293,10 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
             theta = theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], new_axes=[0, 1],
                                        qconj=[+1, -1])
         qtotal_i0 = self.psi.get_B(i0, form=None).qtotal
-        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
+        svd_trunc_params_0 = self.options.get('svd_trunc_params_0', _machine_prec_trunc_par)
+        #print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
         U, S, VH, err, renormalize = svd_theta(theta,
-                                     svd_trunc_par_0,
+                                     svd_trunc_params_0,
                                      qtotal_LR=[qtotal_i0, None],
                                      inner_labels=['vR', 'vL'])
         self.psi.norm *= renormalize
@@ -301,13 +306,13 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         self.psi.set_B(i0, B0, form='A')  # left-canonical
         self.psi.set_B(i0 + 1, B1, form='B')  # right-canonical
         self.psi.set_SR(i0, S)
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
-        dmt_par = self.options['dmt_par']
+        #print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
+        dmt_params = self.options['dmt_params']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
-        svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
+        svd_trunc_params_2 = self.options.get('svd_trunc_params_2', _machine_prec_trunc_par)
 
-        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_par, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
+        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_params, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_params_2=svd_trunc_params_2)
         self.psi.norm *= renormalize
 
         # Need to keep track of the envs for use on future steps
@@ -319,26 +324,31 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         update_data = {'err': err+trunc_err2, 'N': N, 'U': U, 'VH': VH}
         # earlier update of environments, since they are needed for the one_site_update()
         super().update_env(**update_data)  # new environments, e.g. LP[i0+1] on right move.
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
-        self.env.clear()
-        print(self.psi.form)
+        #print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
+        
+        #print(f"Bond {i0}")
+        #self.env.clear() # TODO: we don't want to clear everything!
+        
+        
+        #print(self.psi.form)
         if self.move_right:
             # note that i0 == L-2 is left-moving
             self.one_site_update(i0 + 1, 0.5j * self.dt)
         elif (self.move_right is False):
             self.one_site_update(i0, 0.5j * self.dt)
         # for the last update of the sweep, where move_right is None, there is no one_site_update
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
-        print(self.psi.form)
+        #print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2))
+        #print(self.psi.form)
+        #print(self.psi.chi)
         return update_data
 
     def one_site_update(self, i, dt):
         H1 = OneSiteH(self.env, i, combine=False)
         theta = self.psi.get_theta(i, n=1, cutoff=self.S_inv_cutoff)
         theta = H1.combine_theta(theta)
-        print(npc.norm(theta))
+        #print(npc.norm(theta))
         theta, _ = LanczosEvolution(H1, theta, self.lanczos_options).run(dt)
-        print(npc.norm(theta))
+        #print(npc.norm(theta))
         if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
