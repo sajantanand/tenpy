@@ -155,7 +155,7 @@ this way.
 Instead, we should put the MPO to preserve INTO the state $\rho$ we trace against (typically the infintie temperature density matrix).
 """
 
-def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
+def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
     """
     Construct change of basis matrices for the right Hilbert space on bond `i`. There are three types of DMT that can be combined:
     (1) Local DMT - preserve the tensor product of operators a desired `radius` from the truncated bond; radius can be different on left and right
@@ -167,7 +167,7 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
             The density matrix / operator that is to be truncated
         i: int
             Bond on which we truncate; bond `i` is to the right of site `i`
-        dmt_par: dictionary
+        dmt_params: dictionary
             collects all paramters for local and conjoined DMT
         trace_env: TeNPy MPOEnvironment
             Used to getting operators when taking trace against a state (presumably the identity, but this can be generalized to any state)
@@ -191,12 +191,12 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
     # Bond i between sites i and i+1; truncating bond i
     QR_Rs = []
     keep_R = 0
-    local_par = dmt_par.get('k_local_par', None)
-    conjoined_par = dmt_par.get('conjoined_par', None)
+    local_params = dmt_params.get('k_local_params', None)
+    conjoined_params = dmt_params.get('conjoined_params', None)
     if i == dMPS.L-1: # Bond to the right of last site; do nothing
         return trace_env.get_RP(i).replace_label('vL*', 'p'), 1, trace_env, MPO_envs
-    if local_par is not None:
-        k_local = local_par.get('k_local', (1,1)) # How many sites to include on either side of cut
+    if local_params is not None:
+        k_local = local_params.get('k_local', (1,1)) # How many sites to include on either side of cut
         end_R = np.min([i+1+np.max([k_local[1], 1]), dMPS.L]) # do not include endpoint
 
         # Accounts for non-uniform local Hilbert space
@@ -232,9 +232,9 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_Rs.append(QR_R)
             keep_R += QR_R.shape[QR_R.get_leg_index('p')]
             
-    if conjoined_par is not None:
-        pairs = conjoined_par.get('pairs')
-        symmetric = conjoined_par.get('symmetric', True)
+    if conjoined_params is not None:
+        pairs = conjoined_params.get('pairs')
+        symmetric = conjoined_params.get('symmetric', True)
         _, right_pairs = distribute_pairs(pairs, i, symmetric=symmetric)
 
         # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
@@ -261,7 +261,7 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_Rs.append(QR_R)
     
     for QR_R in QR_Rs:
-        if npc.norm(QR_R.unary_blockwise(np.imag)) < dmt_par.get('imaginary_cutoff', 1.e-12):
+        if npc.norm(QR_R.unary_blockwise(np.imag)) < dmt_params.get('imaginary_cutoff', 1.e-12):
             QR_R.iunary_blockwise(np.real)
         p_index = QR_R.get_leg_index('p')
         if isinstance(QR_R.get_leg('p'), LegPipe):
@@ -273,7 +273,7 @@ def build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs):
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
     return QR_R, keep_R, trace_env, MPO_envs
 
-def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
+def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
     """
     See documentation for build_QR_matrix_R
     """
@@ -281,12 +281,12 @@ def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
     # Bond i between sites i and i+1; truncating bond i
     QR_Ls = []
     keep_L = 0
-    local_par = dmt_par.get('k_local_par', None)
-    conjoined_par = dmt_par.get('conjoined_par', None)
+    local_params = dmt_params.get('k_local_params', None)
+    conjoined_params = dmt_params.get('conjoined_params', None)
     if i == -1: # Bond to the left of first site; do nothing
         return trace_env.get_LP(0).replace_label('vR*', 'p'), 1, trace_env, MPO_envs
-    if local_par is not None:
-        k_local = local_par.get('k_local', (1,1)) # How many sites to include on either side of cut
+    if local_params is not None:
+        k_local = local_params.get('k_local', (1,1)) # How many sites to include on either side of cut
         start_L = np.max([i+1-np.max([k_local[0], 1]), 0]) # include endpoint
 
         # Accounts for non-uniform local Hilbert space
@@ -320,9 +320,9 @@ def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_Ls.append(QR_L)
             keep_L += QR_L.shape[QR_L.get_leg_index('p')]
             
-    if conjoined_par is not None:
-        pairs = conjoined_par.get('pairs')
-        symmetric = conjoined_par.get('symmetric', True)
+    if conjoined_params is not None:
+        pairs = conjoined_params.get('pairs')
+        symmetric = conjoined_params.get('symmetric', True)
         left_pairs, _ = distribute_pairs(pairs, i, symmetric=symmetric)
 
         # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
@@ -348,7 +348,7 @@ def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
             QR_Ls.append(QR_L)
             
     for QR_L in QR_Ls:
-        if npc.norm(QR_L.unary_blockwise(np.imag)) < dmt_par.get('imaginary_cutoff', 1.e-12):
+        if npc.norm(QR_L.unary_blockwise(np.imag)) < dmt_params.get('imaginary_cutoff', 1.e-12):
             QR_L.iunary_blockwise(np.real)
         p_index = QR_L.get_leg_index('p')
         if isinstance(QR_L.get_leg('p'), LegPipe):
@@ -360,13 +360,13 @@ def build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs):
     assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
     return QR_L, keep_L, trace_env, MPO_envs
 
-def build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs):
+def build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs):
     """
     Actually call the functions above; see funcations above for documentation.
     """
 
-    QR_L, keep_L, trace_env, MPO_envs = build_QR_matrix_L(dMPS, i, dmt_par, trace_env, MPO_envs)
-    QR_R, keep_R, trace_env, MPO_envs = build_QR_matrix_R(dMPS, i, dmt_par, trace_env, MPO_envs)
+    QR_L, keep_L, trace_env, MPO_envs = build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs)
+    QR_R, keep_R, trace_env, MPO_envs = build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs)
 
     return QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs
 
@@ -556,7 +556,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
     args:
         M: npc Array
             Bond tensor after moving into desired basis so that we can truncate lower right block
-        svd_trunc_par: dictionary
+        svd_trunc_params: dictionary
             Standard TeNPy truncation parameters
         connected: Boolean
             Do we perform the operation in Eq. 25 of https://arxiv.org/pdf/1707.01506.pdf?
@@ -624,7 +624,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
     #print('M_trunc 2:', M_trunc)
     return M_trunc, err
 
-def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
+def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
               trace_env, MPO_envs,
               svd_trunc_params_2=_machine_prec_trunc_par):
     """
@@ -670,7 +670,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     if chi == 1: # Cannot do any truncation, so give up.
         return TruncationError(), 1, trace_env, MPO_envs
 
-    QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_par, trace_env, MPO_envs)
+    QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs)
     #print('QR_L norm:', npc.norm(QR_L), QR_L.shape)
     #print(QR_L)
     #print('QR_R norm:', npc.norm(QR_R), QR_R.shape)
@@ -681,7 +681,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     #Q_L, R_L, Q_R, R_R, keep_L, keep_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 0))#1.e-14))
     #perm_L = np.arange(chi)
     #perm_R = np.arange(chi)
-    Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 1.e-18))
+    Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))
     #print('Keeps:', keep_L, keep_R)
     #print('Perms:', perm_L, perm_R)
     
@@ -696,7 +696,7 @@ def dmt_theta(dMPS, i, svd_trunc_par, dmt_par,
     #print('M norm:', M_norm)
     #print('M:', M)
     
-    M_trunc, err = truncate_M(M, svd_trunc_par, dmt_par.get('connected', False), keep_L, keep_R, perm_L, perm_R)
+    M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False), keep_L, keep_R, perm_L, perm_R)
     #print('M_trunc norm:', npc.norm(M_trunc))
     
     # SAJANT - Set svd_min to 0 to make sure no SVs are dropped? Or do we need some cutoff to remove the

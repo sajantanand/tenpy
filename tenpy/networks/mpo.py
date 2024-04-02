@@ -1229,9 +1229,20 @@ class MPO:
         elif method == 'DMT_naive':
             # SAJANT TODO; this is bad!!! We don't want to naively contract the MPO naively into the MPS since the QR will be of cost O(chi^3 D^3)
             # where $D$ is the MPO bond dimension and $\chi$ is the MPS bond dimension.
+
             dmt_params = options['dmt_params']
             trace_env = options.get('trace_env', None)
             MPO_envs = options.get('MPO_envs', None)
+            # Remove any existing environments, since applying the MPO will mess them up.
+            if trace_env is not None:
+                trace_env.clear()
+                options['trace_env'] = trace_env
+            if MPO_envs is not None:
+                for ME in MPO_envs:
+                    ME.clear()
+                options['MPO_envs'] = MPO_envs
+
+
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
 
@@ -1273,7 +1284,7 @@ class MPO:
             options['MPO_envs'] = MPO_envs
             return trunc_err1 + trunc_err2
         elif method == 'DMT_variational':
-            raise NotImplementedError('Something is not right.')
+            raise NotImplementedError('Something is not right / very slow.')
             orig_psi = psi.copy()
             print('Original:', psi.chi)
             dmt_params = options['dmt_params']
