@@ -11,7 +11,7 @@ from .model import CouplingMPOModel, NearestNeighborModel
 from .lattice import Chain
 from ..tools.params import asConfig
 
-__all__ = ['SpinModel', 'SpinChain']
+__all__ = ['SpinModel', 'SpinChain', 'ExponentiallyDecayingXXZ']
 
 
 class SpinModel(CouplingMPOModel):
@@ -113,6 +113,8 @@ class ExponentiallyDecayingXXZ(CouplingMPOModel):
     f(r) * [X_i X_{i+r} + Y_i Y_{i+r} + Delta*Z_i Z_{i+r}]
     f(r) is approximated by a set of exponentials
     bond dimension is 3 * num_exponentials + 2
+
+    One needs to approximate f(r) prior to initialization of the model.
     """
 
     def init_sites(self, model_params):

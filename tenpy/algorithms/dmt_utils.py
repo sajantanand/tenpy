@@ -215,7 +215,7 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
                 QR_R = npc.tensordot(B, QR_R, axes=['vR', 'vL'])  # axes_p + vL
                 QR_R = QR_R.combine_legs(['p', 'p1'], qconj=QR_R.get_leg('p').qconj).ireplace_label('(p.p1)', 'p')
         QR_R.itranspose(['vL', 'p'])
-        QR_Rs.append(QR_R)       
+        QR_Rs.append(QR_R)
 
     if MPO_envs is not None:
         for Me in MPO_envs:
@@ -231,7 +231,7 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
             QR_R = QR_R.combine_legs(['vL*', 'wL'], qconj=-1).replace_label('(vL*.wL)', 'p').transpose(['vL', 'p'])
             QR_Rs.append(QR_R)
             keep_R += QR_R.shape[QR_R.get_leg_index('p')]
-            
+
     if conjoined_params is not None:
         pairs = conjoined_params.get('pairs')
         symmetric = conjoined_params.get('symmetric', True)
@@ -259,7 +259,7 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
                 QR_R = npc.tensordot(B, QR_R, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)
             QR_R = QR_R.squeeze('vL*').transpose(['vL', 'p'])
             QR_Rs.append(QR_R)
-    
+
     for QR_R in QR_Rs:
         if npc.norm(QR_R.unary_blockwise(np.imag)) < dmt_params.get('imaginary_cutoff', 1.e-12):
             QR_R.iunary_blockwise(np.real)
@@ -319,7 +319,7 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
             QR_L = QR_L.combine_legs(['vR*', 'wR'], qconj=+1).replace_label('(vR*.wR)', 'p').transpose(['p', 'vR'])
             QR_Ls.append(QR_L)
             keep_L += QR_L.shape[QR_L.get_leg_index('p')]
-            
+
     if conjoined_params is not None:
         pairs = conjoined_params.get('pairs')
         symmetric = conjoined_params.get('symmetric', True)
@@ -339,14 +339,14 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
             QR_L = trace_env.get_LP(lp, store=True) #.squeeze('vR*')
             A = dMPS.get_B(lp, form='A')
             QR_L = npc.tensordot(QR_L, A, axes=['vR', 'vL'])  # axes_p + vR + vR* (technically vR* is from site sp-1, but it doesn't matter since it's trivial)
-            
+
             for j in range(lp+1, i+1):
                 TT = trace_env.bra.get_B(j) # Tensor trace; the identity element used for tracing over a site;
                 A = npc.tensordot(TT.conj(), dMPS.get_B(j, form='A'), axes=(['p*'], ['p'])) # vL*, vR*, vL, VR # Trace over this site
                 QR_L = npc.tensordot(QR_L, A, axes=(['vR*', 'vR'], (['vL*', 'vL'])))  # axes_p + (vR*, vR)
             QR_L = QR_L.squeeze('vR*').transpose(['p', 'vR'])
             QR_Ls.append(QR_L)
-            
+
     for QR_L in QR_Ls:
         if npc.norm(QR_L.unary_blockwise(np.imag)) < dmt_params.get('imaginary_cutoff', 1.e-12):
             QR_L.iunary_blockwise(np.real)
@@ -394,7 +394,7 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
             Number of independent operator combinations to preserve on left and right after redundancy removed
     """
     assert False, "Use 'remove_redundancy_SVD' instead."
-    
+
     Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
                           mode='complete',
                           inner_labels=['vR*', 'vR'],
@@ -489,7 +489,7 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
                 QR_L.legs[p_index] = QR_L.legs[p_index].to_LegCharge()
             QR_L.iproject(projs_L, 'p')
             keep_L = np.sum(projs_L)
-        
+
         Q_R, s_R, R_R = npc.svd(QR_R,
                               full_matrices=True,
                               cutoff=None,
@@ -503,7 +503,7 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
                 QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
             QR_R.iproject(projs_R, 'p')
             keep_R = np.sum(projs_R)
-    
+
     Q_L, R_L = npc.qr(QR_L,
                       mode='complete',
                       inner_labels=['vR*', 'vR'],
@@ -511,7 +511,7 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
                       pos_diag_R=True,
                       qtotal_Q=QR_L.qtotal,
                       inner_qconj=QR_L.get_leg('vR').conj().qconj)
-    
+
     Q_R, R_R = npc.qr(QR_R,
                       mode='complete',
                       inner_labels=['vL*', 'vL'],
@@ -538,7 +538,7 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
 
     #print(Q_R)
     #print(R_R)
-    
+
     np_R_R = R_R.to_ndarray()
     #perm_R = np.ones(np_R_R.shape[0], dtype=np.bool_)
     #for i in range(np_R_R.shape[1]):
@@ -584,7 +584,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
     M_DR = M.copy()
     # SAJANT TODO - should we just use indexing?
     #M_DR = M_DR[proj_L, :][:, proj_R]
-    
+
     #M_DR = M_DR[proj_L[:,None], proj_R[None,:]]
     M_DR = M_DR[keep_L:, keep_R:]
     #M_DR.iproject([[False] * keep_L + [True] * (M_DR.get_leg('vL').ind_len - keep_L),
@@ -597,6 +597,8 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
     # discard SVs**2, divided by the original norm squared of all of the SVs.
     # This is the error in SVD truncation, given a non-normalized initial state.
     #print('M_DR:', M_DR)
+    svd_trunc_params = deepcopy(svd_trunc_params)
+    svd_trunc_params['chi_max'] = np.max([0, svd_trunc_params['chi_max'] - keep_L - keep_R + 1])
     UM, sM, VM, err, renormalization = svd_theta(M_DR, svd_trunc_params, renormalize=False)
     # All we want to do here is reduce the rank of M_DR
     if svd_trunc_params.get('chi_max', None) == 0:
@@ -616,7 +618,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
     #print('M_trunc 1:', M_trunc)
     M_trunc = M_trunc.permute(np.argsort(perm_L), 'vL').permute(np.argsort(perm_R), 'vR')
     #M_trunc = M.sort_legcharge()[1]
-    
+
     #print('permutted M_trunc 1:', M_trunc)
     if connected:
         M_trunc = M_trunc + npc.outer(orig_M.take_slice([0], ['vR']),
@@ -641,7 +643,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     form while tensor i+1 should be in right ('B') form. TEBD moves the OC by applying gates, but if we want to
     only truncate a dMPS using this function, we need to explicitly move the OC.
     """
-    
+
     # Check that the MPS has the proper form; need A to the left of (i,i+1) and B to the right
     assert dMPS.form[:i] == [(1.0, 0.0) for _ in range(i)], dMPS.form[:i]
     assert dMPS.form[i+2:] == [(0.0, 1.0) for _ in range(dMPS.L - i - 2)], dMPS.form[i+2:]
@@ -676,7 +678,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     #print('QR_R norm:', npc.norm(QR_R), QR_R.shape)
     #print(QR_R)
     #print('Keeps:', keep_L, keep_R)
-    
+
     # Always need to call this function, as it performs the QR; remove redundancy if R_cutoff > 0.0
     #Q_L, R_L, Q_R, R_R, keep_L, keep_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 0))#1.e-14))
     #perm_L = np.arange(chi)
@@ -684,7 +686,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))
     #print('Keeps:', keep_L, keep_R)
     #print('Perms:', perm_L, perm_R)
-    
+
     if keep_L >= chi or keep_R >= chi:
         # We cannot truncate, so return.
         # Nothing is done to the MPS, except for moving the OC one site ot the left
@@ -695,10 +697,10 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     M_norm = npc.norm(M)
     #print('M norm:', M_norm)
     #print('M:', M)
-    
+
     M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False), keep_L, keep_R, perm_L, perm_R)
     #print('M_trunc norm:', npc.norm(M_trunc))
-    
+
     # SAJANT - Set svd_min to 0 to make sure no SVs are dropped? Or do we need some cutoff to remove the
     # SVs corresponding to the rank we removed earlier from M_DR
     U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
@@ -724,7 +726,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     new_B = npc.tensordot(VH, npc.tensordot(Q_R.conj(), dMPS.get_B(i+1, form='B'), axes=(['vL*', 'vL'])),axes=(['vR', 'vL']))
     #print('A norm:', npc.norm(new_A))
     #print('B norm:', npc.norm(new_B))
-    
+
     dMPS.set_SR(i, S)
     dMPS.set_B(i, new_A, form='A')
     dMPS.set_B(i+1, new_B, form='B')
