@@ -117,10 +117,10 @@ class ExponentiallyDecayingXXZ(CouplingMPOModel):
 
     def init_sites(self, model_params):
         conserve = model_params.get('conserve', None)
-        
+
         sort_charge = model_params.get('sort_charge', None)
         S = model_params.get('S', 0.5)
-        
+
         site = SpinSite(S=S, conserve=conserve, sort_charge=sort_charge)
         return site
 
@@ -130,7 +130,8 @@ class ExponentiallyDecayingXXZ(CouplingMPOModel):
         delta = model_params.get('delta', 1)
 
         for lam, pre in zip(lambdas, prefactors):
-            self.add_exponentially_decaying_coupling(pre*4, lam, 'Sx', 'Sx')
-            self.add_exponentially_decaying_coupling(pre*4, lam, 'Sy', 'Sy')
+            # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+            # Sp Sm + Sm Sp = 2 (Sx Sx + Sy Sy)
+            self.add_exponentially_decaying_coupling(pre*2, lam, 'Sp', 'Sm', plus_hc=True)
             self.add_exponentially_decaying_coupling(pre*4*delta, lam, 'Sz', 'Sz')
         # done
