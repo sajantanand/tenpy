@@ -1668,7 +1668,7 @@ class CouplingModel(Model):
                     H_bond[i] = Hb + Hb.conj().itranspose(Hb.get_leg_labels())
         return H_bond
 
-    def calc_H_MPO(self, tol_zero=1.e-15):
+    def calc_H_MPO(self, tol_zero=1.e-15, insert_all_id=True):
         """Calculate MPO representation of the Hamiltonian.
 
         Uses :attr:`onsite_terms` and :attr:`coupling_terms` to build an MPOGraph
@@ -1690,7 +1690,7 @@ class CouplingModel(Model):
         ct.remove_zeros(tol_zero)
         edt = self.exp_decaying_terms
 
-        H_MPO_graph = mpo.MPOGraph.from_terms((ot, ct, edt), self.lat.mps_sites(), self.lat.bc_MPS)
+        H_MPO_graph = mpo.MPOGraph.from_terms((ot, ct, edt), self.lat.mps_sites(), self.lat.bc_MPS, insert_all_id=insert_all_id)
         H_MPO = H_MPO_graph.build_MPO()
         H_MPO.max_range = ct.max_range()
         H_MPO.explicit_plus_hc = self.explicit_plus_hc
