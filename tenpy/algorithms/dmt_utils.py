@@ -196,7 +196,7 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
     if i == dMPS.L-1: # Bond to the right of last site; do nothing
         return trace_env.get_RP(i).replace_label('vL*', 'p'), 1, trace_env, MPO_envs
     if local_params is not None:
-        k_local = local_params.get('k_local', (1,1)) # How many sites to include on either side of cut
+        k_local = local_params.get('k_local') # How many sites to include on either side of cut
         end_R = np.min([i+1+np.max([k_local[1], 1]), dMPS.L]) # do not include endpoint
 
         # Accounts for non-uniform local Hilbert space
@@ -286,7 +286,7 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
     if i == -1: # Bond to the left of first site; do nothing
         return trace_env.get_LP(0).replace_label('vR*', 'p'), 1, trace_env, MPO_envs
     if local_params is not None:
-        k_local = local_params.get('k_local', (1,1)) # How many sites to include on either side of cut
+        k_local = local_params.get('k_local') # How many sites to include on either side of cut
         start_L = np.max([i+1-np.max([k_local[0], 1]), 0]) # include endpoint
 
         # Accounts for non-uniform local Hilbert space
@@ -393,59 +393,43 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
         keep_L, keep_R: int, int
             Number of independent operator combinations to preserve on left and right after redundancy removed
     """
-    assert False, "Use 'remove_redundancy_SVD' instead."
+    def get_indices(R, cutoff):
+        """
+        Determine which rows of R have norm < cutoff. These are the columns of Q that we can eventually
+        truncate once we get the M matrix.
+        """
+        indices = np.zeros(R.legs[0].ind_len, dtype=bool)
+        for s, d in zip(R._qdata, [np.linalg.norm(d, axis=1) > cutoff for d in R._data]):
+            indices[R.legs[0].slices[s[0]]:R.legs[0].slices[s[0]+1]] = d
+        return np.logical_not(indices)
 
     Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
                           mode='complete',
                           inner_labels=['vR*', 'vR'],
                           #cutoff=1.e-12, # Need this to be none to have square Q
                           pos_diag_R=True,
+                          qtotal_Q=QR_L.qtotal,
                           inner_qconj=QR_L.get_leg('vR').conj().qconj)
     Q_R, R_R = npc.qr(QR_R.itranspose(['vL', 'p']),
                           mode='complete',
                           inner_labels=['vL*', 'vL'],
                           #cutoff=1.e-12, # Need this to be none to have square Q
                           pos_diag_R=True,
+                          qtotal_Q=QR_R.qtotal,
                           inner_qconj=QR_R.get_leg('vL').conj().qconj)
     """
     If any of the diagonal elements of R_L/R are zero, we get the warning:
     WARNING : /global/common/software/m3859/tenpy_sajant/tenpy/linalg/np_conserved.py:3993: RuntimeWarning: invalid value encountered in true_divide
     phase = r_diag / np.abs(r_diag)
     """
-    # SAJANT TODO - Do I need to worry about charge of Q and R? Q is chargeless by default.
-
-    # SAJANT TODO - Do this without converting to numpy array for charge conservation; not sure how to get diagonals of the R
-    # QL may be rank difficient. Let's project out rows (p) that are unneeded, based on the QR
-    if R_cutoff > 0.0:
-        projs_L = np.diag(R_L.to_ndarray()) > R_cutoff
-        projs_R = np.diag(R_R.to_ndarray()) > R_cutoff
-        if np.any(projs_L == False):
-            p_index = QR_L.get_leg_index('p')
-            if isinstance(QR_L.legs[p_index], LegPipe):
-                QR_L.legs[p_index] = QR_L.legs[p_index].to_LegCharge()
-            QR_L.iproject(projs_L, 'p')
-            keep_L = np.sum(projs_L)
-            Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
-                              mode='complete',
-                              inner_labels=['vR*', 'vR'],
-                              #cutoff=1.e-12, # Need this to be none to have square Q
-                              pos_diag_R=True,
-                              inner_qconj=QR_L.get_leg('vR').conj().qconj)
-
-        if np.any(projs_R == False):
-            p_index = QR_R.get_leg_index('p')
-            if isinstance(QR_R.legs[p_index], LegPipe):
-                QR_R.legs[p_index] = QR_R.legs[p_index].to_LegCharge()
-            QR_R.iproject(projs_R, 'p')
-            keep_R = np.sum(projs_R)
-            Q_R, R_R = npc.qr(QR_R.itranspose(['vL', 'p']),
-                              mode='complete',
-                              inner_labels=['vL*', 'vL'],
-                              #cutoff=1.e-12, # Need this to be none to have square Q
-                              pos_diag_R=True,
-                              inner_qconj=QR_R.get_leg('vL').conj().qconj)
-
-    return Q_L, R_L, Q_R, R_R, keep_L, keep_R
+    # SAJANT TODO - Do I need to worry about charge of Q and R? Q is chargeless by default, but I put the charge into Q
+    
+    proj_L = get_indices(R_L, R_cutoff)
+    proj_R = get_indices(R_R, R_cutoff)
+    #assert keep_L == R_L.get_leg('vR').ind_len - np.sum(proj_L)
+    #assert keep_R == R_R.get_leg('vL').ind_len - np.sum(proj_R)
+    
+    return Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R
 
 def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
     """
@@ -471,6 +455,8 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
         keep_L, keep_R: int, int
             Number of independent operator combinations to preserve on left and right after redundancy removed
     """
+    raise NotImplementedError("Use the QR version; it is faster.")
+    
     # I use the labels Q and R even though we are doing SVD)
      #tenpy.linalg.np_conserved.svd(a, full_matrices=False, compute_uv=True, cutoff=None, qtotal_LR=[None, None], inner_labels=[None, None], inner_qconj=1)[source]
     QR_L.itranspose(['vR', 'p'])
@@ -519,37 +505,19 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
                       pos_diag_R=True,
                       qtotal_Q=QR_R.qtotal,
                       inner_qconj=QR_R.get_leg('vL').conj().qconj)
-    #print(Q_L.shape)
-    #print(Q_R.shape)
-    #print(Q_L)
-    #print(R_L)
 
+    # We want the rows that are zero; these define the "lower-right" block.
     np_R_L = R_L.to_ndarray()
-    #perm_L = np.ones(np_R_L.shape[0], dtype=np.bool_)
-    # We want the rows that are non-zero.
-    # So for each column, check which rows are non-zero.
-    # TODO - There has to be a better way to do this.
-    #for i in range(np_R_L.shape[1]):
-    #    for j in np.nonzero(np_R_L[:,i])[0]:
-    #        perm_L[j] = False
-    perm_L = np.logical_not(np.any(np_R_L, axis=1))
-    perm_L = np.argsort(perm_L)
-    #print('perm_L:', perm_L)
-
-    #print(Q_R)
-    #print(R_R)
+    proj_L = np.logical_not(np.any(np_R_L, axis=1))
 
     np_R_R = R_R.to_ndarray()
-    #perm_R = np.ones(np_R_R.shape[0], dtype=np.bool_)
-    #for i in range(np_R_R.shape[1]):
-    #    for j in np.nonzero(np_R_R[:,i])[0]:
-    #        perm_R[j] = False
-    perm_R = np.logical_not(np.any(np_R_R, axis=1))
-    perm_R = np.argsort(perm_R)
-    #print('perm_R:', perm_L)
-    return Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R
+    proj_R = np.logical_not(np.any(np_R_R, axis=1))
 
-def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
+    #assert keep_L == R_L.get_leg('vR').ind_len - np.sum(proj_L)
+    #assert keep_R == R_R.get_leg('vL').ind_len - np.sum(proj_R)
+    return Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R
+
+def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
     """
     Truncate the lower right block once we've moved to desired basis
 
@@ -562,41 +530,27 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
             Do we perform the operation in Eq. 25 of https://arxiv.org/pdf/1707.01506.pdf?
         keep_L, keep_R: int, int
             Number of independent operator combinations to preserve; needed to  extract lower right block
+        proj_L, proj_R: list (bools), list (bools)
+            which indices of M do we keep for the "lower right" block; length of each arguement is the dimension of M
     """
     # Connected component
-    #print('original M 1:', M, M.dtype)
     # Connected should only be used if M[0,0] is the trace. This WILL NOT be true if we work in a non-hermitian basis.
     if connected:
-        orig_M = M
+        orig_M = M.copy()
         if np.isclose(orig_M[0,0], 0.0): # traceless op
             print("Tried 'connected=True' on traceless operator; you sure about this?")
             connected = False
         else:
             M = orig_M - npc.outer(orig_M.take_slice([0], ['vR']),
                                    orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
-    #print('original M 2:', M, M.dtype)
 
-    # TODO - There has to be a way to do this without permutting
-    M = M.permute(perm_L, 'vL').permute(perm_R, 'vR')
-    #print('permutted M:', M, M.dtype)
-
-    # M_DR is lower right block of M
-    M_DR = M.copy()
-    # SAJANT TODO - should we just use indexing?
-    #M_DR = M_DR[proj_L, :][:, proj_R]
-
-    #M_DR = M_DR[proj_L[:,None], proj_R[None,:]]
-    M_DR = M_DR[keep_L:, keep_R:]
-    #M_DR.iproject([[False] * keep_L + [True] * (M_DR.get_leg('vL').ind_len - keep_L),
-    #                  [False] * keep_R + [True] * (M_DR.get_leg('vR').ind_len - keep_R)],
-    #                 ['vL', 'vR'])
+    M_DR = M[proj_L, proj_R]
 
     # Do SVD of M_prime block, truncating according to svd_trunc_par
     # We DO NOT normalize the SVs of M_DR before truncating, so the svd_trunc_par['svd_min'] is the
     # cutoff used to discard singular values. The error returned by svd_theta is the total weight of
     # discard SVs**2, divided by the original norm squared of all of the SVs.
     # This is the error in SVD truncation, given a non-normalized initial state.
-    #print('M_DR:', M_DR)
     svd_trunc_params = deepcopy(svd_trunc_params)
     svd_trunc_params['chi_max'] = np.max([0, svd_trunc_params['chi_max'] - keep_L - keep_R + 1])
     UM, sM, VM, err, renormalization = svd_theta(M_DR, svd_trunc_params, renormalize=False)
@@ -610,21 +564,12 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, perm_L, perm_R):
     # Lower right block; norm is `renormalization`
     M_DR_trunc = npc.tensordot(UM, VM.scale_axis(sM, axis='vL'), axes=(['vR', 'vL']))
 
-    M_trunc = M.copy()
-    #print('M_trunc 0:', M_trunc)
-    #M_trunc[proj_L[:,None], proj_R[None,:]] = M_DR_trunc
-    #M_trunc[proj_L, :][:, proj_R] = M_DR_trunc
-    M_trunc[keep_L:, keep_R:] = M_DR_trunc
-    #print('M_trunc 1:', M_trunc)
-    M_trunc = M_trunc.permute(np.argsort(perm_L), 'vL').permute(np.argsort(perm_R), 'vR')
-    #M_trunc = M.sort_legcharge()[1]
+    M[proj_L, proj_R] = M_DR_trunc
 
-    #print('permutted M_trunc 1:', M_trunc)
     if connected:
-        M_trunc = M_trunc + npc.outer(orig_M.take_slice([0], ['vR']),
+        M = M + npc.outer(orig_M.take_slice([0], ['vR']),
                                orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
-    #print('M_trunc 2:', M_trunc)
-    return M_trunc, err
+    return M, err
 
 def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
               trace_env, MPO_envs,
@@ -667,26 +612,15 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
 
     S = dMPS.get_SR(i) # singular values to the right of site i
     chi = len(S)
-    #print('Bond :', i)
-    #print('chi:', chi)
     if chi == 1: # Cannot do any truncation, so give up.
         return TruncationError(), 1, trace_env, MPO_envs
 
     QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs)
-    #print('QR_L norm:', npc.norm(QR_L), QR_L.shape)
-    #print(QR_L)
-    #print('QR_R norm:', npc.norm(QR_R), QR_R.shape)
-    #print(QR_R)
-    #print('Keeps:', keep_L, keep_R)
 
     # Always need to call this function, as it performs the QR; remove redundancy if R_cutoff > 0.0
-    #Q_L, R_L, Q_R, R_R, keep_L, keep_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_par.get('R_cutoff', 0))#1.e-14))
-    #perm_L = np.arange(chi)
-    #perm_R = np.arange(chi)
-    Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))
-    #print('Keeps:', keep_L, keep_R)
-    #print('Perms:', perm_L, perm_R)
-
+    Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))#1.e-14))
+    #Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))
+        
     if keep_L >= chi or keep_R >= chi:
         # We cannot truncate, so return.
         # Nothing is done to the MPS, except for moving the OC one site ot the left
@@ -695,21 +629,12 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     # Build M matrix, Eqn. 15 of paper
     M = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
     M_norm = npc.norm(M)
-    #print('M norm:', M_norm)
-    #print('M:', M)
 
-    M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False), keep_L, keep_R, perm_L, perm_R)
-    #print('M_trunc norm:', npc.norm(M_trunc))
+    M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R)
 
     # SAJANT - Set svd_min to 0 to make sure no SVs are dropped? Or do we need some cutoff to remove the
     # SVs corresponding to the rank we removed earlier from M_DR
     U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
-    #print('U norm:', npc.norm(U))
-    #print('S norm:', np.linalg.norm(S))
-    #print('VH norm:', npc.norm(VH))
-    #print(U)
-    #print('SVs:', S)
-    #print(VH)
     err2 = TruncationError.from_norm(renormalization2, norm_old=M_norm)
     # M_trunc (if normalized) would have norm 1 (or the original norm) if we did no truncation; so the new norm (given by `renormalization2`) is akin to
     # the error.
@@ -724,8 +649,6 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     # Put new tensors back into the MPS
     new_A = npc.tensordot(npc.tensordot(dMPS.get_B(i, form='A'), Q_L.conj(), axes=(['vR', 'vR*'])), U, axes=(['vR', 'vL']))
     new_B = npc.tensordot(VH, npc.tensordot(Q_R.conj(), dMPS.get_B(i+1, form='B'), axes=(['vL*', 'vL'])),axes=(['vR', 'vL']))
-    #print('A norm:', npc.norm(new_A))
-    #print('B norm:', npc.norm(new_B))
 
     dMPS.set_SR(i, S)
     dMPS.set_B(i, new_A, form='A')
@@ -733,4 +656,3 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     #dMPS.test_sanity() # SAJANT - remove this for miniscule speed boost?
 
     return err2, renormalization2, trace_env, MPO_envs
-
