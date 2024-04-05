@@ -865,7 +865,7 @@ class MPO:
 
         for i in range(self.L):
             M = Ms[i % len(Ms)]
-            Minv = M.conj()
+            Minv = M.conj() # relabels legs already, so effectively transposes too
             W = self.get_W(i)
             W_labels = W.get_leg_labels()
             W = npc.tensordot(M, W, axes=(['p*'], ['p']))
@@ -1269,7 +1269,7 @@ class MPO:
             trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
             #print("After DMT zip_up: ", psi.chi)
             # psi is NOT in canonical form. Tensors are in A form.
-            
+
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
             # Sweeps left; leaves RPs behind.
@@ -1279,12 +1279,12 @@ class MPO:
                                                                          svd_trunc_params_2=svd_trunc_params_2) # NO QR sweep to re-establish form before truncating final time
             #psi.canonical_form() # Is this needed?
 
-            
+
             options['trace_env'] = trace_env
             options['MPO_envs'] = MPO_envs
             return trunc_err1 + trunc_err2
         elif method == 'DMT_variational':
-            raise NotImplementedError('Something is not right / very slow.')
+            warnings.warn('Something is very slow in DMT_variational.')
             orig_psi = psi.copy()
             print('Original:', psi.chi)
             dmt_params = options['dmt_params']
@@ -1304,7 +1304,7 @@ class MPO:
             trunc_err1, trace_env, MPO_envs = self.apply_zipup_DMT(psi, options)
             print("After DMT zip_up: ", psi.chi)
             # psi is NOT in canonical form. Tensors are in A form.
-            
+
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
             # Sweeps left; leaves RPs behind.
@@ -1314,7 +1314,7 @@ class MPO:
                                                                          svd_trunc_params_2=svd_trunc_params_2) # NO QR sweep to re-establish form before truncating final time
             #psi.canonical_form() # Is this needed?
             print(psi.norm_test())
-            
+
             options['trace_env'] = trace_env
             options['MPO_envs'] = MPO_envs
 
@@ -1489,7 +1489,7 @@ class MPO:
 
         # TODO - this is not as efficient as possible
         self.apply_naively(psi) # Put MPO directly into MPS (in place)
-        
+
         options = asConfig(options, "zip_up")
         m_temp = options.get('m_temp', 2)
         trunc_weight = options.get('trunc_weight', 1.)

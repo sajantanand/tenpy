@@ -108,7 +108,7 @@ def trace_identity_DMPS(DMPS, traceful_id=None):
                                  SVs=None,
                                  bc='finite',
                                  dtype=None,
-                                 permute=True, # TODO: WHY DOES THIS NEED TO BE FALSE FOR CHARGES???
+                                 permute=True, # The site is typically permutted, so we NEED this to be true.
                                  form='B', # Form doesn't matter since it's a product state?
                                  legL=None)
 
@@ -141,7 +141,7 @@ def trace_identity_MPS(DMPS):#, traceful_id=None):
                           SVs=None,
                           bc='finite',
                           dtype=None,
-                          permute=True, # It appears that DoubledSite.perm is trivial
+                          permute=True, # The site is typically permutted, so we NEED this to be true.
                           form='B', # Form doesn't matter since it's a product state?
                           legL=None)
 
@@ -423,12 +423,12 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
     phase = r_diag / np.abs(r_diag)
     """
     # SAJANT TODO - Do I need to worry about charge of Q and R? Q is chargeless by default, but I put the charge into Q
-    
+
     proj_L = get_indices(R_L, R_cutoff)
     proj_R = get_indices(R_R, R_cutoff)
     #assert keep_L == R_L.get_leg('vR').ind_len - np.sum(proj_L)
     #assert keep_R == R_R.get_leg('vL').ind_len - np.sum(proj_R)
-    
+
     return Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R
 
 def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
@@ -456,7 +456,7 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
             Number of independent operator combinations to preserve on left and right after redundancy removed
     """
     raise NotImplementedError("Use the QR version; it is faster.")
-    
+
     # I use the labels Q and R even though we are doing SVD)
      #tenpy.linalg.np_conserved.svd(a, full_matrices=False, compute_uv=True, cutoff=None, qtotal_LR=[None, None], inner_labels=[None, None], inner_qconj=1)[source]
     QR_L.itranspose(['vR', 'p'])
@@ -588,7 +588,6 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     form while tensor i+1 should be in right ('B') form. TEBD moves the OC by applying gates, but if we want to
     only truncate a dMPS using this function, we need to explicitly move the OC.
     """
-
     # Check that the MPS has the proper form; need A to the left of (i,i+1) and B to the right
     assert dMPS.form[:i] == [(1.0, 0.0) for _ in range(i)], dMPS.form[:i]
     assert dMPS.form[i+2:] == [(0.0, 1.0) for _ in range(dMPS.L - i - 2)], dMPS.form[i+2:]
@@ -616,11 +615,10 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
         return TruncationError(), 1, trace_env, MPO_envs
 
     QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs)
-
     # Always need to call this function, as it performs the QR; remove redundancy if R_cutoff > 0.0
     Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))#1.e-14))
     #Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))
-        
+
     if keep_L >= chi or keep_R >= chi:
         # We cannot truncate, so return.
         # Nothing is done to the MPS, except for moving the OC one site ot the left

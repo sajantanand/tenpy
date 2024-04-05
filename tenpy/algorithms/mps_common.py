@@ -2117,7 +2117,7 @@ class VariationalCompressionGuess(VariationalCompression):
         super().__init__(psi, options, resume_data=resume_data) # Variational Compression Initialization
         self.renormalize = []
         self._theta_diff = []
-    
+
     def init_env(self, model=None, resume_data=None, orthogonal_to=None):
         """Initialize the environment.
 
@@ -2203,7 +2203,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
 
         # Get change of basis matrices using current |psi>.
         QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = dmt.build_QR_matrices(new_psi, i0, dmt_params, trace_env, MPO_envs)
-        Q_L, R_L, Q_R, R_R, keep_L, keep_R, perm_L, perm_R = dmt.remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
+        Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
         if keep_L >= chi or keep_R >= chi:
             # On the left sweep (updating RP), track change of theta)
             if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
@@ -2223,23 +2223,17 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         #print("Bond: ", i0)
         #print("Norm of original M (hopefully this is 1):", npc.norm(M_OC))
         #print("Norm of update M (hopefully this is 1):", npc.norm(M_NC))
-        
-        # We need to permute both bond matrices to have the lower right block be the preserved piece
-        M_OC = M_OC.permute(perm_L, 'vL').permute(perm_R, 'vR')
-        M_NC = M_NC.permute(perm_L, 'vL').permute(perm_R, 'vR')
+
         # Now both bond matrices are in the desired gauge; replace the bottom right piece
-        M_OC[keep_L:,keep_R:] = M_NC[keep_L:,keep_R:]
-        # Undo the permutation; this is slow
-        # TODO - how do we avoid this slowdown?
-        M_OC = M_OC.permute(np.argsort(perm_L), 'vL').permute(np.argsort(perm_R), 'vR')
-        
+        M_OC[proj_L,proj_R] = M_NC[proj_L,proj_R]
+
         M_norm = npc.norm(M_OC)
         #print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
-        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, perm_L, perm_R)
+        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R)
 
-        svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
-        U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_par_2, renormalize=True)
+        svd_trunc_params_2 = self.options.get('svd_trunc_params_2', _machine_prec_trunc_par)
+        U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
         err2 = TruncationError.from_norm(renormalization2, norm_old=M_norm)
 
         # We want to remove the environments containing the bond i
@@ -2283,122 +2277,6 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         self.renormalize.append(1) # We've already adjusted the norm of psi
         return update_data
 
-        """
-        #QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(new_psi, i0, dmt_params, trace_env, MPO_envs)
-        print(i0)
-        LP, keep_L, trace_env, MPO_envs = dmt.build_QR_matrix_L(self.psi, i0-1, dmt_params, trace_env, MPO_envs)
-        RP, keep_R, trace_env, MPO_envs = dmt.build_QR_matrix_R(self.psi, i0+1, dmt_params, trace_env, MPO_envs)
-        LP = trace_env.get_LP(i0)
-        RP = trace_env.get_RP(i0+1)
-        keep_L = 4
-        keep_R = 4
-        print("LP:", LP)
-        print("RP:", RP)
-
-        theta_old = new_psi.get_theta(i0).combine_legs([['vL', 'p0'], ['p1', 'vR']])
-        theta_old_orig = theta_old.copy()
-
-        #trace_env = MPSEnvironment(dmt.trace_identity_MPS(new_psi), new_psi)
-        #Id_tensor = trace_env.bra._B[i0].conj().squeeze()
-        #p_leg = trace_env.bra._B[i0].get_leg('p')
-        Id_tensor = npc.eye_like(trace_env.bra._B[i0], axis='p', labels=['p*', 'p'])
-        #LP = trace_env.get_LP(i0).squeeze('vR*')
-        QR_L = npc.outer(LP, Id_tensor).combine_legs([['vR', 'p*'], ['vR*', 'p']])#.add_trivial_leg(1, 'vL')
-
-        #Id_tensor = trace_env.bra._B[i0+1].conj().squeeze()
-        #p_leg = trace_env.bra._B[i0+1].get_leg('p')
-        Id_tensor = npc.eye_like(trace_env.bra._B[i0+1], axis='p', labels=['p*', 'p'])
-        #RP = trace_env.get_RP(i0+1).squeeze('vL*')
-        QR_R = npc.outer(Id_tensor, RP).combine_legs([['p*', 'vL'], ['p', 'vL*']])#.add_trivial_leg(1, 'vR')
-        print(QR_L)
-        print(QR_R)
-
-        print(npc.tensordot(npc.tensordot(QR_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), QR_R, axes=(['(p1.vR)', '(p*.vL)']))[0,0] * self.psi.norm * 32)
-
-        Q_L, R_L = npc.qr(QR_L.transpose(['(vR.p*)', '(vR*.p)']),
-                          mode='complete',
-                          inner_labels=['(vL.p)', '(vL.p)*'],
-                          #cutoff=1.e-12, # Need this to be none to have square Q
-                          pos_diag_R=True,
-                          inner_qconj=QR_L.get_leg('(vR.p*)').conj().qconj)
-        Q_R, R_R = npc.qr(QR_R.transpose(['(p*.vL)', '(p.vL*)']),
-                          mode='complete',
-                          inner_labels=['(p.vR)', '(p.vR)*'],
-                          #cutoff=1.e-12, # Need this to be none to have square Q
-                          pos_diag_R=True,
-                          inner_qconj=QR_R.get_leg('(p*.vL)').conj().qconj)
-
-
-
-        theta_old_R = npc.tensordot(npc.tensordot(Q_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), Q_R, axes=(['(p1.vR)', '(p*.vL)']))
-
-        theta_new_R = npc.tensordot(npc.tensordot(Q_L, theta, axes=(['(vR.p*)'], ['(vL.p0)'])), Q_R, axes=(['(p1.vR)', '(p*.vL)']))
-
-        print(keep_L, keep_R)
-        theta_old_R[keep_L:,keep_R:] = theta_new_R[keep_L:,keep_R:]
-
-        theta_old = npc.tensordot(npc.tensordot(Q_L.conj(), theta_old_R, axes=(['(vL*.p*)'], ['(vL.p)'])), Q_R.conj(), axes=(['(p.vR)', '(p*.vR*)']))
-        theta_old.ireplace_labels(['(vR*.p)', '(p.vL*)'], ['(vL.p0)', '(p1.vR)'])
-        print(npc.tensordot(npc.tensordot(QR_L, theta_old, axes=(['(vR.p*)'], ['(vL.p0)'])), QR_R, axes=(['(p1.vR)', '(p*.vL)']))[0,0] * self.psi.norm * 32)
-
-        theta = theta_old
-
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-        old_A0 = new_psi.get_B(i0, form='A')
-        svd_trunc_par_0 = self.options.get('svd_trunc_par_0', _machine_prec_trunc_par)
-        print(npc.norm(theta))
-        U, S, VH, err, renormalize = svd_theta(theta,
-                                               svd_trunc_par_0,
-                                               qtotal_LR=[old_A0.qtotal, None],
-                                               inner_labels=['vR', 'vL'])
-        new_psi.norm *= renormalize
-        print(np.linalg.norm(S), err)
-
-        U.ireplace_label('(vL.p0)', '(vL.p)')
-        VH.ireplace_label('(p1.vR)', '(p.vR)')
-        A0 = U.split_legs(['(vL.p)'])
-        B1 = VH.split_legs(['(p.vR)'])
-
-        # first compare to old best guess to check convergence of the sweeps
-        if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
-            theta_old = new_psi.get_theta(i0)
-        # now set the new tensors to the MPS
-        new_psi.set_B(i0, A0, form='A')  # left-canonical
-        new_psi.set_B(i0 + 1, B1, form='B')  # right-canonical
-        new_psi.set_SR(i0, S)
-
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-
-        dmt_params = self.options['dmt_params']
-        trace_env = self.options.get('trace_env', None)
-        MPO_envs = self.options.get('MPO_envs', None)
-        svd_trunc_par_2 = self.options.get('svd_trunc_par_2', _machine_prec_trunc_par)
-
-        trunc_err2, renormalize2, trace_env, MPO_envs = dmt.dmt_theta(new_psi, i0, self.trunc_params, dmt_params, trace_env=trace_env, MPO_envs=MPO_envs, svd_trunc_par_2=svd_trunc_par_2)
-
-        # Need to keep track of the envs for use on future steps
-        self.options['trace_env'] = trace_env
-        self.options['MPO_envs'] = MPO_envs
-
-        U = new_psi.get_B(i0, form='A').replace_label('p', 'p0').combine_legs(['vL', 'p0'])
-        VH = new_psi.get_B(i0+1, form='B').replace_label('p', 'p1').combine_legs(['p1', 'vR'])
-
-        update_data = {'err': err+trunc_err2, 'U': U, 'VH': VH}
-
-        # first compare to old best guess to check convergence of the sweeps
-        if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
-            theta_new_trunc = new_psi.get_theta(i0)
-            theta_new_trunc.iset_leg_labels(['vL', 'p0', 'p1', 'vR'])
-            ov = npc.inner(theta_new_trunc, theta_old, do_conj=True, axes='labels')
-            theta_diff = 1. - abs(ov)
-            print('theta_diff:', theta_diff)
-            self._theta_diff.append(theta_diff)
-        print(renormalize, renormalize2)
-        self.psi.norm *= renormalize2
-        print(f"Bond {i0}:", dmt.trace_identity_MPS(self.psi).overlap(self.psi) * 2**(self.psi.L//2), self.psi.norm)
-        self.renormalize.append(1) #renormalize * renormalize2)
-        return update_data
-        """
 class VariationalApplyMPO(VariationalCompression):
     """Variational compression for applying an MPO to an MPS (in place).
 
