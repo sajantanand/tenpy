@@ -2077,8 +2077,12 @@ class DoubledSite(Site):
         self.d = d # Dimension of original Hilbert space
         self.hermitian = hermitian
         if not hermitian:
-            # If we don't care about having a Hermitian basis, let us just make a basis of operators |i><j|.
-            # There will be $d$ traceful operators (the diagonal ones).
+            # If we don't care about having a Hermitian basis, one choice is to make a basis of operators |i><j|.
+            # But there will be $d$ traceful operators (the diagonal ones) and no single operator representing
+            # the identity. For DAOE, we'd like an identity operator.
+            # So we choose a basis of I, |0><0| - |i><i|, and |i><j!=i|.
+
+            # sort_charge=False as the sorting should be done later
             ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
             # Bunch doesn't matter if we don't sort since the neighboring charges are not the same
             # If we are to sort the charges, it should be done now so that we still have a leg pipe.
@@ -2089,56 +2093,70 @@ class DoubledSite(Site):
             if conserve == 'Sz':
                 # The site should record the permutation done.
                 self.perm = leg1._perm
-            
+
+            def build_COB(d):
+                COB = np.eye(d**2)
+                charge_0s = np.array([j+j*d for j in range(d)])
+                COB[charge_0s,charge_0s] = 0
+                COB[charge_0s,0] = 1
+                for j in charge_0s[1:]:
+                    COB[0,j] = 1
+                    COB[j,j] = -1
+                return COB
+
+            BK_flat = build_COB(d)
             self.BK_ops = BK_ops = []
             self.charges = charges = []
-            for i in range(d):
-                for j in range(d):
-                    op = np.zeros((d,d), dtype=np.complex128)
-                    op[i,j] = 1.0
-                    op = npc.Array.from_ndarray(op, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*'])
-                    BK_ops.append(op)
-                    if conserve != 'None':
-                        charges.append(op.qtotal.item())
-            
-            self.BK = npc.diag(1, leg1, dtype=np.complex128, labels=['p', 'p*'])
-            self.identity_ind = None # No identity operator with this basis; it's the sum of the diagonal $d$ operators
+
+            for i in range(d**2):
+                BK_ops.append(npc.Array.from_ndarray(BK_flat[:,i].reshape(d,d), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                if conserve != 'None':
+                    charges.append(BK_ops[-1].qtotal.item())
+            if conserve != 'None':
+                self.identity_ind = 0 #list(np.argsort(charges)).index(0)
+                inverted_perm = np.argsort(leg1._perm)
+            else:
+                self.identity_ind = 0
+                inverted_perm = np.arange(d**2)
+            self.BK = npc.Array.from_ndarray(BK_flat[inverted_perm[:,None],inverted_perm[None,:]], [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
+
         else:
             ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
             leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
-            
+
             self.BK_ops = BK_ops = []
             # Want legPipes, so let's do this with NPC.
             BK_ops.append(npc.Array.from_ndarray(np.eye(d, dtype=np.complex128), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
             self.identity_ind = 0
             for i in range(1, d):
                 BK_ops.append(npc.Array.from_ndarray(np.diag([1+0.j] + (i-1)*[0] + [-1] + [0] * (d-1-i)), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
-    
+
             for j in range(0, d-1):
                 for i in range(j+1, d):
                     op = np.zeros((d,d), dtype=np.complex128)
                     op[j,i] = 1
                     BK_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
-    
+
                     op *= -1.j
                     BK_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
 
             BK_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in BK_ops])
             self.BK = npc.Array.from_ndarray(BK_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
 
+        # Turn original BK basis into orthogonal Q basis
+        self.Q, self.R = npc.qr(self.BK, inner_labels=['p*', 'p'], mode='complete', pos_diag_R=True)
+        self.Q.legs[1] = leg1.conj() # Need second leg of Q to be a LegPipe
+        self.R.legs[0] = leg1
+
+        self.new_ops = self.Q.replace_labels(['p', 'p*'], ['(p.p*)', '(q.q*)']).split_legs()
+        self.new_ops = [self.new_ops.take_slice([i, j], ['q', 'q*']) for i in range(d) for j in range(d)]
         if hermitian:
-            self.Q, self.R = npc.qr(self.BK, inner_labels=['p*', 'p'])
-            self.sign_R = np.sign(np.diag(self.R.to_ndarray())) # no charges anyway
-            self.sign_R = npc.Array.from_ndarray(np.diag(self.sign_R), self.R.legs, labels=self.R.get_leg_labels())
-    
-            self.Q = npc.tensordot(self.Q, self.sign_R, axes=(['p*'], ['p']))
-            self.R = npc.tensordot(self.sign_R, self.R, axes=(['p*'], ['p']))
-            # Check that the Q basis is HOMT
+            # Check that the Q basis is Hermitian
             hermitian=False
             while not hermitian:
                 self.new_ops = self.Q.replace_labels(['p', 'p*'], ['(p.p*)', '(q.q*)']).split_legs()
                 self.new_ops = [self.new_ops.take_slice([i, j], ['q', 'q*']) for i in range(d) for j in range(d)]
-    
+
                 traces = []
                 failed = False
                 for i, Q in enumerate(self.new_ops):
@@ -2157,51 +2175,35 @@ class DoubledSite(Site):
                 if not hermitian: # Found an operator which is not Hermitian; need to reconstruct Q using the updated operator
                     new_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in self.new_ops])
                     self.Q = npc.Array.from_ndarray(new_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
-            self.s2d = self.Q.conj().transpose()
-            self.d2s = self.Q
         else:
             traces = []
-            for i, Q in enumerate(self.BK_ops):
+            for i, Q in enumerate(self.new_ops):
                 traces.append(npc.trace(Q, leg1=0, leg2=1))
-            self.new_ops = self.BK_ops
-            self.d2s = self.BK
-            self.s2d = self.BK.conj() #npc.pinv(self.BK) # pseudoinverse should be the same as the inverse if the inverse exists
+        self.s2d = self.Q.conj().transpose() # The transpose just changes how the data is stored, but as long as we
+        # use labels to reference the legs, it is not strictly needed.
+        self.d2s = self.Q
+
         # Check that the matrices are inverses as desired
         assert np.isclose(npc.norm(npc.tensordot(self.d2s, self.s2d, axes=(['p*'], ['p'])) - npc.eye_like(self.d2s)), 0.0)
-        assert np.isclose(npc.norm(npc.tensordot(self.d2s, self.s2d, axes=(['p*'], ['p'])) - npc.eye_like(self.d2s)), 0.0)
+        assert np.isclose(npc.norm(npc.tensordot(self.s2d, self.d2s, axes=(['p*'], ['p'])) - npc.eye_like(self.d2s)), 0.0)
 
+        # Check orthogonality - $trace_mat[i,j] = Tr (op_i^\dagger op_j) ?= delta_{i,j}$
         self.trace_mat = trace_mat = np.zeros((d**2,d**2), dtype=np.complex128)
         for i in range(d**2):
             for j in range(d**2):
-                # $trace_mat[i,j] = Tr (op_i^\dagger op_j)$
-                # NOTE: We conjugate one operator! Then, for the non-Hermitian case, $Tr(|i><j| |j><i|) = 1$.
+                # NOTE: We conjugate one operator! Then, for the non-Hermitian off-diagonal operators, $Tr(|i><j| |j><i|) = 1$.
                 trace_mat[i,j] = npc.trace(npc.tensordot(self.new_ops[i].conj(), self.new_ops[j], axes=(['p*'], ['p'])))
+        # Always should be orthogonal since we've done QR
         assert np.isclose(np.linalg.norm(trace_mat - np.eye(d**2)), 0.0)
-        #if not np.isclose(np.linalg.norm(trace_mat - np.eye(d**2)), 0.0):
-            #assert conserve != 'None'
-            #print("WARNING: The operators are not orthogonal! This is to be expected ONLY when we use charge conservation.")
-            #print("Trace matrix:", trace_mat)
-            
+
+        # Check mostly traceless - only identity should have trace
         self.traces = traces = np.array(traces)
         self.traceful_ind = np.where(traces > 1.e-13)[0]
-        if len(self.traceful_ind) != 1:
-            assert hermitian == False
-            # print(f"WARNING: More than one operator has non-zero trace. This is to be expected if we are not using a Hermitian basis.")
-            ## d=2 could have a non-hermitian but single trace basis (I, Z, S+, S-), but we don't use this.
-            # print(f"Traces={traces}, traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}")
-        else:
-            self.traceful_ind = self.traceful_ind[0].item()
-            assert self.traceful_ind == self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
-        """
-        assert False
-        if self.traceful_ind != 0:
-            assert hermitian == False # Probably need to change this to assert hermitian == False
-            print(f"WARNING: Identity isn't in index 0, but instead is in index {self.traceful_ind}. This is to be expected when ONLY we use charge conservation.")
-            assert self.traceful_ind == self.identity_ind, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
-        else:
-            assert self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
-        """
-        
+        assert len(self.traceful_ind) == 1
+        assert self.traceful_ind == self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
+
+        # We already checked that the basis is hermitian if `hermitian==True`.
+
         ops = dict()
         self.conserve = conserve
         # Specify Hermitian conjugates
