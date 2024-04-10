@@ -2203,7 +2203,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
 
         # Get change of basis matrices using current |psi>.
         QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = dmt.build_QR_matrices(new_psi, i0, dmt_params, trace_env, MPO_envs)
-        Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
+        Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
         if keep_L >= chi or keep_R >= chi:
             # On the left sweep (updating RP), track change of theta)
             if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
@@ -2230,7 +2230,8 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         M_norm = npc.norm(M_OC)
         #print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
-        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R)
+        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R,
+                                      traceful_ind_L=np.argsort(new_psi.sites[i].perm)[0], traceful_ind_R=np.argsort(new_psi.sites[i+1].perm)[0])
 
         svd_trunc_params_2 = self.options.get('svd_trunc_params_2', _machine_prec_trunc_par)
         U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)

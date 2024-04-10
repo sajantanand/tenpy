@@ -400,8 +400,9 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
         """
         indices = np.zeros(R.legs[0].ind_len, dtype=bool)
         for s, d in zip(R._qdata, [np.linalg.norm(d, axis=1) > cutoff for d in R._data]):
+            # indices is True for rows that have norm > cutoff
             indices[R.legs[0].slices[s[0]]:R.legs[0].slices[s[0]+1]] = d
-        return np.logical_not(indices)
+        return np.logical_not(indices), np.sum(indices)
 
     Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
                           mode='complete',
@@ -424,12 +425,10 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
     """
     # SAJANT TODO - Do I need to worry about charge of Q and R? Q is chargeless by default, but I put the charge into Q
 
-    proj_L = get_indices(R_L, R_cutoff)
-    proj_R = get_indices(R_R, R_cutoff)
-    #assert keep_L == R_L.get_leg('vR').ind_len - np.sum(proj_L)
-    #assert keep_R == R_R.get_leg('vL').ind_len - np.sum(proj_R)
+    proj_L, new_keep_L = get_indices(R_L, R_cutoff)
+    proj_R, new_keep_R = get_indices(R_R, R_cutoff)
 
-    return Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R
+    return Q_L, R_L, Q_R, R_R, new_keep_L, new_keep_R, proj_L, proj_R
 
 def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
     """
@@ -517,7 +516,7 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
     #assert keep_R == R_R.get_leg('vL').ind_len - np.sum(proj_R)
     return Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R
 
-def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
+def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, traceful_ind_L=0, traceful_ind_R=0):
     """
     Truncate the lower right block once we've moved to desired basis
 
@@ -533,16 +532,16 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
         proj_L, proj_R: list (bools), list (bools)
             which indices of M do we keep for the "lower right" block; length of each arguement is the dimension of M
     """
-    # Connected component
-    # Connected should only be used if M[0,0] is the trace. This WILL NOT be true if we work in a non-hermitian basis.
+    # Connected component - traceful_ind_L/R tell us which entry of M corresponds to the identity operator
+    # With MPOs, we can't really use `connected=True` since there will not be a single operator corresponding to the Identity.
     if connected:
         orig_M = M.copy()
-        if np.isclose(orig_M[0,0], 0.0): # traceless op
+        if np.isclose(orig_M[traceful_ind_L,traceful_ind_R], 0.0): # traceless op
             print("Tried 'connected=True' on traceless operator; you sure about this?")
-            connected = False
+            assert False
         else:
-            M = orig_M - npc.outer(orig_M.take_slice([0], ['vR']),
-                                   orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
+            M = orig_M - npc.outer(orig_M.take_slice([traceful_ind_R], ['vR']),
+                                   orig_M.take_slice([traceful_ind_L], ['vL'])) / orig_M[traceful_ind_L, traceful_ind_R]
 
     M_DR = M[proj_L, proj_R]
 
@@ -552,7 +551,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
     # discard SVs**2, divided by the original norm squared of all of the SVs.
     # This is the error in SVD truncation, given a non-normalized initial state.
     svd_trunc_params = deepcopy(svd_trunc_params)
-    svd_trunc_params['chi_max'] = np.max([0, svd_trunc_params['chi_max'] - keep_L - keep_R + 1])
+    svd_trunc_params['chi_max'] = np.max([0, svd_trunc_params['chi_max'] - keep_L - keep_R + connected])
     UM, sM, VM, err, renormalization = svd_theta(M_DR, svd_trunc_params, renormalize=False)
     # All we want to do here is reduce the rank of M_DR
     if svd_trunc_params.get('chi_max', None) == 0:
@@ -567,8 +566,8 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
     M[proj_L, proj_R] = M_DR_trunc
 
     if connected:
-        M = M + npc.outer(orig_M.take_slice([0], ['vR']),
-                               orig_M.take_slice([0], ['vL'])) / orig_M[0,0]
+        M = M + npc.outer(orig_M.take_slice([traceful_ind_R], ['vR']),
+                          orig_M.take_slice([traceful_ind_L], ['vL'])) / orig_M[traceful_ind_L, traceful_ind_R]
     return M, err
 
 def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
@@ -628,7 +627,10 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     M = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
     M_norm = npc.norm(M)
 
-    M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R)
+    # traceful_ind == 0 now ALWAYS
+    M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False),
+                              keep_L, keep_R, proj_L, proj_R,
+                              traceful_ind_L=np.argsort(dMPS.sites[i].perm)[0], traceful_ind_R=np.argsort(dMPS.sites[i+1].perm)[0])
 
     # SAJANT - Set svd_min to 0 to make sure no SVs are dropped? Or do we need some cutoff to remove the
     # SVs corresponding to the rank we removed earlier from M_DR
