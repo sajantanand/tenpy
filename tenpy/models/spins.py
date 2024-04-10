@@ -108,25 +108,25 @@ class SpinChain(SpinModel, NearestNeighborModel):
     force_default_lattice = True
 
 class AnisotropicSpinModel(SpinModel):
-    r"""SpinModel on square lattice where two-spin couplings in the X and Y directions
+    r"""SpinModel on 2D (or more) lattice where two-spin couplings in the Bravais lattice directions
     are allowed to be different. This allows for the creation of decoupled chains, and then
     slowly the coupling can be reintroduced.
 
+    Two-body coupling parameters are now tuples, one entry for eavh Bravais lattice vector.
     """
-    default_lattice = Square
-    force_default_lattice = True
 
     def init_terms(self, model_params):
-        Jx = model_params.get('Jx', (1., 1.))   # X coupling, Y coupling
-        Jy = model_params.get('Jy', (1., 1.))
-        Jz = model_params.get('Jz', (1., 1.))
+        BVs = len(self.lat.pairs['nearest_neighbors'])
+        Jx = model_params.get('Jx', (1.,)*BVs)   # X coupling, Y coupling
+        Jy = model_params.get('Jy', (1.,)*BVs)
+        Jz = model_params.get('Jz', (1.,)*BVs)
         hx = model_params.get('hx', 0.)
         hy = model_params.get('hy', 0.)
         hz = model_params.get('hz', 0.)
         D = model_params.get('D', 0.)
         E = model_params.get('E', 0.)
-        muJ = model_params.get('muJ', (0., 0.))
-        assert len(Jx) == len(Jy) == len(Jz) == len(muJ) == 2, "Need two parameters, one for each direction."
+        muJ = model_params.get('muJ', (0.,)*BVs)
+        assert len(Jx) == len(Jy) == len(Jz) == len(muJ) == BVs, "Need one parameter for each direction."
 
         # (u is always 0 as we have only one site in the unit cell)
         for u in range(len(self.lat.unit_cell)):
@@ -141,7 +141,6 @@ class AnisotropicSpinModel(SpinModel):
         # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
         #NN = [(0, 0, np.array([1, 0])), (0, 0, np.array([0, 1]))]
         for i, (u1, u2, dx) in enumerate(self.lat.pairs['nearest_neighbors']):
-            print(i, u1, u2, dx)
             self.add_coupling((Jx[i] + Jy[i]) / 4., u1, 'Sp', u2, 'Sm', dx, plus_hc=True)
             self.add_coupling((Jx[i] - Jy[i]) / 4., u1, 'Sp', u2, 'Sp', dx, plus_hc=True)
             self.add_coupling(Jz[i], u1, 'Sz', u2, 'Sz', dx)
