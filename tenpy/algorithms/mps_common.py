@@ -2167,6 +2167,9 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         dmt_params = self.options['dmt_params']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
+        timing = self.options.get('timing', False)
+        if timing:
+            time1 = time.time()
 
         if trace_env is None:
             trace_env = MPSEnvironment(dmt.trace_identity_MPS(self.psi), self.psi)
@@ -2203,7 +2206,15 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
 
         # Get change of basis matrices using current |psi>.
         QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = dmt.build_QR_matrices(new_psi, i0, dmt_params, trace_env, MPO_envs)
-        Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
+        if timing:
+            time2 = time.time()
+            print('Get QR Time:', time2 - time1, flush=True)
+            time1 = time2
+        Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
+        if timing:
+            time2 = time.time()
+            print('Remove redundancy Time:', time2 - time1, flush=True)
+            time1 = time2
         if keep_L >= chi or keep_R >= chi:
             # On the left sweep (updating RP), track change of theta)
             if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
@@ -2231,10 +2242,18 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         #print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
         M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R)
+        if timing:
+            time2 = time.time()
+            print('Truncate M Block Time:', time2 - time1, flush=True)
+            time1 = time2
 
         svd_trunc_params_2 = self.options.get('svd_trunc_params_2', _machine_prec_trunc_par)
         U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
         err2 = TruncationError.from_norm(renormalization2, norm_old=M_norm)
+        if timing:
+            time2 = time.time()
+            print('SVD M Time:', time2 - time1, flush=True)
+            time1 = time2
 
         # We want to remove the environments containing the bond i
         trace_env.del_RP(i0)

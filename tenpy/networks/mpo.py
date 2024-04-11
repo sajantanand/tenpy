@@ -1245,9 +1245,13 @@ class MPO:
 
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
+            timing = self.options.get('timing', False)
 
             self.apply_naively(psi)
-            trunc_err, trace_env, MPO_envs = psi.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2)
+            trunc_err, trace_env, MPO_envs = psi.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs,
+                                                              svd_trunc_params_0=_machine_prec_trunc_par,
+                                                              svd_trunc_params_2=_machine_prec_trunc_par,
+                                                              timing=timing)
             options['trace_env'] = trace_env
             options['MPO_envs'] = MPO_envs
             return trunc_err
@@ -1272,11 +1276,13 @@ class MPO:
 
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
+            timing = self.options.get('timing', False)
             # Sweeps left; leaves RPs behind.
             trunc_err2, trace_env, MPO_envs = psi.compress_dmt_canonical(trunc_params, dmt_params, move_right=False,
                                                                          trace_env=trace_env, MPO_envs=MPO_envs,
                                                                          svd_trunc_params_0=svd_trunc_params_0,
-                                                                         svd_trunc_params_2=svd_trunc_params_2) # NO QR sweep to re-establish form before truncating final time
+                                                                         svd_trunc_params_2=svd_trunc_params_2,
+                                                                         timing=timing) # NO QR sweep to re-establish form before truncating final time
             #psi.canonical_form() # Is this needed?
 
 
@@ -1307,11 +1313,13 @@ class MPO:
 
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
+            timing = self.options.get('timing', False)
             # Sweeps left; leaves RPs behind.
             trunc_err2, trace_env, MPO_envs = psi.compress_dmt_canonical(trunc_params, dmt_params, move_right=False,
                                                                          trace_env=trace_env, MPO_envs=MPO_envs,
                                                                          svd_trunc_params_0=svd_trunc_params_0,
-                                                                         svd_trunc_params_2=svd_trunc_params_2) # NO QR sweep to re-establish form before truncating final time
+                                                                         svd_trunc_params_2=svd_trunc_params_2,
+                                                                         timing=timing) # NO QR sweep to re-establish form before truncating final time
             #psi.canonical_form() # Is this needed?
             print(psi.norm_test())
 
@@ -1484,6 +1492,7 @@ class MPO:
         dmt_params = options['dmt_params']
         trace_env = options.get('trace_env', None)
         MPO_envs = options.get('MPO_envs', None)
+        timing = self.options.get('timing', False)
         svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
         svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
 
@@ -1523,8 +1532,9 @@ class MPO:
 
             # Do DMT
             err, renorm, trace_env, MPO_envs = dmt.dmt_theta(psi, i, relax_trunc, dmt_params,
-                                                         trace_env, MPO_envs,
-                                                         svd_trunc_params_2=svd_trunc_params_2)
+                                                             trace_env, MPO_envs,
+                                                             svd_trunc_params_2=svd_trunc_params_2,
+                                                             timing=timing)
 
             trunc_err += err
             psi.norm *= renorm

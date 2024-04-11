@@ -4613,7 +4613,8 @@ class MPS(BaseMPSExpectationValue):
     def compress_dmt(self, trunc_par, dmt_par,
                      trace_env=None, MPO_envs=None,
                      svd_trunc_params_0=_machine_prec_trunc_par,
-                     svd_trunc_params_2=_machine_prec_trunc_par,):
+                     svd_trunc_params_2=_machine_prec_trunc_par,
+                     timing=False):
         """Compress `self` with a single sweep of SVDs; in place.
 
         Perform a single right-sweep of QR/SVD without truncation, followed by a left-sweep with DMT
@@ -4655,7 +4656,8 @@ class MPS(BaseMPSExpectationValue):
 
                 err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i-1, trunc_par, dmt_par,
                                                                    trace_env=trace_env, MPO_envs=MPO_envs,
-                                                                   svd_trunc_params_2=svd_trunc_params_2)
+                                                                   svd_trunc_params_2=svd_trunc_params_2,
+                                                                   timing=timing)
                 trunc_err += err1 + err2
                 self.norm *= renorm1 * renorm2
 
@@ -4666,9 +4668,10 @@ class MPS(BaseMPSExpectationValue):
         return trunc_err, trace_env, MPO_envs # SAJANT - Do I need to return trace_env and MPO_envs?
 
     def compress_dmt_canonical(self, trunc_par, dmt_par, move_right=True,
-                     trace_env=None, MPO_envs=None,
-                     svd_trunc_params_0=_machine_prec_trunc_par,
-                     svd_trunc_params_2=_machine_prec_trunc_par):
+                               trace_env=None, MPO_envs=None,
+                               svd_trunc_params_0=_machine_prec_trunc_par,
+                               svd_trunc_params_2=_machine_prec_trunc_par,
+                               timing=False):
         """Compress `self` with a single sweep of DMT without canonicalizing first; in place.
 
         Unlike :meth:`canonical_form_finite`, we DO NOT first do a lossless sweep right and then sweep
@@ -4705,7 +4708,8 @@ class MPS(BaseMPSExpectationValue):
 
                 err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i, trunc_par, dmt_par,
                                                                    trace_env=trace_env, MPO_envs=MPO_envs,
-                                                                   svd_trunc_params_2=svd_trunc_params_2)
+                                                                   svd_trunc_params_2=svd_trunc_params_2,
+                                                                   timing=timing)
                 trunc_err += err1 + err2
                 self.norm *= renorm1 * renorm2
         else: # move_left == True
@@ -4718,7 +4722,8 @@ class MPS(BaseMPSExpectationValue):
 
                 err2, renorm2, trace_env, MPO_envs = dmt.dmt_theta(self, i-1, trunc_par, dmt_par,
                                                                    trace_env=trace_env, MPO_envs=MPO_envs,
-                                                                   svd_trunc_params_2=svd_trunc_params_2)
+                                                                   svd_trunc_params_2=svd_trunc_params_2,
+                                                                   timing=timing)
                 trunc_err += err1 + err2
                 self.norm *= renorm1 * renorm2
         return trunc_err, trace_env, MPO_envs

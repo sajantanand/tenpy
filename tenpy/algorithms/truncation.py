@@ -205,9 +205,11 @@ def truncate(S, options, norm_old=1.):
     if trunc_cut is not None and trunc_cut >= 1.:
         raise ValueError("trunc_cut >=1.")
     if not np.any(S > 1.e-10):
-        warnings.warn("no Schmidt value above 1.e-10", stacklevel=2)
+        pass
+        #warnings.warn("no Schmidt value above 1.e-10", stacklevel=2)
     if np.any(S < -1.e-10):
-        warnings.warn("negative Schmidt values!", stacklevel=2)
+        pass
+        #warnings.warn("negative Schmidt values!", stacklevel=2)
 
     # use 1.e-100 as replacement for <=0 values for a well-defined logarithm.
     logS = np.log(np.choose(S <= 0., [S, 1.e-100 * np.ones(len(S))]))

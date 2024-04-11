@@ -1,5 +1,6 @@
 import numpy as np
 from copy import deepcopy
+import time
 
 from ..models.lattice import Chain, TrivialLattice
 from ..models.model import MPOModel, NearestNeighborModel
@@ -573,7 +574,8 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
 
 def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
               trace_env, MPO_envs,
-              svd_trunc_params_2=_machine_prec_trunc_par):
+              svd_trunc_params_2=_machine_prec_trunc_par,
+              timing=False):
     """
     Performs Density Matrix Truncation (DMT) on an MPS representing a density matrix or operator.
     We truncate on the bond between site i to the left and i+1 to the right. This however requires
@@ -588,6 +590,8 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     form while tensor i+1 should be in right ('B') form. TEBD moves the OC by applying gates, but if we want to
     only truncate a dMPS using this function, we need to explicitly move the OC.
     """
+    if timing:
+        time1 = time.time()
     # Check that the MPS has the proper form; need A to the left of (i,i+1) and B to the right
     assert dMPS.form[:i] == [(1.0, 0.0) for _ in range(i)], dMPS.form[:i]
     assert dMPS.form[i+2:] == [(0.0, 1.0) for _ in range(dMPS.L - i - 2)], dMPS.form[i+2:]
@@ -612,11 +616,21 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     S = dMPS.get_SR(i) # singular values to the right of site i
     chi = len(S)
     if chi == 1: # Cannot do any truncation, so give up.
+        svd_trunc_params.touch('chi_max')
+        svd_trunc_params.touch('svd_min')
         return TruncationError(), 1, trace_env, MPO_envs
-
+    
     QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs)
+    if timing:
+        time2 = time.time()
+        print('Get QR Time:', time2 - time1, flush=True)
+        time1 = time2
     # Always need to call this function, as it performs the QR; remove redundancy if R_cutoff > 0.0
     Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))#1.e-14))
+    if timing:
+        time2 = time.time()
+        print('Remove redundancy Time:', time2 - time1, flush=True)
+        time1 = time2
     #Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))
 
     if keep_L >= chi or keep_R >= chi:
@@ -629,6 +643,10 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     M_norm = npc.norm(M)
 
     M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R)
+    if timing:
+        time2 = time.time()
+        print('Truncate M Block Time:', time2 - time1, flush=True)
+        time1 = time2
 
     # SAJANT - Set svd_min to 0 to make sure no SVs are dropped? Or do we need some cutoff to remove the
     # SVs corresponding to the rank we removed earlier from M_DR
@@ -636,6 +654,10 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     err2 = TruncationError.from_norm(renormalization2, norm_old=M_norm)
     # M_trunc (if normalized) would have norm 1 (or the original norm) if we did no truncation; so the new norm (given by `renormalization2`) is akin to
     # the error.
+    if timing:
+        time2 = time.time()
+        print('SVD M Time:', time2 - time1, flush=True)
+        time1 = time2
 
     # We want to remove the environments containing the bond i
     trace_env.del_RP(i)

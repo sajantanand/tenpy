@@ -659,9 +659,10 @@ class DMTTEBDEngine(TEBDEngine):
         dmt_params = self.options['dmt_params']
         trace_env = self.options.get('trace_env', None)
         MPO_envs = self.options.get('MPO_envs', None)
+        timing = self.options.get('timing', False)
         svd_trunc_params_2 = self.options.get('svd_trunc_params_2', _machine_prec_trunc_par)
         
-        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_2=svd_trunc_params_2)
+        trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_2=svd_trunc_params_2, timing=timing)
         self.psi.norm *= renormalize
         self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err2
 
