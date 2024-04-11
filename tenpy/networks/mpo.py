@@ -1245,7 +1245,7 @@ class MPO:
 
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
-            timing = self.options.get('timing', False)
+            timing = options.get('timing', False)
 
             self.apply_naively(psi)
             trunc_err, trace_env, MPO_envs = psi.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs,
@@ -1276,7 +1276,7 @@ class MPO:
 
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
-            timing = self.options.get('timing', False)
+            timing = options.get('timing', False)
             # Sweeps left; leaves RPs behind.
             trunc_err2, trace_env, MPO_envs = psi.compress_dmt_canonical(trunc_params, dmt_params, move_right=False,
                                                                          trace_env=trace_env, MPO_envs=MPO_envs,
@@ -1313,7 +1313,7 @@ class MPO:
 
             svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
             svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
-            timing = self.options.get('timing', False)
+            timing = options.get('timing', False)
             # Sweeps left; leaves RPs behind.
             trunc_err2, trace_env, MPO_envs = psi.compress_dmt_canonical(trunc_params, dmt_params, move_right=False,
                                                                          trace_env=trace_env, MPO_envs=MPO_envs,
@@ -1492,7 +1492,7 @@ class MPO:
         dmt_params = options['dmt_params']
         trace_env = options.get('trace_env', None)
         MPO_envs = options.get('MPO_envs', None)
-        timing = self.options.get('timing', False)
+        timing = options.get('timing', False)
         svd_trunc_params_0 = options.get('svd_trunc_params_0', _machine_prec_trunc_par)
         svd_trunc_params_2 = options.get('svd_trunc_params_2', _machine_prec_trunc_par)
 
