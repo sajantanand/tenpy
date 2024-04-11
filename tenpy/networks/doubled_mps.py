@@ -158,7 +158,7 @@ class DoubledMPS(MPS):
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
         #pipes = [B.get_leg('p') for B in new_Bs]
         if not np.isclose(self.norm, 1.0):
-            warnings.warn("to_regular_MPS: DMPS has norm != 1; this is not copied over to the MPS! DMPS norm: " + self.norm, stacklevel=3)
+            warnings.warn("to_regular_MPS: DMPS has norm != 1; this is not copied over to the MPS! DMPS norm: " + str(self.norm), stacklevel=3)
         new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=1) #self.norm)
         new_MPS.canonical_form(renormalize=False) # norm now contains the rescaling factor needed to establish
         # newMPS as a normalized MPS.

@@ -2215,6 +2215,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
             time2 = time.time()
             print('Remove redundancy Time:', time2 - time1, flush=True)
             time1 = time2
+
         if keep_L >= chi or keep_R >= chi:
             # On the left sweep (updating RP), track change of theta)
             if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
@@ -2241,7 +2242,9 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         M_norm = npc.norm(M_OC)
         #print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
-        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R)
+        # See comment in DMT_theta function for details about traceful_ind
+        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R,
+                                      traceful_ind_L=np.argsort(new_psi.sites[i].perm)[0], traceful_ind_R=np.argsort(new_psi.sites[i+1].perm)[0])
         if timing:
             time2 = time.time()
             print('Truncate M Block Time:', time2 - time1, flush=True)

@@ -2200,6 +2200,7 @@ class DoubledSite(Site):
         self.traces = traces = np.array(traces)
         self.traceful_ind = np.where(traces > 1.e-13)[0]
         assert len(self.traceful_ind) == 1
+        self.traceful_ind = self.traceful_ind.item()
         assert self.traceful_ind == self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
 
         # We already checked that the basis is hermitian if `hermitian==True`.
