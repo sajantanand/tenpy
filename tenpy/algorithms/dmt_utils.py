@@ -607,6 +607,9 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
                 raise ValueError(f"Ket in 'MPO ENV' {j} is not the current doubled MPS.")
             Me.del_RP(i)
             Me.del_LP(i+1)
+    else:
+        # MPO preservation doesn't work with connected correlations
+        assert dmt_params.get('connected', False) == False
 
     S = dMPS.get_SR(i) # singular values to the right of site i
     chi = len(S)
@@ -627,7 +630,13 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     M = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
     M_norm = npc.norm(M)
 
-    # traceful_ind == 0 now ALWAYS
+    # traceful_ind_L(R) should be where the identity operator is located in the virtual left (right) Hilbert space.
+    # When building the QR_L(R) matrix with local or conjoined methods, there will be one (or more) operators that correspond
+    # to the identity operator. This should be doubled_site.traceful_ind since we directly imbed the operator space basis
+    # into the virtual Hilbert space. We find where this is by using the site permutation. For spin-1/2, the permutation is
+    # [1,0,3,2] for operators [S^-,I,Z,S^+]. Even if we have tensor product or direct sum of operator Hilbert spaces, the
+    # Identity is still in the permuted 0th index.
+    # For MPO preservation, there is not guaranteed to be one operator for the identity.
     M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False),
                               keep_L, keep_R, proj_L, proj_R,
                               traceful_ind_L=np.argsort(dMPS.sites[i].perm)[0], traceful_ind_R=np.argsort(dMPS.sites[i+1].perm)[0])
