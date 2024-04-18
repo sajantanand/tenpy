@@ -149,17 +149,21 @@ class DoubledMPS(MPS):
                       bc='finite'):
         raise NotImplementedError()
 
-    def to_regular_MPS(self, hermitian=True):
+    def to_regular_MPS(self, hermitian=True, doubled_site=None):
         """
         Convert a doubled MPS to a regular MPS by combining together the 'p' and 'q' legs
         """
         # Build new site of squared dimension
-        doubled_sites = [DoubledSite(s.dim, s.conserve, s.leg.sorted, hermitian) for s in self.sites]# * self.L
+        if doubled_site is None:
+            doubled_sites = [DoubledSite(s.dim, s.conserve, s.leg.sorted, hermitian) for s in self.sites]# * self.L
+        else:
+            doubled_sites = [doubled_site] * self.L
+
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
         #pipes = [B.get_leg('p') for B in new_Bs]
         if not np.isclose(self.norm, 1.0):
-            warnings.warn("to_regular_MPS: DMPS has norm != 1; this is not copied over to the MPS! DMPS norm: " + str(self.norm), stacklevel=3)
-        new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=1) #self.norm)
+            warnings.warn("to_regular_MPS: DMPS has norm != 1; this IS copied over to the MPS! DMPS norm: " + str(self.norm), stacklevel=3)
+        new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=self.norm)
         new_MPS.canonical_form(renormalize=False) # norm now contains the rescaling factor needed to establish
         # newMPS as a normalized MPS.
         return new_MPS#, pipes
@@ -171,7 +175,8 @@ class DoubledMPS(MPS):
         #for B, pipe in zip(reg_MPS._B, pipes):
             #B.itranspose(['vL', 'p', 'vR'])
             #B.legs[1] = pipe
-        self._B = [B.replace_label('p', '(p.q)').split_legs() for B in reg_MPS._B]
+        # Only want to split the physical leg. Sometime the vL and vR legs might be pipes too.
+        self._B = [B.replace_label('p', '(p.q)').split_legs('(p.q)') for B in reg_MPS._B]
         for B in self._B:
             B.itranspose(self._B_labels)
         self._S = reg_MPS._S
