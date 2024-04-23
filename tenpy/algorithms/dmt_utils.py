@@ -116,8 +116,11 @@ def trace_identity_DMPS(DMPS, traceful_id=None):
 # Bra for density matrix expectation value once flattened
 def trace_identity_MPS(DMPS):#, traceful_id=None):
     #d = DMPS.sites[0].dim
-    for ds in DMPS.sites:
-        assert type(ds) is DoubledSite
+
+    # For grouped sites, this is no longer true!
+    #for ds in DMPS.sites:
+    #    assert type(ds) is DoubledSite
+
     # In rotated, HOMT basis. Identity is unit vector with 1 at location specified by traceful_id.
     # For a systme with charge consdervation and d > 2, there can (and will) be more than one
     # opertator with trace 1 (operators are normalized). So we need to include the contribution from
@@ -134,7 +137,7 @@ def trace_identity_MPS(DMPS):#, traceful_id=None):
             # No charges!
             ti = ds.traceful_ind
         """
-        ti = ds.traceful_ind
+        ti = 0 #ds.traceful_ind
         I[ti,0,0] = 1 # 1 for every operator with trace 1.
         Is.append(I)
     return MPS.from_Bflat(DMPS.sites,
@@ -621,7 +624,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
         svd_trunc_params.touch('chi_max')
         svd_trunc_params.touch('svd_min')
         return TruncationError(), 1, trace_env, MPO_envs
-    
+
     QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs)
     if timing:
         time2 = time.time()
