@@ -713,25 +713,25 @@ class MPO:
             U.append(W_II)
         Id = [0] * (self.L + 1)
         return MPO(self.sites, U, self.bc, Id, Id, max_range=self.max_range)
-    
-    def make_quadrupled_MPO(self, hermitian=True):
-        r"""Creates the MPO for evolution in the Quadrupled space. The input mpo is already in the doubled
-        space, so :math:`O \otimes I - I \otimes O^*`, we want to turn this into
-        :math:`O \otimes I \otimes I \otimes I - I \otimes O^* \otimes I \otimes I + I \otimes I \otimes O \otimes I - I \otimes I \otimes I \otimes O^*`.
-        If the operator is the Hamiltonian, this will exponentiate to form the unitary
-        :math:`U \otimes U^T \otimes U \otimes U^T`.
 
-        More simply, this function take the operator :math:`O` to the new operator
-        :math:`O \otimes I + I \otimes O`.
+    def make_quadrupled_MPO(self, hermitian=True):
+        r"""Creates the MPO for evolution in the Quadrupled space. The input mpo is originally in the single Hilbert
+        space, so :math:`O`, we want to turn this into
+        :math:`O \otimes I \otimes I \otimes I + I \otimes O \otimes I \otimes I - I \otimes I \otimes O^* \otimes I - I \otimes I \otimes I \otimes O^*`.
+        The legs of the operator should correspond to p0, p1, p0*, p1*.
+        If the operator is the Hamiltonian, this will exponentiate to form the unitary
+        :math:`U \otimes U \otimes U^T \otimes U^T`.
 
         We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
 
-        1 C D      1  CI IC (DI + ID)
-        0 A B -->  0  AI  0    BI
-        0 0 1      0  0   IA   IB
-                   0  0   0    1
-        Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension 2D-2.
+        1 C D      1   CIII  ICII  IIC*I  IIIC*  (DIII + IDII - IID*I - IIID*)
+        0 A B -->  0   AIII  0     0      0      BIII
+        0 0 1      0   0     IAII  0      0      IBII
+                   0   0     0     IIA*I  0     -IIB*I
+                   0   0     0     0      IIIA* -IIIB*
+                   0   0     0     0      0      1
+        Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension 4D-2.
 
         Parameters
         ----------
@@ -739,7 +739,7 @@ class MPO:
         Returns
         -------
         DMPO : :class:`~tenpy.networks.mpo.MPO`
-            The MPO in the doubled Hilbert space.
+            The MPO in the quadrupled Hilbert space.
 
         """
         # SAJANT - remove `embed` and use functions defined at end of file to make function cleaner
@@ -766,24 +766,47 @@ class MPO:
             Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
             Idd_npc = _combine_npc(Id_npc, Id_npc)
 
-            dW = np.empty((2*DL-2, 2*DR-2), dtype=object)
+            dW = np.empty((4*DL-2, 4*DR-2), dtype=object)
 
             # First Row
             dW[0,0] = Idd_npc
             for i in range(0, DR-2):
-                dW[0,i+1] = _combine_npc(C_npc[0,i], Id_npc, conj=False)
-                dW[0,i+DR-2+1] = 1*_combine_npc(Id_npc, C_npc[0,i], conj=False)
-            dW[0,-1] = _combine_npc(D_npc, Id_npc, conj=False) + _combine_npc(Id_npc, D_npc, conj=False)
+                # CIII
+                dW[0,i+1] = _combine_npc(_combine_npc(C_npc[0,i], Id_npc), Idd_npc)
+                # ICII
+                dW[0,i+DR-2+1] = _combine_npc(_combine_npc(Id_npc, C_npc[0,i], conj=False), Idd_npc)
+                # IIC*I
+                dW[0,i+2*(DR-2)+1] = _combine_npc(Idd_npc, _combine_npc(C_npc[0,i], Id_npc), conj=True)
+                # IIIC*
+                dW[0,i+3*(DR-2)+1] = _combine_npc(Idd_npc, _combine_npc(Id_npc, C_npc[0,i], conj=False), conj=True)
+            # DIII + IDII - IID*I - IIID*
+            dW[0,-1] = _combine_npc(_combine_npc(D_npc, Id_npc), Idd_npc) \
+                + _combine_npc(_combine_npc(Id_npc, D_npc, conj=False), Idd_npc) \
+                - _combine_npc(Idd_npc,_combine_npc(D_npc, Id_npc), conj=True) \
+                - _combine_npc(Idd_npc,_combine_npc(Id_npc, D_npc, conj=False), conj=True)
+
             # Middle Rows
             for i in range(0, DL-2):
                 for j in range(0, DR-2):
-                    dW[i+1,j+1] = _combine_npc(A_npc[i,j], Id_npc, conj=False)
-                    dW[i+1+DL-2,j+1+DR-2] = 1*_combine_npc(Id_npc,A_npc[i,j], conj=False)
-                dW[i+1, -1] = _combine_npc(B_npc[i,0], Id_npc, conj=False)
-                dW[i+1+DL-2, -1] = 1*_combine_npc(Id_npc, B_npc[i,0], conj=False)
+                    # AIII
+                    dW[i+1,j+1] = _combine_npc(_combine_npc(A_npc[i,j], Id_npc), Idd_npc)
+                    # IAII
+                    dW[i+1+DL-2,j+1+DR-2] = _combine_npc(_combine_npc(Id_npc, A_npc[i,j], conj=False), Idd_npc)
+                    # IIA^*I
+                    dW[i+1+2*(DL-2),j+1+2*(DL-2)] = _combine_npc(Idd_npc, _combine_npc(A_npc[i,j], Id_npc), conj=True)
+                    # IIIA^*
+                    dW[i+1+3*(DL-2),j+1+3*(DR-2)] = _combine_npc(Idd_npc, _combine_npc(Id_npc, A_npc[i,j], conj=False), conj=True)
+                # BIII
+                dW[i+1, -1] = _combine_npc(_combine_npc(B_npc[i,0], Id_npc), Idd_npc)
+                # IBII
+                dW[i+1+DL-2, -1] = _combine_npc(_combine_npc(Id_npc, B_npc[i,0], conj=False), Idd_npc)
+                # -IIB^*I
+                dW[i+1+2*(DL-2), -1] = -1*_combine_npc(Idd_npc, _combine_npc(B_npc[i,0], Id_npc), conj=True)
+                # -IIIB^*
+                dW[i+1+3*(DL-2), -1] = -1*_combine_npc(Idd_npc, _combine_npc(Id_npc, B_npc[i,0], conj=False), conj=True)
             #Bottom Rows
-            dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sort, hermitian=hermitian))
+            dW[-1,-1] = _combine_nps(Idd_npc, Idd_npc)
+            sites.append(DoubledSite(d**2, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sort, hermitian=hermitian))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
@@ -795,9 +818,9 @@ class MPO:
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
 
-        1 C D      1  CI -IC* (DI - ID*)
+        1 C D      1  CI  IC* (DI - ID*)
         0 A B -->  0  AI  0    BI
-        0 0 1      0  0   -IA* -IB*
+        0 0 1      0  0   IA* -IB*
                    0  0   0    1
         Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension 2D-2.
 
@@ -855,13 +878,7 @@ class MPO:
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
-        # SAJANT - What if different sites have different dimensions?
-        #dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim, conserve=self.sites[0].conserve, sort_charge=self.sites[0].used_sort_charge, hermitian=hermitian)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
-        #dMPO = MPO.from_grids([DoubledSite(ss.dim, conserve=ss.conserve, sort_charge=ss.used_sort_charge, hermitian=hermitian) for ss in self.sites], U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
-                             #) #[DoubledSite(self.sites[0].dim)] * self.L
-        # return MPO([DoubledSite(self.sites[0].dim)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range) #[DoubledSite(self.sites[0].dim)] * self.L
-        #dMPO.rotated_basis = False
         return dMPO
 
     def make_embedded_MPO(self, hermitian=True):
@@ -923,13 +940,85 @@ class MPO:
             dW[-1,-1] = Idd_npc
             sites.append(DoubledSite(d, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sorted, hermitian=hermitian))
             U.append(dW)
-            #print(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
-        #dMPO = MPO.from_grids([DoubledSite(self.sites[0].dim, conserve=self.sites[0].conserve)] * self.L, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
-        #dMPO = MPO.from_grids([DoubledSite(ss.dim, conserve=ss.conserve, sort_charge=ss.used_sort_charge) for ss in self.sites], U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
-        #dMPO.rotated_basis = False
+        return dMPO
+
+    def make_twice_embedded_MPO(self, hermitian=True):
+        r"""Embeds an operator into a quadrupled Hilbert space. Given an operator :math:`O`, we
+        turn this into :math:`O \otimes I \otimes I \otimes I + I \otimes O \otimes I \otimes I`.
+        We will do this tensor by tensor in the MPO, and we require
+        that the MPO has the usual block form.
+
+        1 C D      I  CIII  ICII  (DIII+IDII)
+        0 A B -->  0  AIII  0     BIII
+        0 0 1      0  0     IAII  IBII
+                   0  0     0     I
+
+        Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension $2D-2$.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        DMPO : :class:`~tenpy.networks.mpo.MPO`
+            The MPO in the doubled Hilbert space.
+
+        """
+        if self.explicit_plus_hc:
+            raise NotImplementedError("MPO.make_doubled_MPO assumes hermitian H, you can't use "
+                                      "the `explicit_plus_hc=True` flag!\n"
+                                      "See also https://github.com/tenpy/tenpy/issues/265")
+        dtype = self.dtype
+        IdL = self.IdL
+        IdR = self.IdR
+
+        chinfo = self.chinfo
+        trivial = chinfo.make_valid()
+        U = []
+        sites = []
+        for i in range(0, self.L):
+            labels = ['wL', 'wR', 'p', 'p*']
+            W = self.get_W(i).itranspose(labels)
+            assert np.all(W.qtotal == trivial)
+            DL, DR, d, d = W.shape
+
+            A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
+            Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
+            Idd_npc = _combine_npc(Id_npc, Id_npc)
+
+            dW = np.empty((2*DL-2, 2*DR-2), dtype=object)
+
+            # First Row
+            dW[0,0] = Idd_npc
+            for i in range(0, DR-2):
+                # CIII
+                dW[0,i+1] = _combine_npc(_combine_npc(C_npc[0,i], Id_npc), Idd_npc)
+                # ICII
+                dW[0,i+DR-2+1] = _combine_npc(_combine_npc(Id_npc, C_npc[0,i], conj=False), Idd_npc)
+            # DIII + IDII
+            dW[0,-1] = _combine_npc(_combine_npc(D_npc, Id_npc), Idd_npc) \
+                + _combine_npc(_combine_npc(Id_npc, D_npc, conj=False), Idd_npc)
+            # Middle Rows
+            for i in range(0, DL-2):
+                for j in range(0, DR-2):
+                    # AIII
+                    dW[i+1,j+1] = _combine_npc(_combine_npc(A_npc[i,j], Id_npc), Idd_npc)
+                    # IAII
+                    dW[i+1+DL-2,j+1+DR-2] = _combine_npc(_combine_npc(Id_npc, A_npc[i,j], conj=False), Idd_npc)
+                # BIII
+                dW[i+1, -1] = _combine_npc(_combine_npc(B_npc[i,0], Id_npc), Idd_npc)
+                # IBII
+                dW[i+1+DL-2, -1] = _combine_npc(_combine_npc(Id_npc, B_npc[i,0], conj=False), Idd_npc)
+            #Bottom Rows
+            dW[-1,-1] = Idd_npc
+            sites.append(DoubledSite(d**2, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sorted, hermitian=hermitian))
+            U.append(dW)
+        IdL = [0] * (self.L + 1)
+        IdR = [-1] * (self.L + 1)
+        dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         return dMPO
 
     def conjugate_MPO(self, Ms):

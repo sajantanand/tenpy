@@ -584,6 +584,33 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         assert (tuple(U.get_leg_labels()) == ('(p0.p1)', '(p0*.p1*)'))
         return U.split_legs()
 
+class SVDTEBDEngine(TEBDEngine):
+    def evolve(self, N_steps, dt):
+        """Evolve by ``dt * N_steps``.
+
+        Parameters
+        ----------
+        N_steps : int
+            The number of steps for which the whole lattice should be updated.
+        dt : float
+            The time step; but really this was already used in :meth:`prepare_evolve`.
+
+        Returns
+        -------
+        trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
+            The error of the represented state which is introduced due to the truncation during
+            this sequence of evolvution steps.
+        """
+        if dt is not None:
+            assert dt == self._U_param['delta_t']
+        return self.update_imag(N_steps)
+
+    def evolve_step(self, U_idx_dt, odd):
+        raise NotImplementedError()
+
+    def update_bond(self, i, U_bond):
+        raise NotImplementedError()
+
 class DMTTEBDEngine(TEBDEngine):
     def evolve(self, N_steps, dt):
         """Evolve by ``dt * N_steps``.
@@ -661,7 +688,7 @@ class DMTTEBDEngine(TEBDEngine):
         MPO_envs = self.options.get('MPO_envs', None)
         timing = self.options.get('timing', False)
         svd_trunc_params_2 = self.options.get('svd_trunc_params_2', _machine_prec_trunc_par)
-        
+
         trunc_err2, renormalize, trace_env, MPO_envs = dmt.dmt_theta(self.psi, i0, self.trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_2=svd_trunc_params_2, timing=timing)
         self.psi.norm *= renormalize
         self._trunc_err_bonds[i] = self._trunc_err_bonds[i] + trunc_err2

@@ -1219,7 +1219,8 @@ class SpinHalfSite(Site):
             chinfo = npc.ChargeInfo([1], ['2*Sz'])
             leg = npc.LegCharge.from_qflat(chinfo, [1, -1])
         else:
-            ops.update(Sx=Sx, Sy=Sy)
+            # Added computational state projectors for PXP model - SAJANT
+            ops.update(Sx=Sx, Sy=Sy, P0=np.eye(2)/2+Sz, P1=np.eye(2)/2-Sz)
             if conserve == 'parity':
                 chinfo = npc.ChargeInfo([2], ['parity_Sz'])
                 leg = npc.LegCharge.from_qflat(chinfo, [1, 0])  # ([1, -1] would need ``qmod=[4]``)

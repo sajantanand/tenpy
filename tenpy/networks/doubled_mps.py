@@ -184,6 +184,31 @@ class DoubledMPS(MPS):
         self.form = reg_MPS.form
         self.test_sanity()
 
+    def outer_product(self):
+        """
+        Take outer product of each tensor; O \rightarrow O \otimes O
+        """
+
+        grouped_sites = []
+        for s in s.sites:
+            gs = GroupedSite([s, s], ['0', '1'], 'same')
+            grouped_sites.append(gs)
+
+        new_Bs = []
+        new_Ss = []
+        for B in self._B:
+            new_B = npc.outer(B.replace_labels(['p', 'vL', 'vR'], ['p0', 'vL0', 'vR0']),
+                              B.replace_labels(['p', 'vL', 'vR'], ['p1', 'vL1', 'vR1']))
+            new_B = new_B.combine_legs([['p0', 'p1'], ['vL0', 'vL1'], ['vR0', 'vR1']],
+                                        qconj=[B.get_leg('p').qconj, B.get_leg('vL'), B.get_leg('vR')])
+            new_B.ireplace_labels(['(p0.p1)', '(vL0.vL1)', '(vR0.vR1)'], ['p', 'vL', 'vR'])
+            new_Bs.append(new_B)
+            new_Ss.append(np.kron(new_Ss, new_Ss))
+        if not np.isclose(self.norm, 1.0):
+            warnings.warn("outer_product: DMPS has norm != 1; this IS copied over to the outer producted DMPS! DMPS norm: " + str(self.norm), stacklevel=3)
+        new_MPS = MPS(grouped_sites, new_Bs, new_Ss, bc='finite', form='B', norm=self.norm)
+        return new_MPS
+
     # If we want this, need to take care of additional physical legs.
     # This function is needed for SVD compression of (infinite) doubled MPS.
     def set_svd_theta(self, i, theta, trunc_par=None, update_norm=False):

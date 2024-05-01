@@ -4689,7 +4689,8 @@ class MPS(BaseMPSExpectationValue):
         trunc_par : dict
             Parameters for truncation, see :cfg:config:`truncation`.
         """
-        assert np.alltrue([type(s) == DoubledSite for s in self.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+        # We could run DMT on grouped sites.
+        # assert np.alltrue([type(s) == DoubledSite for s in self.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
 
         trunc_err = TruncationError()
         if self.bc == 'infinite':

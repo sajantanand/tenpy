@@ -5,13 +5,14 @@ Uniform lattice of spin-S sites, coupled by nearest-neighbor interactions.
 # Copyright 2018-2023 TeNPy Developers, GNU GPLv3
 
 import numpy as np
+from scipy.special import comb
 
 from ..networks.site import SpinSite
 from .model import CouplingMPOModel, NearestNeighborModel
 from .lattice import Chain, Square
 from ..tools.params import asConfig
 
-__all__ = ['SpinModel', 'SpinChain', 'ExponentiallyDecayingXXZ', 'AnisotropicSpinModel']
+__all__ = ['SpinModel', 'SpinChain', 'XXXChain', 'ExponentiallyDecayingXXZ', 'AnisotropicSpinModel']
 
 
 class SpinModel(CouplingMPOModel):
@@ -98,7 +99,6 @@ class SpinModel(CouplingMPOModel):
             self.add_coupling(muJ * 0.5j, u1, 'Sm', u2, 'Sp', dx, plus_hc=True)
         # done
 
-
 class SpinChain(SpinModel, NearestNeighborModel):
     """The :class:`SpinModel` on a Chain, suitable for TEBD.
 
@@ -106,6 +106,78 @@ class SpinChain(SpinModel, NearestNeighborModel):
     """
     default_lattice = Chain
     force_default_lattice = True
+
+class XXXChain(SpinChain):
+    """The :class:`SpinChain` for the XXX model with conserved MPOs
+
+    See the :class:`SpinModel` for the documentation of parameters.
+    """
+    MPOs = {}
+
+    def conserved_charge_MPO(self, k, verbose=False):
+        assert k >= 1, "Conserved quantities for k>1."
+        if k in self.MPOs.keys():
+            return self.MPOs[k]
+        sites = self.lat.mps_sites()
+        site = sites[0] # This constains the operators we use to build the sites.
+        X = 2*site.get_op('Sx')
+        Y = 2*site.get_op('Sy')
+        Z = 2*site.get_op('Sz')
+        Zero = 0 * Z
+        I = site.get_op('Id')
+        L = len(sites)
+        H_MPO = self.H_MPO
+
+        D = 3*k - 1
+        dW = np.empty((D, D), dtype=object)
+        for i in range(D):
+            for j in range(D):
+                dW[i,j] = Zero
+        dW_str = np.empty((D, D), dtype=object)
+        dW[0, 0] = dW[D-1, D-1] = I
+        dW_str[0, 0] = dW_str[D-1, D-1] = 'I'
+
+        if k == 1:
+            dW[0, 1] = Z
+            dW_str[0, 1] = 'Z'
+        else:
+            sigma = [X, Y, Z]
+            sigma_str = ['X', 'Y', 'Z']
+            M = [[Zero, -Z, Y], [Z, Zero, -X], [-Y, X, Zero]]
+            M_str = [['0', '-Z', 'Y'], ['Z', '0', '-X'], ['-Y', 'X', '0']]
+
+            def Catalan(n):
+                return comb(2*n, n) - comb(2*n, n-1)
+
+            dW[0, 1:4] = sigma
+            dW[D-4:D-1, D-1] = sigma
+            dW_str[0, 1:4] = sigma_str
+            dW_str[D-4:D-1, D-1] = sigma_str
+
+            assert (D - 1 - 3 - 1) % 3 == 0
+            for i in range(int((D - 1 - 3 - 1)//3)):
+                dW[(1+3*i):(1+3*(i+1)), (4+3*i):(4+3*(i+1))] = M
+                dW_str[(1+3*i):(1+3*(i+1)), (4+3*i):(4+3*(i+1))] = M_str
+            for i in range(1, k-2):
+                for j in range(1, k-1):
+                    if j - i > 0 and (j - i) % 2:
+                        n = (j - i) // 2
+                        Cn = Catalan(n)
+                        Cn_str = 'C' + str(n)
+                        I3 = [[Cn*I, Zero, Zero], [Zero, Cn*I, Zero], [Zero, Zero, Cn*I]]
+                        I3_str = [[Cn_str, '0', '0'], ['0', Cn_str, '0'], ['0', '0', Cn_str]]
+                        dW[(1+3*(i-1)):(1+3*i), (4+3*(j-1)):(4+3*j)] = I3
+                        dW_str[(1+3*(i-1)):(1+3*i), (4+3*(j-1)):(4+3*j)] = I3_str
+
+        if verbose:
+            print(dW_str)
+        IdL = [0] * (L + 1)
+        IdR = [-1] * (L + 1)
+        from ..networks.mpo import MPO
+        CC_MPO = MPO.from_grids(sites, [dW]*L, H_MPO.bc, IdL, IdR, max_range=H_MPO.max_range, explicit_plus_hc=H_MPO.explicit_plus_hc)
+        self.MPOs[k] = CC_MPO
+        return CC_MPO
+
 
 class AnisotropicSpinModel(SpinModel):
     r"""SpinModel on 2D (or more) lattice where two-spin couplings in the Bravais lattice directions

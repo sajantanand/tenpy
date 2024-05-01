@@ -97,12 +97,13 @@ def distribute_pairs(pairs, bi, symmetric=True):
                     right_points.append(cp[1])
     return left_points, right_points
 
-# Bra for density matrix expectation value.
 def trace_identity_DMPS(DMPS, traceful_id=None):
+    """
+    Bra for density matrix expectation value; we simply represent the identity matrix.
+    We are in the computational / standard basis. Make doubled MPS with two physical legs
+    per site, using the identity on each site
+    """
     assert traceful_id == None, "Not used here since the doubled MPS has both bra and ket legs"
-    #d = DMPS.sites[0].dim
-    # We are in the computational / standard basis. Make doubled MPS with two physical legs
-    # per site, using the identity on each site
     Is = [np.eye(ds.dim).reshape(ds.dim, ds.dim, 1, 1) for ds in DMPS.sites]
     return DoubledMPS.from_Bflat(DMPS.sites,
                                  Is,
@@ -113,19 +114,49 @@ def trace_identity_DMPS(DMPS, traceful_id=None):
                                  form='B', # Form doesn't matter since it's a product state?
                                  legL=None)
 
-# Bra for density matrix expectation value once flattened
-def trace_identity_MPS(DMPS):#, traceful_id=None):
-    #d = DMPS.sites[0].dim
+def make_swap_gate(d):
+    swap = np.zeros((d, d))
+    d2 = int(np.sqrt(d)) # Local Hilbert space dimension of the operator
+    for i in range(d):
+        for j in range(d):
+            a, b = i // d2, i % d2
+            e, f = j // d2, j % d2
+            if a == f and b == e:
+                swap[i,j] = 1
+    return swap
 
+def trace_swap_DMPS(DMPS, traceful_id=None):
+    """
+    Bra for quadrupled space OTOCs; the matrix represents a swap operator in the physical
+    space. Given a quadupled DMPS of local Hilbert space dimension :math:`d`, we want the swap
+    in this space that represents two operators.
+    """
+    assert traceful_id == None, "Not used here since the doubled MPS has both bra and ket legs"
+    Swaps = []
+    for ds in DMPS.sites:
+        swap = make_swap_gate(ds.dim).reshape(ds.dim, ds.dim, 1, 1)
+        Swaps.append(swap)
+
+    return DoubledMPS.from_Bflat(DMPS.sites,
+                                 Swaps,
+                                 SVs=None,
+                                 bc='finite',
+                                 dtype=None,
+                                 permute=True, # The site is typically permutted, so we NEED this to be true.
+                                 form='B', # Form doesn't matter since it's a product state?
+                                 legL=None)
+
+def trace_identity_MPS(DMPS):#, traceful_id=None):
+    """
+    Bra for density matrix expectation value once flattened. We represent the identity matrix as a vector.
+    This is in the rotated basis, so we only have 1 index representing the identity operator.
+
+    We pass in a flattened MPS.
+    """
     # For grouped sites, this is no longer true!
     #for ds in DMPS.sites:
     #    assert type(ds) is DoubledSite
 
-    # In rotated, HOMT basis. Identity is unit vector with 1 at location specified by traceful_id.
-    # For a systme with charge consdervation and d > 2, there can (and will) be more than one
-    # opertator with trace 1 (operators are normalized). So we need to include the contribution from
-    # several slices of the tensor.
-    # SAJANT TODO - Generalize this to case where the Identity isn't a unit vector.
     Is = []
     for ds in DMPS.sites:
         I = np.zeros((ds.dim,1,1))
@@ -148,6 +179,36 @@ def trace_identity_MPS(DMPS):#, traceful_id=None):
                           permute=True, # The site is typically permutted, so we NEED this to be true.
                           form='B', # Form doesn't matter since it's a product state?
                           legL=None)
+
+def trace_swap_MPS(DMPS):#, traceful_id=None):
+    """
+    Bra for density matrix expectation value once flattened. We represent the swap operator as a vector.
+    To get this, we first get the swap matrix, flatten it into an MPS tensor, build an MPS, and then
+    rotate the MPS into the desired basis.
+    """
+    # For grouped sites, this is no longer true!
+    #for ds in DMPS.sites:
+    #    assert type(ds) is DoubledSite
+
+    Swaps = []
+    for ds in DMPS.sites:
+        d = ds.dim
+        d2 = int(np.sqrt(d))
+        swap_matrix = make_swap_gate(d2)
+        swap = swap_matrix.reshape(d, 1, 1)
+        Swaps.append(swap)
+    swap_MPS = MPS.from_Bflat(DMPS.sites,
+                          Swaps,
+                          SVs=None,
+                          bc='finite',
+                          dtype=None,
+                          permute=True, # The site is typically permutted, so we NEED this to be true.
+                          form='B', # Form doesn't matter since it's a product state?
+                          legL=None)
+
+    # Now we need to rotate this to the desired basis.
+    swap_MPS.apply_product_op([s.s2d for s in swap_MPS.sites], unitary=True)
+    return swap_MPS
 
 """
 In principle we could combine all DMT methods into just the MPO method and use a different MPO for EACH operator we wish to preserve.
@@ -230,7 +291,8 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
             W = Me.H.get_W(i+1)
             W = W.gauge_total_charge('wL', new_qconj=W.get_leg('wL').qconj*-1) # +1 -> -1
             QR_R = npc.tensordot(W, QR_R, axes=(['wR', 'p*'], ['wL', 'p'])) #  vL (ket, including site i+1), p (from MPO on site i+1), wL (inlcuding site i+1), vL* (bra)
-            trace_tensor = trace_identity_MPS(dMPS).get_B(i+1)
+            #trace_tensor = trace_identity_MPS(dMPS).get_B(i+1)
+            trace_tensor = trace_env.bra.get_B(i+1)
             QR_R = npc.tensordot(QR_R, trace_tensor.conj(), axes=(['p', 'vL*'],['p*', 'vR*'])) # vL (ket), wL , vL* (bra); all including site i+1
             QR_R = QR_R.combine_legs(['vL*', 'wL'], qconj=-1).replace_label('(vL*.wL)', 'p').transpose(['vL', 'p'])
             QR_Rs.append(QR_R)
@@ -318,7 +380,8 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
             W = Me.H.get_W(i)
             W = W.gauge_total_charge('wR', new_qconj=W.get_leg('wR').qconj*-1) # -1 -> 1
             QR_L = npc.tensordot(QR_L, W, axes=(['wR', 'p'], ['wL', 'p*'])) # vR (ket, including site i), p (from MPO on site i), wR (including site i), vR* (bra)
-            trace_tensor = trace_identity_MPS(dMPS).get_B(i)
+            #trace_tensor = trace_identity_MPS(dMPS).get_B(i)
+            trace_tensor = trace_env.bra.get_B(i)
             QR_L = npc.tensordot(trace_tensor.conj(), QR_L, axes=(['p*', 'vL*'], ['p', 'vR*'])) # vR (ket), wR , vR* (bra); all including site i
             QR_L = QR_L.combine_legs(['vR*', 'wR'], qconj=+1).replace_label('(vR*.wR)', 'p').transpose(['p', 'vR'])
             QR_Ls.append(QR_L)
