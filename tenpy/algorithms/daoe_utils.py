@@ -91,7 +91,7 @@ def DAOE_MPO(L, sites, gamma, lstar, danging_right=False):
 
     return mpo
 
-def weight_split_truncate(psi, max_weight, apply_naively=False, options={})
+def weight_split_truncate(psi, max_weight, apply_naively=False, options={}):
     """
     We want to split a wavefunction represeting operators into two MPSs, one containing all strings
     with weight < max_weight and another with all remaining strings.
