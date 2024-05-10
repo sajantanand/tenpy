@@ -182,7 +182,9 @@ class DoubledMPS(MPS):
         self._S = reg_MPS._S
         self.norm = reg_MPS.norm
         self.form = reg_MPS.form
-        self.test_sanity()
+        # Don't want to do this as of 05/09/2024; when doing backflow experiments, we want to have finite MPS with a dangling
+        # right vR leg; test_sanity() doesn't allow for this.
+        #self.test_sanity()
 
     def outer_product(self):
         """

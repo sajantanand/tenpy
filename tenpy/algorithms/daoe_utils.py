@@ -51,7 +51,7 @@ def DAOE_MPO(L, sites, gamma, lstar, danging_right=False):
             dissipated according to their excess length
         dangling_right: bool
             Do we have a dangling virtual bond at the end of the MPO? This is used to "post-select" on the
-            desired elngth of operator string.
+            desired length of operator string.
 
     returns:
         mpo: MPO

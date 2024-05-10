@@ -1501,7 +1501,7 @@ class MPO:
         # TODO: zipup method infinite?
         raise ValueError("Unknown compression method: " + repr(method))
 
-    def apply_naively(self, psi):
+    def apply_naively(self, psi, dangling=False):
         """Applies an MPO to an MPS (in place) naively, without compression.
 
         This function simply contracts the `W` tensors of the MPO to the `B` tensors of the
@@ -1532,7 +1532,7 @@ class MPO:
                 B = B.combine_legs(['wR', 'vR'], qconj=[-1])
                 B.ireplace_labels(['(wR.vR)'], ['vR'])
                 B.legs[B.get_leg_index('vR')] = B.get_leg('vR').to_LegCharge()
-            elif i == psi.L - 1 and bc == 'finite':
+            elif i == psi.L - 1 and bc == 'finite' and not dangling:
                 B = B.take_slice(self.get_IdR(i), 'wR')
                 B = B.combine_legs(['wL', 'vL'], qconj=[1])
                 B.ireplace_labels(['(wL.vL)'], ['vL'])

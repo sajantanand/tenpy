@@ -272,3 +272,65 @@ class ExponentiallyDecayingXXZ(CouplingMPOModel):
             self.add_exponentially_decaying_coupling(pre*2, lam, 'Sp', 'Sm', plus_hc=True)
             self.add_exponentially_decaying_coupling(pre*4*delta, lam, 'Sz', 'Sz')
         # done
+
+    def conserved_charge_MPO(self, k, center=None, verbose=False):
+        print("conserved charge")
+        assert k == 1, "Only conserve total Sz."
+        if not hasattr(self, 'MPOs'):
+            self.MPOs = {}
+            self.Tensors = {}
+        sites = self.lat.mps_sites()
+        L = len(sites)
+
+        if center != None:
+            assert k > 1, "Can't make MPO of L=1."
+            assert center - k // 2 >= 0
+            assert center + (k // 2 - (k+1) % 2) <= L-1
+        if k in self.MPOs.keys() and center == None:
+            return self.MPOs[k]
+
+        site = sites[0] # This contains the operators we use to build the sites.
+        Z = 2*site.get_op('Sz')
+        Zero = 0 * Z
+        I = site.get_op('Id')
+        H_MPO = self.H_MPO
+
+        if k in self.Tensors.keys():
+            dW, dI = self.Tensors[k]
+        else:
+            D = 3*k - 1
+            dI = np.empty((D, D), dtype=object)
+            dW = np.empty((D, D), dtype=object)
+            dW_str = np.empty((D, D), dtype=object)
+            for i in range(D):
+                for j in range(D):
+                    dI[i,j] = Zero
+                    dW[i,j] = Zero
+
+            dI[0, 0] = dI[D-1, D-1] = I
+            dW[0, 0] = dW[D-1, D-1] = I
+            dW_str[0, 0] = dW_str[D-1, D-1] = 'I'
+
+            if k == 1:
+                dW[0, 1] = Z
+                dW_str[0, 1] = 'Z'
+            else:
+                raise NotImplementedError('Do you know the form of the CCs?')
+            if verbose:
+                print(dW_str)
+            self.Tensors[k] = (dW, dI)
+
+        IdL = [0] * (L + 1)
+        IdR = [-1] * (L + 1)
+        from ..networks.mpo import MPO
+        if center == None:
+            CC_MPO = MPO.from_grids(sites, [dW]*L, H_MPO.bc, IdL, IdR, max_range=k, explicit_plus_hc=False)
+            self.MPOs[k] = CC_MPO
+        else:
+            #CC_MPO = MPO.from_grids(sites, [dI]*(center - k//2) + [dW]*k + [dI]*(L-center + k//2 - k), H_MPO.bc, IdL, IdR, max_range=k, explicit_plus_hc=False)
+            CC_MPO = MPO.from_grids(list(sites[:k]), [dW]*k, H_MPO.bc, IdL[:k+1], IdR[:k+1], max_range=k, explicit_plus_hc=False)
+            I = I.add_trivial_leg(axis=0, label='wL', qconj=1).add_trivial_leg(axis=1, label='wR', qconj=-1)
+            CC_MPO = MPO(sites, [I]*(center - k//2) + CC_MPO._W + [I]*(L-center + k//2 - k), bc=H_MPO.bc, IdL=IdL, IdR=IdR, max_range=k, explicit_plus_hc=False)
+
+        return CC_MPO
+
