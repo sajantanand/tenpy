@@ -1392,7 +1392,7 @@ class MPO:
             trunc_err = self.apply_zipup(psi, options)
             #print("After zip_up: ", psi.chi)
             return trunc_err + psi.compress_svd(trunc_params)
-        elif method == 'DMT_naive':
+        elif method == 'DMT_SVD':
             # SAJANT TODO; this is bad!!! We don't want to naively contract the MPO naively into the MPS since the QR will be of cost O(chi^3 D^3)
             # where $D$ is the MPO bond dimension and $\chi$ is the MPS bond dimension.
 

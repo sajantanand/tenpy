@@ -2100,6 +2100,10 @@ class Array:
         """Return copy which is complex conjugated *without* conjugating the charge data."""
         return self.unary_blockwise(np.conj)
 
+    def icomplex_conj(self):
+        """Return self (in place) which is complex conjugated *without* conjugating the charge data."""
+        return self.iunary_blockwise(np.conj)
+
     def norm(self, ord=None, convert_to_float=True):
         """Norm of flattened data.
 

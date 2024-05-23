@@ -149,7 +149,7 @@ class DoubledMPS(MPS):
                       bc='finite'):
         raise NotImplementedError()
 
-    def to_regular_MPS(self, hermitian=True, doubled_site=None):
+    def to_regular_MPS(self, hermitian=True, doubled_site=None, warn=True):
         """
         Convert a doubled MPS to a regular MPS by combining together the 'p' and 'q' legs
         """
@@ -161,7 +161,7 @@ class DoubledMPS(MPS):
 
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
         #pipes = [B.get_leg('p') for B in new_Bs]
-        if not np.isclose(self.norm, 1.0):
+        if warn and not np.isclose(self.norm, 1.0):
             warnings.warn("to_regular_MPS: DMPS has norm != 1; this IS copied over to the MPS! DMPS norm: " + str(self.norm), stacklevel=3)
         new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=self.norm)
         new_MPS.canonical_form(renormalize=False) # norm now contains the rescaling factor needed to establish
@@ -541,6 +541,38 @@ class DoubledMPS(MPS):
                   verbose=None,
                   expected_mean_k=0.):
         raise NotImplementedError()
+
+    def translate(self, Tx):
+        """Translate the MPS by some number of sites, wrapping around the edges. This is used when we
+        want to approximate having periodic boundary conditions applying the translation operator to the
+        doubled MPS
+
+        Parameters
+        ----------
+        Tx : int
+            How many sites do we shift to the RIGHT
+            If Tx=1, [0,1,2,3] -> [3,0,1,2]
+        Returns
+        -------
+        rho : :class:`~tenpy.networks.DoubledMPS`
+            Doubled MPS after we shift. This is a copy of the original dMPS, even if we don't shift.
+        """
+        Tx *= -1    # The way I implemented this, we shift to the left
+        # Tx = L has no effect
+        Tx = Tx % self.L
+        if Tx > 0:
+            Bs = list(self._B[Tx:]) + list(self._B[0:Tx])
+            #SVs = list(self._S[Tx:]) + list(self._S[0:Tx])
+            # SVs on first and last bond are the trivial; we need to have non-trivial and different SVs on the bonds now.
+            SVs = list(self._S[Tx:]) + list(self._S[1:Tx+1])
+            forms = list(self.form[Tx:]) + list(self.form[0:Tx])
+            sites = list(self.sites[Tx:]) + list(self.sites[0:Tx])
+            tpsi = self.__class__(sites, Bs, SVs, form=forms, bc='infinite', norm = self.norm)
+            tpsi.bc = 'finite'
+            return tpsi
+        else:
+            Tx == 0
+            return self.copy()
 
     # Below functions are copied from PurificationMPS, but inherited from BaseMPSExpectationValue
 
