@@ -619,17 +619,23 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, t
     # This is the error in SVD truncation, given a non-normalized initial state.
     svd_trunc_params = deepcopy(svd_trunc_params)
     svd_trunc_params['chi_max'] = np.max([0, svd_trunc_params['chi_max'] - keep_L - keep_R + connected])
-    UM, sM, VM, err, renormalization = svd_theta(M_DR, svd_trunc_params, renormalize=False)
-    # All we want to do here is reduce the rank of M_DR
-    if svd_trunc_params.get('chi_max', None) == 0:
-        # Only keep the part necessary to preserve local properties; not sure when we would want to do this.
-        # So we kill the entire lower right block
-        sM *= 0
-    # SAJANT - do something with err so that truncation error is recorded?
+    try:
+        UM, sM, VM, err, renormalization = svd_theta(M_DR, svd_trunc_params, renormalize=False)
+        # All we want to do here is reduce the rank of M_DR
+        if svd_trunc_params.get('chi_max', None) == 0:
+            # Only keep the part necessary to preserve local properties; not sure when we would want to do this.
+            # So we kill the entire lower right block
+            sM *= 0
+        # SAJANT - do something with err so that truncation error is recorded?
 
-    # Lower right block; norm is `renormalization`
-    M_DR_trunc = npc.tensordot(UM, VM.scale_axis(sM, axis='vL'), axes=(['vR', 'vL']))
-
+        # Lower right block; norm is `renormalization`
+        M_DR_trunc = npc.tensordot(UM, VM.scale_axis(sM, axis='vL'), axes=(['vR', 'vL']))
+    except RuntimeError as e:
+        # Lower right block has norm 0, so we just remove it.
+        print(e)
+        assert np.isclose(npc.norm(M_DR), 0.0)
+        M_DR_trunc = M_DR * 0
+        err = TruncationError()
     M[proj_L, proj_R] = M_DR_trunc
 
     if connected:
