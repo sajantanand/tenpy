@@ -12,7 +12,7 @@ from .model import CouplingMPOModel, NearestNeighborModel
 from .lattice import Chain, Square
 from ..tools.params import asConfig
 
-__all__ = ['SpinModel', 'SpinChain', 'XXXChain', 'ExponentiallyDecayingXXZ', 'AnisotropicSpinModel']
+__all__ = ['SpinModel', 'SpinChain', 'XXXChain', 'ExponentiallyDecayingXXZ', 'AnisotropicSpinModel', 'AnisotropicBarberPole']
 
 
 class SpinModel(CouplingMPOModel):
@@ -241,6 +241,56 @@ class AnisotropicSpinModel(SpinModel):
             self.add_coupling((Jx[i] - Jy[i]) / 4., u1, 'Sp', u2, 'Sp', dx, plus_hc=True)
             self.add_coupling(Jz[i], u1, 'Sz', u2, 'Sz', dx)
             self.add_coupling(muJ[i] * 0.5j, u1, 'Sm', u2, 'Sp', dx, plus_hc=True)
+        # done
+
+class AnisotropicBarberPole(SpinModel):
+    r"""Same as anisotropic spin model but with next_nearest_neighbor couplings. This allows for a "barber pole"-like spreading of spin-spin correlator.
+    """
+    # default_lattice = Square
+    # force_default_lattice = True
+    
+    def init_terms(self, model_params):
+        BVs_NN = len(self.lat.pairs['nearest_neighbors'])
+        BVs_NNN = len(self.lat.pairs['next_nearest_neighbors'])
+        Jx = model_params.get('Jx', (1.,)*BVs_NN)
+        Jy = model_params.get('Jy', (1.,)*BVs_NN)
+        Jz = model_params.get('Jz', (1.,)*BVs_NN)
+        Jxx = model_params.get('Jxx', (1.,)*BVs_NNN)
+        Jyy = model_params.get('Jyy', (1.,)*BVs_NNN)
+        Jzz = model_params.get('Jzz', (1.,)*BVs_NNN)
+        hx = model_params.get('hx', 0.)
+        hy = model_params.get('hy', 0.)
+        hz = model_params.get('hz', 0.)
+        D = model_params.get('D', 0.)
+        E = model_params.get('E', 0.)
+        muJ = model_params.get('muJ', (0.,)*BVs_NN)
+        assert len(Jx) == len(Jy) == len(Jz) == len(muJ) == BVs_NN, "Need one parameter for each direction."
+        assert len(Jxx) == len(Jyy) == len(Jzz) == BVs_NNN, "Need one parameter for each direction."
+
+        # (u is always 0 as we have only one site in the unit cell)
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(-hx, u, 'Sx')
+            self.add_onsite(-hy, u, 'Sy')
+            self.add_onsite(-hz, u, 'Sz')
+            self.add_onsite(D, u, 'Sz Sz')
+            self.add_onsite(E * 0.5, u, 'Sp Sp')
+            self.add_onsite(E * 0.5, u, 'Sm Sm')
+        # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+        # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
+        # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
+        #NN = [(0, 0, np.array([1, 0])), (0, 0, np.array([0, 1]))]
+        for i, (u1, u2, dx) in enumerate(self.lat.pairs['nearest_neighbors']):
+            self.add_coupling((Jx[i] + Jy[i]) / 4., u1, 'Sp', u2, 'Sm', dx, plus_hc=True)
+            self.add_coupling((Jx[i] - Jy[i]) / 4., u1, 'Sp', u2, 'Sp', dx, plus_hc=True)
+            self.add_coupling(Jz[i], u1, 'Sz', u2, 'Sz', dx)
+            self.add_coupling(muJ[i] * 0.5j, u1, 'Sm', u2, 'Sp', dx, plus_hc=True)
+        # done
+        
+        #nNN = [(0, 0, np.array([1, 1])), (0, 0, np.array([1, -1]))]
+        for i, (u1, u2, dx) in enumerate(self.lat.pairs['next_nearest_neighbors']):
+            self.add_coupling((Jxx[i] + Jyy[i]) / 4., u1, 'Sp', u2, 'Sm', dx, plus_hc=True)
+            self.add_coupling((Jxx[i] - Jyy[i]) / 4., u1, 'Sp', u2, 'Sp', dx, plus_hc=True)
+            self.add_coupling(Jzz[i], u1, 'Sz', u2, 'Sz', dx)
         # done
 
 class ExponentiallyDecayingXXZ(CouplingMPOModel):
