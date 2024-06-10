@@ -415,7 +415,8 @@ class DoubledMPS(MPS):
                             last_site=None,
                             ops=None,
                             rng=None,
-                            norm_tol=1.e-12):
+                            norm_tol=1.e-12,
+                            verbose=False):
         """Sample measurement results in the computational basis, treating the dMPS as
         a density matrix.
 
@@ -444,11 +445,20 @@ class DoubledMPS(MPS):
             # where the `sigmas` are already fixed to the measurement results
 
             # Check that rho is Hermitian and has trace 1
-            # Trace 1 will fail since canonicalization messes up the norm, unless we normalize
-            # which we do above.
-            assert np.isclose(npc.trace(rho, leg1='p', leg2='q'), 1.0), "Not normalized"
-            assert np.isclose(npc.norm(rho - rho.conj().transpose()), 0.0), "Not Hermitian"
-            assert np.alltrue(npc.eig(rho)[0] > -1.e-8), "Not positive semidefinite"
+            # Trace 1 will fail since canonicalization messes up the norm, unless we normalize which we do above.
+            # Additionally, rho will be neither hermitian nor positive since we truncate.
+            
+            # Let's not do these assert statements.
+            # assert np.isclose(npc.trace(rho, leg1='p', leg2='q'), 1.0), f"Not normalized, {npc.trace(rho, leg1='p', leg2='q')}."
+            # assert np.isclose(npc.norm(rho - rho.conj().transpose()), 0.0), f"Not Hermitian, {npc.norm(rho - rho.conj().transpose())}."
+            # assert np.alltrue(npc.eig(rho)[0] > -1.e-8), f"Not positive semidefinite, {npc.eig(rho)[0]}."
+            if verbose:
+                print("Metrics on site ", i)
+                print("Trace: ", npc.trace(rho, leg1='p', leg2='q'), abs(np.sum(np.abs(np.diag(rho.to_ndarray()))) - 1.))
+                print("Hermiticity: ", npc.norm(rho - rho.conj().transpose()))
+                lamb = npc.eig(rho)[0]
+                #print("Positivity: ", np.alltrue(lamb > -1.e-8))
+                print("Positivity: ", lamb[lamb < 0]))
 
             i0 = self._to_valid_index(i)
             site = self.sites[i0]
@@ -462,15 +472,25 @@ class DoubledMPS(MPS):
                 rho = npc.tensordot(theta, V, axes=(['q', 'p'])) # 'p', 'p*'
             else:
                 W = np.arange(site.dim)
-            rho_diag = np.abs(np.diag(rho.to_ndarray()))  # abs: real dtype & roundoff err
+            rho = rho.to_ndarray()
+            
+            # Make Hermitian to be safe
+            rho = (rho + rho.T.conj()) / 2
+            
+            rho_diag = np.diag(rho)
+            assert np.alltrue(rho_diag > 0), "1-site RDM on site " + str(i)+ "  is not positive."
+            
+            # Guaranteed to be Hermitian and positive at this point; is it normalized?
             if abs(np.sum(rho_diag) - 1.) > norm_tol:
-                raise ValueError("not normalized to `norm_tol`")
+                print(abs(np.sum(rho_diag) - 1))
+                raise ValueError("not normalized up to `norm_tol`")
             rho_diag /= np.sum(rho_diag)
             sigma = rng.choice(site.dim, p=rho_diag)  # randomly select index from probabilities
             sigmas.append(W[sigma])
             proj_Bs[i] = proj_Bs[i].take_slice([sigma, sigma], ['p','q'])  # project to sigma in theta for remaining rho
             total_prob *= rho_diag[sigma]
             if i != last_site:
+                # Get 1-site conditional RDM on site i+1 using the result on site i
                 rho = self.get_rho_segment([i+1], proj_Bs=proj_Bs).replace_labels(['p' + str(i+1), 'q' + str(i+1)], ['p', 'q'])
                 rho = rho.squeeze()
                 assert rho.shape == (2,2)
