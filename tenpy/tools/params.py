@@ -208,7 +208,8 @@ class Config(MutableMapping):
         return "Config(<{0:d} options>, {1!r})".format(len(self.options), self.name)
 
     def __del__(self):
-        self.warn_unused()
+        #self.warn_unused()
+        pass
 
     def __ior__(self, other):
         self.update(other)

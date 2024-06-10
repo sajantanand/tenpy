@@ -1392,7 +1392,7 @@ class MPO:
             trunc_err = self.apply_zipup(psi, options)
             #print("After zip_up: ", psi.chi)
             return trunc_err + psi.compress_svd(trunc_params)
-        elif method == 'DMT_naive':
+        elif method == 'DMT_SVD':
             # SAJANT TODO; this is bad!!! We don't want to naively contract the MPO naively into the MPS since the QR will be of cost O(chi^3 D^3)
             # where $D$ is the MPO bond dimension and $\chi$ is the MPS bond dimension.
 
@@ -1501,7 +1501,7 @@ class MPO:
         # TODO: zipup method infinite?
         raise ValueError("Unknown compression method: " + repr(method))
 
-    def apply_naively(self, psi):
+    def apply_naively(self, psi, dangling=False):
         """Applies an MPO to an MPS (in place) naively, without compression.
 
         This function simply contracts the `W` tensors of the MPO to the `B` tensors of the
@@ -1532,7 +1532,7 @@ class MPO:
                 B = B.combine_legs(['wR', 'vR'], qconj=[-1])
                 B.ireplace_labels(['(wR.vR)'], ['vR'])
                 B.legs[B.get_leg_index('vR')] = B.get_leg('vR').to_LegCharge()
-            elif i == psi.L - 1 and bc == 'finite':
+            elif i == psi.L - 1 and bc == 'finite' and not dangling:
                 B = B.take_slice(self.get_IdR(i), 'wR')
                 B = B.combine_legs(['wL', 'vL'], qconj=[1])
                 B.ireplace_labels(['(wL.vL)'], ['vL'])

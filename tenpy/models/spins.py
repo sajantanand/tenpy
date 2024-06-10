@@ -12,7 +12,7 @@ from .model import CouplingMPOModel, NearestNeighborModel
 from .lattice import Chain, Square
 from ..tools.params import asConfig
 
-__all__ = ['SpinModel', 'SpinChain', 'XXXChain', 'ExponentiallyDecayingXXZ', 'AnisotropicSpinModel']
+__all__ = ['SpinModel', 'SpinChain', 'XXXChain', 'ExponentiallyDecayingXXZ', 'AnisotropicSpinModel', 'AnisotropicBarberPole']
 
 
 class SpinModel(CouplingMPOModel):
@@ -243,6 +243,56 @@ class AnisotropicSpinModel(SpinModel):
             self.add_coupling(muJ[i] * 0.5j, u1, 'Sm', u2, 'Sp', dx, plus_hc=True)
         # done
 
+class AnisotropicBarberPole(SpinModel):
+    r"""Same as anisotropic spin model but with next_nearest_neighbor couplings. This allows for a "barber pole"-like spreading of spin-spin correlator.
+    """
+    # default_lattice = Square
+    # force_default_lattice = True
+    
+    def init_terms(self, model_params):
+        BVs_NN = len(self.lat.pairs['nearest_neighbors'])
+        BVs_NNN = len(self.lat.pairs['next_nearest_neighbors'])
+        Jx = model_params.get('Jx', (1.,)*BVs_NN)
+        Jy = model_params.get('Jy', (1.,)*BVs_NN)
+        Jz = model_params.get('Jz', (1.,)*BVs_NN)
+        Jxx = model_params.get('Jxx', (1.,)*BVs_NNN)
+        Jyy = model_params.get('Jyy', (1.,)*BVs_NNN)
+        Jzz = model_params.get('Jzz', (1.,)*BVs_NNN)
+        hx = model_params.get('hx', 0.)
+        hy = model_params.get('hy', 0.)
+        hz = model_params.get('hz', 0.)
+        D = model_params.get('D', 0.)
+        E = model_params.get('E', 0.)
+        muJ = model_params.get('muJ', (0.,)*BVs_NN)
+        assert len(Jx) == len(Jy) == len(Jz) == len(muJ) == BVs_NN, "Need one parameter for each direction."
+        assert len(Jxx) == len(Jyy) == len(Jzz) == BVs_NNN, "Need one parameter for each direction."
+
+        # (u is always 0 as we have only one site in the unit cell)
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(-hx, u, 'Sx')
+            self.add_onsite(-hy, u, 'Sy')
+            self.add_onsite(-hz, u, 'Sz')
+            self.add_onsite(D, u, 'Sz Sz')
+            self.add_onsite(E * 0.5, u, 'Sp Sp')
+            self.add_onsite(E * 0.5, u, 'Sm Sm')
+        # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+        # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
+        # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
+        #NN = [(0, 0, np.array([1, 0])), (0, 0, np.array([0, 1]))]
+        for i, (u1, u2, dx) in enumerate(self.lat.pairs['nearest_neighbors']):
+            self.add_coupling((Jx[i] + Jy[i]) / 4., u1, 'Sp', u2, 'Sm', dx, plus_hc=True)
+            self.add_coupling((Jx[i] - Jy[i]) / 4., u1, 'Sp', u2, 'Sp', dx, plus_hc=True)
+            self.add_coupling(Jz[i], u1, 'Sz', u2, 'Sz', dx)
+            self.add_coupling(muJ[i] * 0.5j, u1, 'Sm', u2, 'Sp', dx, plus_hc=True)
+        # done
+        
+        #nNN = [(0, 0, np.array([1, 1])), (0, 0, np.array([1, -1]))]
+        for i, (u1, u2, dx) in enumerate(self.lat.pairs['next_nearest_neighbors']):
+            self.add_coupling((Jxx[i] + Jyy[i]) / 4., u1, 'Sp', u2, 'Sm', dx, plus_hc=True)
+            self.add_coupling((Jxx[i] - Jyy[i]) / 4., u1, 'Sp', u2, 'Sp', dx, plus_hc=True)
+            self.add_coupling(Jzz[i], u1, 'Sz', u2, 'Sz', dx)
+        # done
+
 class ExponentiallyDecayingXXZ(CouplingMPOModel):
     """
     f(r) * [X_i X_{i+r} + Y_i Y_{i+r} + Delta*Z_i Z_{i+r}]
@@ -272,3 +322,65 @@ class ExponentiallyDecayingXXZ(CouplingMPOModel):
             self.add_exponentially_decaying_coupling(pre*2, lam, 'Sp', 'Sm', plus_hc=True)
             self.add_exponentially_decaying_coupling(pre*4*delta, lam, 'Sz', 'Sz')
         # done
+
+    def conserved_charge_MPO(self, k, center=None, verbose=False):
+        print("conserved charge")
+        assert k == 1, "Only conserve total Sz."
+        if not hasattr(self, 'MPOs'):
+            self.MPOs = {}
+            self.Tensors = {}
+        sites = self.lat.mps_sites()
+        L = len(sites)
+
+        if center != None:
+            assert k > 1, "Can't make MPO of L=1."
+            assert center - k // 2 >= 0
+            assert center + (k // 2 - (k+1) % 2) <= L-1
+        if k in self.MPOs.keys() and center == None:
+            return self.MPOs[k]
+
+        site = sites[0] # This contains the operators we use to build the sites.
+        Z = 2*site.get_op('Sz')
+        Zero = 0 * Z
+        I = site.get_op('Id')
+        H_MPO = self.H_MPO
+
+        if k in self.Tensors.keys():
+            dW, dI = self.Tensors[k]
+        else:
+            D = 3*k - 1
+            dI = np.empty((D, D), dtype=object)
+            dW = np.empty((D, D), dtype=object)
+            dW_str = np.empty((D, D), dtype=object)
+            for i in range(D):
+                for j in range(D):
+                    dI[i,j] = Zero
+                    dW[i,j] = Zero
+
+            dI[0, 0] = dI[D-1, D-1] = I
+            dW[0, 0] = dW[D-1, D-1] = I
+            dW_str[0, 0] = dW_str[D-1, D-1] = 'I'
+
+            if k == 1:
+                dW[0, 1] = Z
+                dW_str[0, 1] = 'Z'
+            else:
+                raise NotImplementedError('Do you know the form of the CCs?')
+            if verbose:
+                print(dW_str)
+            self.Tensors[k] = (dW, dI)
+
+        IdL = [0] * (L + 1)
+        IdR = [-1] * (L + 1)
+        from ..networks.mpo import MPO
+        if center == None:
+            CC_MPO = MPO.from_grids(sites, [dW]*L, H_MPO.bc, IdL, IdR, max_range=k, explicit_plus_hc=False)
+            self.MPOs[k] = CC_MPO
+        else:
+            #CC_MPO = MPO.from_grids(sites, [dI]*(center - k//2) + [dW]*k + [dI]*(L-center + k//2 - k), H_MPO.bc, IdL, IdR, max_range=k, explicit_plus_hc=False)
+            CC_MPO = MPO.from_grids(list(sites[:k]), [dW]*k, H_MPO.bc, IdL[:k+1], IdR[:k+1], max_range=k, explicit_plus_hc=False)
+            I = I.add_trivial_leg(axis=0, label='wL', qconj=1).add_trivial_leg(axis=1, label='wR', qconj=-1)
+            CC_MPO = MPO(sites, [I]*(center - k//2) + CC_MPO._W + [I]*(L-center + k//2 - k), bc=H_MPO.bc, IdL=IdL, IdR=IdR, max_range=k, explicit_plus_hc=False)
+
+        return CC_MPO
+

@@ -159,6 +159,7 @@ logger = logging.getLogger(__name__)
 
 from ..linalg import np_conserved as npc
 from ..linalg import sparse
+from ..linalg.charges import LegPipe
 from ..linalg.krylov_based import Arnoldi
 from .site import GroupedSite, group_sites, DoubledSite
 from ..tools.misc import argsort, to_iterable, to_array, get_recursive, inverse_permutation
@@ -1337,6 +1338,9 @@ class MPS(BaseMPSExpectationValue):
             if len(self._S[i + 1].shape) == 1:
                 if self._S[i].shape[-1] != B.get_leg('vL').ind_len or \
                         self._S[i+1].shape[0] != B.get_leg('vR').ind_len:
+                    print(i)
+                    print(self._S[i].shape, self._S[i+1].shape)
+                    print(B.get_leg('vL').ind_len, B.get_leg('vR').ind_len)
                     raise ValueError("shape of B incompatible with len of singular values")
                 if not self.finite or i + 1 < self.L:
                     B2 = self._B[(i + 1) % self.L]
@@ -5524,6 +5528,209 @@ class MPSEnvironment(BaseEnvironment, BaseMPSExpectationValue):
         """
         LP, RP = self._full_contraction_LP_RP(i0)
         contr = npc.inner(LP, RP, axes=[['vR*', 'vR'], ['vL*', 'vL']], do_conj=False)
+        return contr * self.bra.norm * self.ket.norm
+
+    def _contract_LP(self, i, LP):
+        LP = npc.tensordot(LP, self.ket.get_B(i, form='A'), axes=('vR', 'vL'))
+        axes = (self.ket._get_p_label('*') + ['vL*'], self.ket._p_label + ['vR*'])
+        # for a usual MPS, axes = (['p*', 'vL*'], ['p', 'vR*'])
+        LP = npc.tensordot(self.bra.get_B(i, form='A').conj(), LP, axes=axes)
+        return LP  # labels 'vR*', 'vR'
+
+    def _contract_RP(self, i, RP):
+        RP = npc.tensordot(self.ket.get_B(i, form='B'), RP, axes=('vR', 'vL'))
+        axes = (self.ket._p_label + ['vL*'], self.ket._get_p_label('*') + ['vR*'])
+        # for a usual MPS, axes = (['p', 'vL*'], ['p*', 'vR*'])
+        RP = npc.tensordot(RP, self.bra.get_B(i, form='B').conj(), axes=axes)
+        return RP  # labels 'vL', 'vL*'
+
+    # methods for Expectation values
+    def _get_bra_ket(self):
+        return self.bra, self.ket
+
+    def _normalize_exp_val(self, value):
+        # this ensures that
+        #     MPSEnvironment(psi, psi.apply_local_op('B', i)).expectation_value('A', j)
+        # gives the same as
+        #     psi.correlation_function('A', 'B', sites1=[i], sites2=[j])
+        # and psi.apply_local_op('Adagger', i).overlap(psi.apply_local_op('B', j)
+        # for initially normalized psi
+        return np.real_if_close(value) * (self.bra.norm * self.ket.norm)
+
+    def _contract_with_LP(self, C, i):
+        LP = self.get_LP(i, store=True)
+        C = npc.tensordot(LP, C, axes=['vR', 'vL'])  # axes_p + (vR*, vR)
+        return C
+
+    def _contract_with_RP(self, C, i):
+        RP = self.get_RP(i, store=True)
+        C = npc.tensordot(C, RP, axes=['vR', 'vL'])  # axes_p + (vL, vL*)
+        return C
+
+
+class NonTrivialMPSEnvironment(BaseEnvironment):
+    """Class storing partial contractions between two different MPS and providing expectation values.
+    Crucially, the MPS will have non-trivial virtual boundary conditions on the leftmost and rightmost bonds.
+    We do NOT require that the the left (right) virtual leg of bra is compatible to that of the ket; all we require is
+    that the left (right) leg of the bra is compatible with that of the ket.
+
+    The network for a contraction :math:`<bra|Op|ket>` of a local operator `Op`, say exemplary
+    at sites `i, i+1` looks like::
+
+        |
+        |     --------------------------------------------------
+        |     |                                                |
+        |     ---.-----M[0]--- ... --M[1]---M[2]--- ... ->--.---
+        |        |     |             |      |               |
+        |        |     |             |------|               |
+        |        LP[0] |             |  Op  |               RP[-1]
+        |        |     |             |------|               |
+        |        |     |             |      |               |
+        |     ---.-----N[0]*-- ... --N[1]*--N[2]*-- ... -<--.---
+        |     |                                                |
+        |     --------------------------------------------------
+        |
+
+    This class stores the partial contractions `LP` and `RP` coming from the left and right up to
+    each bond, allowing efficient calculations of expectation values, correlation functions etc.
+
+    We use the following label convention (where arrows indicate `qconj`)::
+
+        |    vL ->-.-->- vR           vL ->-.-->- vR
+        |          |                        |
+        |          LP                       RP
+        |          |                        |
+        |   vL* -<-.--<- vR*         vL* -<-.--<- vR*
+
+
+    We DO NOT import BaseMPSExpectationValue since we do not want to calculate expectation values (at least as
+    of 05/14/2024); we simply want to do full contractions to get overlap of MPS with dangling bonds. So we need
+    to duplicate the functions from this class.
+    """
+
+    # Functions from "BaseEnvironment"
+    def __init__(self, bra, ket, cache=None, **init_env_data):
+        """
+        See documentation in "BaseEnvironment"
+        """
+        if ket is None:
+            ket = bra
+        # Don't want to do this since bra and ket do not have compatible charges; the bond dimensions will be different.
+        #if ket is not bra:
+        #    bra = ket._gauge_compatible_vL_vR(bra)  # ensure matching charges
+        self.bra = bra
+        self.ket = ket
+        self.dtype = np.promote_types(bra.dtype, ket.dtype)
+        self.L = L = lcm(bra.L, ket.L)
+        if hasattr(self, 'H'):
+            self.L = L = lcm(self.H.L, L)
+        self.finite = self.ket.finite  # just for _to_valid_index
+        self.sites = self.ket.sites * (L // self.ket.L)
+        self._LP_keys = ['LP_{0:d}'.format(i) for i in range(L)]
+        self._RP_keys = ['RP_{0:d}'.format(i) for i in range(L)]
+        self._LP_age = [None] * L
+        self._RP_age = [None] * L
+        if cache is None:
+            cache = DictCache.trivial()
+        self.cache = cache
+        if not self.cache.long_term_storage.trivial and L < 8:
+            warnings.warn("non-trivial cache for short-length environment: "
+                          "Much overhead for a little RAM saving. Necessary?")
+        self.init_first_LP_last_RP(**init_env_data)
+        self.test_sanity()
+
+    def _check_compatible_legs(self, init_LP, init_RP, start_env_sites):
+        """
+        See documentation in "BaseEnvironment"
+        """
+        if init_LP is not None or init_RP is not None:
+            if start_env_sites == 0:
+                vL_ket, vR_ket = self.ket.outer_virtual_legs()
+                vL_bra, vR_bra = self.bra.outer_virtual_legs()
+            else:
+                vL_ket = self.ket.get_B(-start_env_sites, 'A').get_leg('vL')
+                vL_bra = self.bra.get_B(-start_env_sites, 'A').get_leg('vL')
+                vR_ket = self.ket.get_B(self.L - 1 + start_env_sites, 'B').get_leg('vR')
+                vR_bra = self.bra.get_B(self.L - 1 + start_env_sites, 'B').get_leg('vR')
+        if init_LP is not None:
+            compatible = (init_LP.get_leg('vR') == vL_ket.conj()
+                          and init_LP.get_leg('vR*') == vL_bra
+                          and init_LP.get_leg('vL') == vR_ket.conj()
+                          and init_LR.get_leg('vL*') == vR_bra)
+            if not compatible:
+                warnings.warn("dropping `init_LP` with incompatible MPS legs")
+                init_LP = None
+        if init_RP is not None:
+            compatible = (init_RP.get_leg('vL') == vR_ket.conj()
+                          and init_RP.get_leg('vL*') == vR_bra
+                          and init_RP.get_leg('vR') == vL_ket.conj()
+                          and init_RP.get_leg('vR*') == vL_bra)
+            if not compatible:
+                warnings.warn("dropping `init_RP` with incompatible MPS legs")
+                init_RP = None
+        return init_LP, init_RP
+
+    def init_LP(self, i, start_env_sites=0):
+        """
+        See documentation in "BaseEnvironment"
+        """
+        if self.ket.bc == "segment":
+            raise NotImplementedError("No segements allowed.")
+        leg_ket = self.ket.get_B(i - start_env_sites, None).get_leg('vL') # incoming
+        leg_bra = self.bra.get_B(i - start_env_sites, None).get_leg('vL') # incoming
+        # Won't be true!
+        #leg_ket.test_equal(leg_bra)
+        combined_leg_ket = LegPipe([leg_bra, leg_ket.conj()], leg_ket.qconj)
+        init_LP = npc.diag(1., combined_leg_ket, dtype=self.dtype, labels=['(vR*.vR)', '(vL*.vL)']) # ought to have 4 legs now.
+        init_LP = init_LP.split_legs()
+        for j in range(i - start_env_sites, i):
+            init_LP = self._contract_LP(j, init_LP)
+        return init_LP
+
+    def init_RP(self, i, start_env_sites=0):
+        """
+        See documentation in "BaseEnvironment"
+        """
+        if self.ket.bc == "segment" and self.bra is not self.ket:
+            raise NotImplementedError("No segements allowed.")
+        leg_ket = self.ket.get_B(i + start_env_sites, None).get_leg('vR')
+        leg_bra = self.bra.get_B(i + start_env_sites, None).get_leg('vR')
+        # Won't be true!
+        #leg_ket.test_equal(leg_bra)
+        combined_leg_ket = LegPipe([leg_bra, leg_ket.conj()], leg_ket.qconj)
+        init_RP = npc.diag(1., combined_leg_ket, dtype=self.dtype, labels=['(vL*.vL)', '(vR*.vR)']) # ought to have 4 legs now.
+        init_RP = init_RP.split_legs()
+        for j in range(i + start_env_sites, i, -1):
+            init_RP = self._contract_RP(j, init_RP)
+        return init_RP
+
+    # Functions from "BaseMPSExpectationValue"
+    def _to_valid_index(self, i):
+        """Make sure `i` is a valid index (depending on `finite`)."""
+        if not self.finite:
+            return i % self.L
+        if i < 0:
+            i += self.L
+        if i >= self.L or i < 0:
+            raise KeyError("i = {0:d} out of bounds for finite MPS".format(i))
+        return i
+
+    # Functions from "MPSEnvironment"
+    def full_contraction(self, i0):
+        """Calculate the overlap by a full contraction of the network.
+
+        The full contraction of the environments gives the overlap ``<bra|ket>``,
+        taking into account the :attr:`MPS.norm` of both `bra` and `ket`.
+        For this purpose, this function contracts ``get_LP(i0+1, store=False)`` and
+        ``get_RP(i0, store=False)`` with appropriate singular values in between.
+
+        Parameters
+        ----------
+        i0 : int
+            Site index.
+        """
+        LP, RP = self._full_contraction_LP_RP(i0)
+        contr = npc.inner(LP, RP, axes=[['vR*', 'vR', 'vL*', 'vL'], ['vL*', 'vL', 'vR*', 'vR']], do_conj=False)
         return contr * self.bra.norm * self.ket.norm
 
     def _contract_LP(self, i, LP):
