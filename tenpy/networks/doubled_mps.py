@@ -460,7 +460,7 @@ class DoubledMPS(MPS):
                 print("Hermiticity: ", npc.norm(rho - rho.conj().transpose()))
                 lamb = npc.eig(rho)[0]
                 #print("Positivity: ", np.alltrue(lamb > -1.e-8))
-                print("Positivity: ", lamb[lamb < 0]))
+                print("Positivity: ", lamb[lamb < 0])
 
             i0 = self._to_valid_index(i)
             site = self.sites[i0]
