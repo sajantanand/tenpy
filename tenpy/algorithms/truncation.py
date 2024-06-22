@@ -188,8 +188,8 @@ def truncate(S, options, norm_old=1.):
     options = asConfig(options, "truncation")
     # by default, only truncate values which are much closer to zero than machine precision.
     # This is only to avoid problems with taking the inverse of `S`.
-    chi_max = options.get('chi_max', 100, int)
-    chi_min = options.get('chi_min', None, int)
+    chi_max = options.get('chi_max', 100)   # removed type specifier since I (Sajant) was getting type conflicts between versions of int
+    chi_min = options.get('chi_min', None)
     deg_tol = options.get('degeneracy_tol', None, 'real')
     svd_min = options.get('svd_min', 1.e-14, 'real')
     trunc_cut = options.get('trunc_cut', 1.e-14, 'real')

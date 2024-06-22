@@ -559,6 +559,10 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         # Construct the theta matrix
         theta = self.psi.get_theta(i0, n=2)  # 'vL', 'vR', 'p0', 'p1'
         theta = npc.tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
+
+        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
+            theta.iunary_blockwise(np.real)
+
         theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
         # Perform the SVD and truncate the wavefunction
         U, S, V, trunc_err, renormalize = svd_theta(theta,
@@ -597,7 +601,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         return U.split_legs()
 
 class SVDTEBDEngine(TEBDEngine):
-    def evolve(self, N_steps, dt):
+    def evolve(self, N_steps, dt, call_canonical_form=False):
         """Evolve by ``dt * N_steps``.
 
         Parameters
@@ -615,7 +619,7 @@ class SVDTEBDEngine(TEBDEngine):
         """
         if dt is not None:
             assert dt == self._U_param['delta_t']
-        return self.update_imag(N_steps)
+        return self.update_imag(N_steps, call_canonical_form)
 
     def evolve_step(self, U_idx_dt, odd):
         raise NotImplementedError()
@@ -624,7 +628,7 @@ class SVDTEBDEngine(TEBDEngine):
         raise NotImplementedError()
 
 class DMTTEBDEngine(TEBDEngine):
-    def evolve(self, N_steps, dt):
+    def evolve(self, N_steps, dt, call_canonical_form=False):
         """Evolve by ``dt * N_steps``.
 
         Parameters
@@ -642,7 +646,7 @@ class DMTTEBDEngine(TEBDEngine):
         """
         if dt is not None:
             assert dt == self._U_param['delta_t']
-        return self.update_imag(N_steps)
+        return self.update_imag(N_steps, call_canonical_form)
 
     def evolve_step(self, U_idx_dt, odd):
         raise NotImplementedError()
@@ -708,7 +712,6 @@ class DMTTEBDEngine(TEBDEngine):
         # Need to keep track of the envs for use on future steps
         self.options['trace_env'] = trace_env
         self.options['MPO_envs'] = MPO_envs
-
         return trunc_err1 + trunc_err2
 
     def update_bond(self, i, U_bond):

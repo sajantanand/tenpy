@@ -2209,6 +2209,8 @@ class DoubledSite(Site):
             traces = []
             for i, Q in enumerate(self.new_ops):
                 traces.append(npc.trace(Q, leg1=0, leg2=1))
+
+        # s2d maps from standard -> desired basis by left multiplication; s2d @ standard = desired
         self.s2d = self.Q.conj().transpose() # The transpose just changes how the data is stored, but as long as we
         # use labels to reference the legs, it is not strictly needed.
         self.d2s = self.Q

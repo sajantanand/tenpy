@@ -5,13 +5,15 @@ import numpy as np
 import itertools
 import warnings
 
-from .mps import MPS, MPSEnvironment
+from .mps import MPS, MPSEnvironment, BaseEnvironment
 from .site import DoubledSite
 from ..linalg import np_conserved as npc
-from ..tools.math import entropy
+from ..linalg.charges import LegPipe
+from ..tools.math import lcm, entropy
 from ..tools.misc import lexsort
+from ..tools.cache import DictCache
 
-__all__ = ['DoubledMPS']
+__all__ = ['DoubledMPS', 'NonTrivialStackedDoubledMPSEnvironment']
 
 # Use MPSEnvironment methods first where there is overlap!
 class DoubledMPS(MPS):
@@ -295,6 +297,40 @@ class DoubledMPS(MPS):
             # bra has norm 1 (i.e. we don't set the DMPS norm)
         return trace_env.full_contraction(0), trace_env
 
+    def get_1RDM(self, site, left_env=None, right_env=None):
+        if self.bc != 'finite':
+            raise NotImplementedError('Only works for finite dMPS (for now).')
+        site = self._to_valid_index(site)
+
+        if left_env is None:
+            # calculate left_env
+            left_env = npc.eye_like(self.get_B(0), axis='vL', labels=['vL', 'vR'])
+            left_envs = [left_env]
+            for i in range(site):
+                B = npc.trace(self.get_B(i, form='B', copy=False), leg1='p', leg2='q')
+                left_env = npc.tensordot(left_env, B, axes=(['vR', 'vL']))
+                left_envs.append(left_env)
+            assert len(left_envs) == site + 1
+        else:
+            left_envs = [left_env]
+
+        if right_env is None:
+            # calculate right_env
+            right_env = npc.eye_like(self.get_B(self.L-1), axis='vR', labels=['vL', 'vR'])
+            right_envs = [right_env]
+            for i in reversed(range(site+1, self.L)):
+                B = npc.trace(self.get_B(i, form='B', copy=False), leg1='p', leg2='q')
+                right_env = npc.tensordot(B, right_env, axes=(['vR', 'vL']))
+                right_envs.append(right_env)
+            right_envs = right_envs[::-1]
+            assert len(right_envs) == self.L - site
+        else:
+            right_envs = [right_env]
+
+        B = self.get_B(site, form='B', copy=True)
+        rho = npc.tensordot(npc.tensordot(left_env, B, axes=(['vR', 'vL'])), right_env, axes=(['vR', 'vL']))
+        return rho, left_envs, right_envs
+
     def get_rho_segment(self, segment, proj_Bs=None):
         """Return reduced density matrix for a segment, treating the doubled MPS as a density
         matrix directly. So we don't need two copies of the MPS. We simply trace over the
@@ -346,7 +382,7 @@ class DoubledMPS(MPS):
             rho = npc.tensordot(rho, T, axes=(['vR'], ['vL']))
             if i+1 in segment:
                 rho = self._replace_p_label(rho, str(i+1))
-        return rho
+        return rho * self.norm
 
     def entanglement_entropy_segment(self, segment=[0], first_site=None, n=1):
         """Calculate entanglement entropy for general geometry of the bipartition, treating
@@ -418,7 +454,8 @@ class DoubledMPS(MPS):
                             ops=None,
                             rng=None,
                             norm_tol=1.e-12,
-                            verbose=False):
+                            verbose=False,
+                            right_envs=None):
         """Sample measurement results in the computational basis, treating the dMPS as
         a density matrix.
 
@@ -435,13 +472,20 @@ class DoubledMPS(MPS):
         sigmas = []
         norms = []
         total_prob = 1.
-        proj_Bs = copy.deepcopy(self._B)
-        rho = self.get_rho_segment([first_site], proj_Bs=proj_Bs).replace_labels(['p0', 'q0'], ['p', 'q'])
+
+        if right_envs is None:
+            rho, left_envs, right_envs = self.get_1RDM(0, left_env=None, right_env=None)
+        else:
+            rho, left_envs, _ = self.get_1RDM(0, left_env=None, right_env=right_envs[0])
+
+        left_env = left_envs[0] # Identity to the right of site 0
         rho = rho.squeeze()
         assert rho.shape == (2,2)
+
         norm = npc.trace(rho, leg1='p', leg2='q')
         rho = rho / norm
         norms.append(norm)
+
         for i in range(first_site, last_site + 1):
             # rho = reduced density matrix on site i in basis vL [sigmas...] p p* vR
             # where the `sigmas` are already fixed to the measurement results
@@ -449,17 +493,17 @@ class DoubledMPS(MPS):
             # Check that rho is Hermitian and has trace 1
             # Trace 1 will fail since canonicalization messes up the norm, unless we normalize which we do above.
             # Additionally, rho will be neither hermitian nor positive since we truncate.
-            
-            # Let's not do these assert statements.
+
+            # Let's not do these assert statements since they may fail and we are OK with that.
             # assert np.isclose(npc.trace(rho, leg1='p', leg2='q'), 1.0), f"Not normalized, {npc.trace(rho, leg1='p', leg2='q')}."
             # assert np.isclose(npc.norm(rho - rho.conj().transpose()), 0.0), f"Not Hermitian, {npc.norm(rho - rho.conj().transpose())}."
-            # assert np.alltrue(npc.eig(rho)[0] > -1.e-8), f"Not positive semidefinite, {npc.eig(rho)[0]}."
+            # assert np.all(npc.eig(rho)[0] > -1.e-8), f"Not positive semidefinite, {npc.eig(rho)[0]}."
             if verbose:
                 print("Metrics on site ", i)
                 print("Trace: ", npc.trace(rho, leg1='p', leg2='q'), abs(np.sum(np.abs(np.diag(rho.to_ndarray()))) - 1.))
                 print("Hermiticity: ", npc.norm(rho - rho.conj().transpose()))
                 lamb = npc.eig(rho)[0]
-                #print("Positivity: ", np.alltrue(lamb > -1.e-8))
+                #print("Positivity: ", np.all(lamb > -1.e-8))
                 print("Positivity: ", lamb[lamb < 0])
 
             i0 = self._to_valid_index(i)
@@ -475,31 +519,34 @@ class DoubledMPS(MPS):
             else:
                 W = np.arange(site.dim)
             rho = rho.to_ndarray()
-            
+
             # Make Hermitian to be safe
             rho = (rho + rho.T.conj()) / 2
-            
-            rho_diag = np.diag(rho)
-            assert np.alltrue(rho_diag > 0), "1-site RDM on site " + str(i)+ "  is not positive."
-            
+
+            rho_diag = np.diag(rho).real
+            assert np.all(rho_diag > 0), "1-site RDM on site " + str(i)+ "  is not positive."
+
             # Guaranteed to be Hermitian and positive at this point; is it normalized?
             if abs(np.sum(rho_diag) - 1.) > norm_tol:
                 print(abs(np.sum(rho_diag) - 1))
                 raise ValueError("not normalized up to `norm_tol`")
-            rho_diag /= np.sum(rho_diag)
+            rho_diag = rho_diag / np.sum(rho_diag)
+
             sigma = rng.choice(site.dim, p=rho_diag)  # randomly select index from probabilities
             sigmas.append(W[sigma])
-            proj_Bs[i] = proj_Bs[i].take_slice([sigma, sigma], ['p','q'])  # project to sigma in theta for remaining rho
+            sliced_B = self.get_B(i, form='B').take_slice([sigma, sigma], ['p','q'])  # project to sigma in theta for remaining rho
             total_prob *= rho_diag[sigma]
             if i != last_site:
                 # Get 1-site conditional RDM on site i+1 using the result on site i
-                rho = self.get_rho_segment([i+1], proj_Bs=proj_Bs).replace_labels(['p' + str(i+1), 'q' + str(i+1)], ['p', 'q'])
+                left_env = npc.tensordot(left_env, sliced_B, axes=(['vR', 'vL']))
+                rho, _, _ = self.get_1RDM(i+1, left_env=left_env, right_env=right_envs[i+1])
                 rho = rho.squeeze()
                 assert rho.shape == (2,2)
+
                 norm = npc.trace(rho, leg1='p', leg2='q')
                 rho = rho / norm
                 norms.append(norm)
-        return sigmas, total_prob, norms
+        return sigmas, total_prob, norms, right_envs
 
     def correlation_length(self, target=1, tol_ev0=1.e-8, charge_sector=0, return_charges=False):
         raise NotImplementedError()
@@ -696,3 +743,357 @@ class DoubledMPS(MPS):
     def _get_bra_ket(self):
         raise NotImplementedError()
 
+class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
+    """Class for computing trace of an arbitrary number of :class:`DoubledMPS` stacked one on top of
+    one another. We want to calculate Tr(A B C D ...) where each is a :class:`DoubledMPS`. This will
+    take the trace into account.
+
+    Crucially, the MPS will have non-trivial virtual boundary conditions on the leftmost and rightmost bonds.
+    We do NOT require that the the left (right) virtual leg of bra is compatible to that of the ket; all we require is
+    that the left (right) leg of the bra is compatible with that of the ket.
+
+    This class stores the partial contractions up to each bond.
+
+    The MPSs `kets` have to be in canonical form.
+    All the environments are constructed without the singular values on the open bond.
+    In other words, we contract left-canonical `A` to the left parts `LP`
+    and right-canonical `B` to the right parts `RP`.
+
+    This is essentially a bastardization of BaseEnvironment and NonTrivialEnvironment from mps.py.
+
+    The following is the label convention (where arrows indicate `qconj`) for NonTrivialEnvironments from mps.py.
+    The left environments we actually work with have an arbitrary number of vL legs; vL1, vL2, ...
+
+        |   vL1 ->-.-->- vR1         vL1 ->-.-->- vR1
+        |          |                        |
+        |          LP                       RP
+        |          |                        |
+        |   vL2 ->-.-->- vR2         vL2 ->-.-->- vR2
+
+    Parameters - See BaseEnvironment for documentation of parameters.
+    ----------
+    kets : list of :class:`~tenpy.networks.mps.MPS`
+        Each MPS should be given in usual 'ket' form;
+        we never call `conj()` on the matrices directly.
+        Stored in place, without making copies.
+        If necessary to match charges, we call :meth:`~tenpy.networks.mps.MPS.gauge_total_charge`.
+    cache : :class:`~tenpy.tools.cache.DictCache` | None
+        Cache in which the tensors should be saved. If ``None``, a new `DictCache` is generated.
+    **init_env_data :
+        Further keyword arguments with initialization data, as returned by
+        :meth:`get_initialization_data`.
+        See :meth:`initialize_first_LP_last_RP` for details on these parameters.
+
+    Attributes - See BaseEnvironment for documentation of attributes.
+    ----------
+    """
+
+    def __init__(self, kets, cache=None, **init_env_data):
+        self.num_kets = len(kets)
+        self.kets = kets
+        #assert self.num_kets > 1
+        for i in range(1, self.num_kets):
+            kets[i] = kets[0]._gauge_compatible_vL_vR(kets[i])  # ensure matching charges
+
+        self.dtype = kets[0].dtype
+        self.L = L = kets[0].L
+        for i in range(1, self.num_kets):
+            self.dtype = np.promote_types(self.dtype, kets[i].dtype)
+            self.L = L = lcm(L, kets[i].L)
+
+        # We do not allow calculations with a Hamiltonian
+
+        # Only works for finite DMPS and no segments (SAJANT: TODO? Do we want to implement this?)
+        # Some random parts of the segments code is already implemented. . .
+        for i in range(self.num_kets):
+            assert self.kets[i].finite
+            assert self.kets[i].bc == "finite"
+
+        self.finite = self.kets[0].finite  # just for _to_valid_index
+        self.sites = self.kets[0].sites * (L // self.kets[0].L)
+        self._LP_keys = ['LP_{0:d}'.format(i) for i in range(L)]
+        self._RP_keys = ['RP_{0:d}'.format(i) for i in range(L)]
+        self._LP_age = [None] * L
+        self._RP_age = [None] * L
+        if cache is None:
+            cache = DictCache.trivial()
+        self.cache = cache
+        if not self.cache.long_term_storage.trivial and L < 8:
+            warnings.warn("non-trivial cache for short-length environment: "
+                          "Much overhead for a little RAM saving. Necessary?")
+        self.init_first_LP_last_RP(**init_env_data)
+        self.test_sanity()
+
+    def init_first_LP_last_RP(self,
+                              init_LP=None,
+                              init_RP=None,
+                              age_LP=0,
+                              age_RP=0,
+                              start_env_sites=0):
+        """(Re)initialize first LP and last RP from the given data.
+
+        Parameters
+        ----------
+        init_LP : ``None`` | :class:`~tenpy.linalg.np_conserved.Array`
+            Initial very left part ``LP``. If ``None``, build one with :meth`init_LP`.
+        init_RP : ``None`` | :class:`~tenpy.linalg.np_conserved.Array`
+            Initial very right part ``RP``. If ``None``, build one with :meth:`init_RP`.
+        age_LP : int
+            The number of physical sites involved into the contraction of `init_LP`.
+        age_RP : int
+            The number of physical sites involved into the contraction of `init_RP`.
+        start_env_sites : int
+            If `init_LP` and `init_RP` are not specified, contract each `start_env_sites` for them.
+        """
+        init_LP, init_RP = self._check_compatible_legs(init_LP, init_RP, start_env_sites)
+        kets_U, kets_V = [], []
+        for i in range(self.num_kets):
+            ket_U, ket_V = self.kets[i].segment_boundaries
+            kets_U.append(ket_U)
+            kets_V.append(ket_V)
+
+        if init_LP is None:
+            init_LP = self.init_LP(0, start_env_sites)
+            age_LP = start_env_sites
+        else:
+            for i in range(self.num_kets):
+                if kets_U[i] is not None:
+                    init_LP = npc.tensordot(init_LP, kets_U[i], axes=['vR' + str(i), 'vL']).replace_label('vR', 'vR' + str(i))
+        if init_RP is None:
+            init_RP = self.init_RP(self.L - 1, start_env_sites)
+            age_RP = start_env_sites
+        else:
+            for i in range(self.num_kets):
+                if kets_V[i] is not None:
+                    init_RP = npc.tensordot(kets_V[i], init_RP, axes=['vR', 'vL' + str(i)]).replace_label('vL' + str(i), 'vL')
+        self.set_LP(0, init_LP, age=age_LP)
+        self.set_RP(self.L - 1, init_RP, age=age_RP)
+
+    def test_sanity(self):
+        """Sanity check, raises ValueErrors, if something is wrong."""
+        for i in range(self.num_kets):
+            assert (self.kets[i].finite == self.finite)
+        assert any(key in self.cache for key in self._LP_keys)
+        assert any(key in self.cache for key in self._RP_keys)
+
+    def _check_compatible_legs(self, init_LP, init_RP, start_env_sites):
+        if init_LP is not None or init_RP is not None:
+            vL_kets, vR_kets = [], []
+            for i in range(self.num_kets):
+                if start_env_sites == 0:
+                    vL_ket, vR_ket = self.kets[i].outer_virtual_legs()
+                    vL_kets.append(vL_ket)
+                    vR_kets.append(vR_ket)
+                else:
+                    vL_ket = self.kets[i].get_B(-start_env_sites, 'A').get_leg('vL')
+                    vR_ket = self.kets[i].get_B(self.L - 1 + start_env_sites, 'B').get_leg('vR')
+                    vL_kets.append(vL_ket)
+                    vR_kets.append(vR_ket)
+        if init_LP is not None:
+            for i in range(self.num_kets):
+                compatible = (init_LP.get_leg('vR' + str(i)) == vL_kets[i].conj())
+                if not compatible:
+                    warnings.warn("dropping `init_LP` with incompatible MPS legs")
+                    init_LP = None
+        if init_RP is not None:
+            for i in range(self.num_kets):
+                compatible = (init_RP.get_leg('vL' + str(i)) == vR_kets[i].conj())
+                if not compatible:
+                    warnings.warn("dropping `init_RP` with incompatible MPS legs")
+                    init_RP = None
+        return init_LP, init_RP
+
+    def init_LP(self, i, start_env_sites=0):
+        """Build initial left part ``LP``.
+
+        This is the environment you get contracting the overlaps from the left infinity
+        up to bond left of site `i`.
+
+        For segment MPS, the :attr:`~tenpy.networks.mps.MPS.segment_boundaries` are read out
+        (if set).
+
+        Parameters
+        ----------
+        i : int
+            Build ``LP`` left of site `i`.
+        start_env_sites : int
+            How many sites to contract to converge the `init_LP`; the initial `age_LP`.
+
+        Returns
+        -------
+        init_LP : :class:`~tenpy.linalg.np_conserved.Array`
+            Identity contractible with the `vL` leg of ``ket.get_B(i)``, labels ``'vR*', 'vR'``.
+        """
+        vL_kets = []
+        for j in range(self.num_kets):
+            vL_kets.append(self.kets[j].get_B(i - start_env_sites, None).get_leg('vL'))
+        combined_leg_ket = LegPipe(vL_kets, vL_kets[0].qconj)
+        #print(combined_leg_ket)
+
+        #if self.num_kets > 1:
+        combined_label_vL = "".join(['('] + ['vL' + str(i) + '.' for i in range(self.num_kets-1)] + ['vL'] + [str(self.num_kets-1)] + [')'])
+        combined_label_vR = "".join(['('] + ['vR' + str(i) + '.' for i in range(self.num_kets-1)] + ['vR'] + [str(self.num_kets-1)] + [')'])
+        #print(combined_label_vL, combined_label_vR)
+
+        init_LP = npc.diag(1., combined_leg_ket, dtype=self.dtype, labels=[combined_label_vL, combined_label_vR]) # has 2 * self.num_kets legs
+        init_LP = init_LP.split_legs()
+
+        for j in range(i - start_env_sites, i):
+            init_LP = self._contract_LP(j, init_LP)
+
+        #print(init_LP)
+        return init_LP
+
+        """
+        if self.ket.bc == "segment":
+            U_bra, V_bra = self.bra.segment_boundaries
+            U_ket, V_ket = self.ket.segment_boundaries
+            if U_bra is not None or U_ket is not None:
+                if U_bra is not None and U_ket is not None:
+                    init_LP = npc.tensordot(U_bra.conj(), U_ket, axes=['vL*', 'vL'])
+                elif U_bra is not None:
+                    init_LP = U_bra.conj().ireplace_label('vL*', 'vR')
+                else:
+                    init_LP = U_ket.replace_label('vL', 'vR*')
+                return init_LP
+        """
+
+    def init_RP(self, i, start_env_sites=0):
+        """Build initial right part ``RP`` for an MPS/MPOEnvironment.
+
+        If `bra` and `ket` are the same and in right canonical form, this is the environment
+        you get contracting from the right infinity up to bond right of site `i`.
+
+        For segment MPS, the :attr:`~tenpy.networks.mps.MPS.segment_boundaries` are read out
+        (if set).
+
+        Parameters
+        ----------
+        i : int
+            Build ``RP`` right of site `i`.
+        start_env_sites : int
+            How many sites to contract to converge the `init_RP`; the initial `age_RP`.
+
+        Returns
+        -------
+        init_RP : :class:`~tenpy.linalg.np_conserved.Array`
+            Identity contractible with the `vR` leg of ``ket.get_B(i)``, labels ``'vL*', 'vL'``.
+        """
+        vR_kets = []
+        for j in range(self.num_kets):
+            vR_kets.append(self.kets[j].get_B(i + start_env_sites, None).get_leg('vR'))
+        combined_leg_ket = LegPipe(vR_kets, vR_kets[0].qconj)
+        #print(combined_leg_ket)
+
+        #if self.num_kets > 1:
+        combined_label_vL = "".join(['('] + ['vL' + str(i) + '.' for i in range(self.num_kets-1)] + ['vL'] + [str(self.num_kets-1)] + [')'])
+        combined_label_vR = "".join(['('] + ['vR' + str(i) + '.' for i in range(self.num_kets-1)] + ['vR'] + [str(self.num_kets-1)] + [')'])
+        #print(combined_label_vL, combined_label_vR)
+
+        init_RP = npc.diag(1., combined_leg_ket, dtype=self.dtype, labels=[combined_label_vR, combined_label_vL]) # has 2 * self.num_kets legs
+        init_RP = init_RP.split_legs()
+
+        for j in range(i + start_env_sites, i, -1):
+            init_RP = self._contract_RP(j, init_RP)
+
+        #print(init_RP)
+        return init_RP
+
+    def get_initialization_data(self, first=0, last=None, include_bra=False, include_ket=False):
+        raise NotImplementedError("Not sure we need this.")
+
+    def _full_contraction_LP_RP(self, i0):
+        if self.finite and i0 + 1 == self.L:
+            # special case to handle `_to_valid_index` correctly:
+            # get_LP(L) is not valid for finite b.c, so we use need to calculate it explicitly.
+            LP = self.get_LP(i0, store=False)
+            LP = self._contract_LP(i0, LP)
+        else:
+            LP = self.get_LP(i0 + 1, store=False)
+        # multiply with `S` on bra and ket side
+        for i in range(self.num_kets):
+            S = self.kets[i].get_SR(i0)
+            if isinstance(S, npc.Array):
+                LP = npc.tensordot(LP, S, axes=['vR' + str(i), 'vL']).replace_label('vR', 'vR' + str(i))
+            else:
+                LP = LP.scale_axis(S, 'vR' + str(i))
+
+        RP = self.get_RP(i0, store=False)
+        return LP, RP
+
+    # Functions from "BaseMPSExpectationValue"
+    def _to_valid_index(self, i):
+        """Make sure `i` is a valid index (depending on `finite`)."""
+        if not self.finite:
+            return i % self.L
+        if i < 0:
+            i += self.L
+        if i >= self.L or i < 0:
+            raise KeyError("i = {0:d} out of bounds for finite MPS".format(i))
+        return i
+
+    # Functions from "MPSEnvironment"
+    def full_contraction(self, i0):
+        """Calculate the overlap by a full contraction of the network.
+
+        The full contraction of the environments gives the overlap ``<bra|ket>``,
+        taking into account the :attr:`MPS.norm` of both `bra` and `ket`.
+        For this purpose, this function contracts ``get_LP(i0+1, store=False)`` and
+        ``get_RP(i0, store=False)`` with appropriate singular values in between.
+
+        Parameters
+        ----------
+        i0 : int
+            Site index.
+        """
+        LP, RP = self._full_contraction_LP_RP(i0)
+        combined_label_vL = ['vL' + str(i)  for i in range(self.num_kets)]
+        combined_label_vR = ['vR' + str(i)  for i in range(self.num_kets)]
+
+        contr = npc.inner(LP, RP, axes=[combined_label_vR + combined_label_vL, combined_label_vL + combined_label_vR], do_conj=False)
+        return self._normalize_exp_val(contr)
+
+    def _contract_LP(self, i, LP):
+        LP = npc.tensordot(LP, self.kets[0].get_B(i, form='A'), axes=('vR0', 'vL')).replace_label('vR', 'vR0')
+        if self.num_kets > 1:
+            for j in range(1, self.num_kets-1):
+                axes = (['q', 'vR' + str(j)], ['p', 'vL'])
+                LP = npc.tensordot(LP, self.kets[j].get_B(i, form='A'), axes=axes).replace_label('vR', 'vR' + str(j))
+            j = self.num_kets-1
+            axes = (['p', 'q', 'vR' + str(j)], ['q', 'p', 'vL'])
+            LP = npc.tensordot(LP, self.kets[j].get_B(i, form='A'), axes=axes).replace_label('vR', 'vR' + str(j))
+        else:
+            LP = npc.trace(LP, leg1='p', leg2='q')
+        return LP
+
+    def _contract_RP(self, i, RP):
+        RP = npc.tensordot(self.kets[0].get_B(i, form='B'), RP, axes=('vR', 'vL0')).replace_label('vL', 'vL0')
+        if self.num_kets > 1:
+            for j in range(1, self.num_kets-1):
+                axes = (['p', 'vR'], ['q', 'vL' + str(j)])
+                RP = npc.tensordot(self.kets[j].get_B(i, form='B'), RP, axes=axes).replace_label('vL', 'vL' + str(j))
+            j = self.num_kets-1
+            axes = (['p', 'q', 'vR'], ['q', 'p', 'vL'  + str(j)])
+            RP = npc.tensordot(self.kets[j].get_B(i, form='B'), RP, axes=axes).replace_label('vL', 'vL' + str(j))
+        else:
+            RP = npc.trace(RP, leg1='p', leg2='q')
+        return RP
+
+    # methods for Expectation values
+    def _get_bra_ket(self):
+        raise NotImplementedError("Not sure we need this.")
+
+    def _normalize_exp_val(self, value):
+        # this ensures that
+        #     MPSEnvironment(psi, psi.apply_local_op('B', i)).expectation_value('A', j)
+        # gives the same as
+        #     psi.correlation_function('A', 'B', sites1=[i], sites2=[j])
+        # and psi.apply_local_op('Adagger', i).overlap(psi.apply_local_op('B', j)
+        # for initially normalized psi
+        return np.real_if_close(value) * np.prod([self.kets[i].norm for i in range(self.num_kets)])
+
+    def _contract_with_LP(self, C, i):
+        raise NotImplementedError("Not sure we need this.")
+
+    def _contract_with_RP(self, C, i):
+        raise NotImplementedError("Not sure we need this.")

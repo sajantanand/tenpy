@@ -852,13 +852,13 @@ class MPO:
         trivial = chinfo.make_valid()
         U = []
         sites = []
-        for i in range(0, self.L):
+        for k in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
-            W = self.get_W(i).itranspose(labels)
+            W = self.get_W(k).itranspose(labels)
             assert np.all(W.qtotal == trivial) # Need to make this work with charges.
             DL, DR, d, d = W.shape
 
-            A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
+            A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[k], IdR[k], IdL[k+1], IdR[k+1])
             Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
             Idd_npc = _combine_npc(Id_npc, Id_npc)
 
@@ -879,7 +879,7 @@ class MPO:
                 dW[i+1+DL-2, -1] = -1*_combine_npc(Id_npc, B_npc[i,0])
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sort, hermitian=hermitian))
+            sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sort, hermitian=hermitian))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
@@ -919,13 +919,13 @@ class MPO:
         trivial = chinfo.make_valid()
         U = []
         sites = []
-        for i in range(0, self.L):
+        for k in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
-            W = self.get_W(i).itranspose(labels)
+            W = self.get_W(k).itranspose(labels)
             assert np.all(W.qtotal == trivial)
             DL, DR, d, d = W.shape
 
-            A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
+            A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[k], IdR[k], IdL[k+1], IdR[k+1])
             Id_npc = npc.eye_like(D_npc, labels=['p', 'p*'])
             Idd_npc = _combine_npc(Id_npc, Id_npc)
 
@@ -943,7 +943,7 @@ class MPO:
                 dW[i+1, -1] = _combine_npc(B_npc[i,0], Id_npc)
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sorted, hermitian=hermitian))
+            sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sorted, hermitian=hermitian))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)

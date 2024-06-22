@@ -167,7 +167,7 @@ from ..tools.cache import DictCache
 from ..tools import hdf5_io
 from ..algorithms.truncation import TruncationError, svd_theta, _machine_prec_trunc_par
 
-__all__ = ['BaseMPSExpectationValue', 'MPS', 'BaseEnvironment', 'MPSEnvironment', 'TransferMatrix',
+__all__ = ['BaseMPSExpectationValue', 'MPS', 'BaseEnvironment', 'MPSEnvironment', 'NonTrivialMPSEnvironment', 'TransferMatrix',
            'InitialStateBuilder', 'build_initial_state']
 
 
@@ -6036,7 +6036,7 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
     This class stores the partial contractions `LP` and `RP` coming from the left and right up to
     each bond, allowing efficient calculations of expectation values, correlation functions etc.
 
-    We use the following label convention (where arrows indicate `qconj`)::
+    We use the following label convention (where arrows indicate `qconj`):
 
         |    vL ->-.-->- vR           vL ->-.-->- vR
         |          |                        |
@@ -6146,6 +6146,9 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
             init_RP = self._contract_RP(j, init_RP)
         return init_RP
 
+    def get_initialization_data(self, first=0, last=None, include_bra=False, include_ket=False):
+        raise NotImplementedError("Not sure we need this.")
+    
     # Functions from "BaseMPSExpectationValue"
     def _to_valid_index(self, i):
         """Make sure `i` is a valid index (depending on `finite`)."""

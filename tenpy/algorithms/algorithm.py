@@ -92,7 +92,15 @@ class Algorithm:
             N_sites_per_ring = model.lat.N_sites_per_ring
         except AttributeError:  # for e.g. VariationalApplyMPO, model is just the MPO and has no lat
             N_sites_per_ring = 1
-        consistency_check(N_sites_per_ring, self.options, 'max_N_sites_per_ring', 18,
+
+        from ..models.lattice import TrivialLattice
+        if type(model.lat) == TrivialLattice:
+            # If lattice is a TrivialLattice, there is only a single unit cell containing all sites.
+            max_N_sites_per_ring = psi.L
+        else:
+            max_N_sites_per_ring = 18
+
+        consistency_check(N_sites_per_ring, self.options, 'max_N_sites_per_ring', max_N_sites_per_ring,
                           'Maximum number of sites per ring (``max_N_sites_per_ring``) exceeded.')
 
     @classmethod
