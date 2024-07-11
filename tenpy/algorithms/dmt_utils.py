@@ -57,6 +57,13 @@ def generate_pairs(lat, key='nearest_neighbors'):
         pairs: list
             list of couplings we wish to preserve with DMT
     """
+    if key == 'NN':
+        key = 'nearest_neighbors'
+    elif key == 'nNN':
+        key = 'next_nearest_neighbors'
+    elif key == 'nnNN':
+        key = 'next_next_nearest_neighbors'
+
     idXs, idYs = [], []
     for dx1, dx2, bv in lat.pairs[key]:
         idX, idY = lat.possible_couplings(dx1,dx2,bv)[:2]
@@ -95,7 +102,8 @@ def distribute_pairs(pairs, bi, symmetric=True):
                     left_points.append(cp[0])
                 else:
                     right_points.append(cp[1])
-    return left_points, right_points
+    #return left_points, right_points
+    return np.unique(left_points), np.unique(right_points)
 
 def trace_identity_DMPS(DMPS, traceful_id=None):
     """
