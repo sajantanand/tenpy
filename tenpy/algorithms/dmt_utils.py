@@ -21,6 +21,8 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True
             Whether the model is ALREADY in doubled Hilbert space
         conjugate: Boolean
             Do we conjugate the MPO by change of basis matrices; typically one moves to Hermitian or charge-conserving basis
+        hermitian: Boolean
+            Is the basis Hermitian or charge conserving?
     returns:
         doubled_model: TeNPy model
             Either `MPOModel` or `NearestNeighborModel` depending on the `NN` parameter
