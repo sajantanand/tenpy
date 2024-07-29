@@ -355,7 +355,7 @@ class MPO:
             TruncationError()
             >>> C = psi.correlation_function('Cd', 'C')
             >>> C_expected = np.conj(coeff)[:, np.newaxis] * coeff[np.newaxis, :]
-            >>> np.max(np.abs(C - C_expected) ) < 1.e-10
+            >>> bool(np.max(np.abs(C - C_expected) ) < 1.e-10)
             True
         """
         coeff = np.asarray(coeff)
@@ -1648,6 +1648,9 @@ class MPO:
             print(psi.norm_test())
             #psi.canonical_form()
             return err
+        elif method == 'variationalQR':
+            from ..algorithms.mps_common import QRBasedVariationalApplyMPO
+            return QRBasedVariationalApplyMPO(psi, self, options).run()
         # TODO: zipup method infinite?
         raise ValueError("Unknown compression method: " + repr(method))
 

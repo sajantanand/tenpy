@@ -26,7 +26,7 @@ from ..linalg.sparse import NpcLinearOperator, SumNpcLinearOperator, OrthogonalN
 from ..networks.mpo import MPOEnvironment
 from ..networks.mps import MPSEnvironment, MPS
 from ..networks.site import DoubledSite
-from .truncation import truncate, svd_theta, TruncationError, _machine_prec_trunc_par
+from .truncation import truncate, svd_theta, decompose_theta_qr_based, TruncationError, _machine_prec_trunc_par
 from ..linalg import np_conserved as npc
 from ..tools.params import asConfig
 from ..tools.misc import find_subclass, consistency_check
@@ -58,6 +58,7 @@ __all__ = [
     'VariationalApplyMPO',
     'VariationalApplyGuessMPO',
     'VariationalApplyGuessMPODMT',
+    'QRBasedVariationalApplyMPO',
 ]
 
 
@@ -2334,14 +2335,14 @@ class VariationalCompressionGuess(VariationalCompression):
         self.reset_stats()
 
 class VariationalCompressionGuessDMT(VariationalCompressionGuess):
-    """
-    Variational optimization of an MPS using DMT.
+    """Variational optimization of an MPS using DMT.
+
     Assume that self.psi is in canonical form as both A and B tensors are used
     """
     EffectiveH = DummyTwoSiteH
 
     def __init__(self, psi, phi, options, resume_data=None):
-        assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+        assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."    # TODO: Grouped site
         super().__init__(psi, phi, options, resume_data=resume_data)
 
     def update_new_psi(self, theta):
@@ -2399,11 +2400,6 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
             time2 = time.time()
             print('Get QR Time:', time2 - time1, flush=True)
             time1 = time2
-        Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
-        if timing:
-            time2 = time.time()
-            print('Remove redundancy Time:', time2 - time1, flush=True)
-            time1 = time2
 
         if keep_L >= chi or keep_R >= chi:
             # On the left sweep (updating RP), track change of theta)
@@ -2414,6 +2410,12 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
             # Nothing is done to the MPS, we don't use the new theta
             update_data = {'err': TruncationError(), 'U': U_OC, 'VH': VH_OC}
             return update_data
+
+        Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = dmt.remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-14))
+        if timing:
+            time2 = time.time()
+            print('Remove redundancy Time:', time2 - time1, flush=True)
+            time1 = time2
 
         # Q_L - vR*, vR; q_R = vL, vL*
         M_OC = npc.tensordot(Q_L, Q_R.scale_axis(S_OC, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
@@ -2432,8 +2434,7 @@ class VariationalCompressionGuessDMT(VariationalCompressionGuess):
         #print("Norm of new M (hopefully this is 1):", npc.norm(M_OC))
         # SAJANT TODO - do we want this to be normalized? Probably?
         # See comment in DMT_theta function for details about traceful_ind
-        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R,
-                                      traceful_ind_L=np.argsort(new_psi.sites[i].perm)[0], traceful_ind_R=np.argsort(new_psi.sites[i+1].perm)[0])
+        M_trunc, err = dmt.truncate_M(M_OC, self.trunc_params, dmt_params.get('connected', False), keep_L, keep_R, proj_L, proj_R)
         if timing:
             time2 = time.time()
             print('Truncate M Block Time:', time2 - time1, flush=True)
@@ -2632,8 +2633,118 @@ class VariationalApplyGuessMPO(VariationalApplyMPO):
 class VariationalApplyGuessMPODMT(VariationalApplyGuessMPO,VariationalCompressionGuessDMT):
 
     def __init__(self, psi, phi, U_MPO, options, **kwargs):
-        assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+        assert np.alltrue([type(s) == DoubledSite for s in psi.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."    # TODO: Groupd sites?
         super().__init__(psi, phi, U_MPO, options, **kwargs)
 
     def update_new_psi(self, theta):
         return VariationalCompressionGuessDMT.update_new_psi(self, theta)
+
+class QRBasedVariationalApplyMPO(VariationalApplyMPO):
+    r"""Variational MPO application, using QR-based decompositions instead of SVD.
+
+    The QR-based decomposition, introduced in :arxiv:`2212.09782` is used for TEBD, as implemented
+    in :class:`~tenpy.algorithms.tebd.QRBasedTEBDEngine`. This engine is a version of
+    :class:`VariationalApplyMPO` that uses the same QR-based decomposition instead of SVD in
+    the truncation step after the variational update.
+
+    Options
+    -------
+    .. cfg:config :: QRBasedVariationalApplyMPO
+        :include: VariationalApplyMPO
+
+        cbe_expand : float
+            Expansion rate. The QR-based decomposition is carried out at an expanded bond dimension
+            ``eta = (1 + cbe_expand) * chi``, where ``chi`` is the bond dimension before the time step.
+            Default is `0.1`.
+        cbe_expand_0 : float
+            Expansion rate at low ``chi``.
+            If given, the expansion rate decreases linearly from ``cbe_expand_0`` at ``chi == 1``
+            to ``cbe_expand`` at ``chi == trunc_params['chi_max']``, then remains constant.
+            If not given, the expansion rate is ``cbe_expand`` at all ``chi``.
+        cbe_min_block_increase : int
+            Minimum bond dimension increase for each block. Default is `1`.
+        use_eig_based_svd : bool
+            Whether the SVD of the bond matrix :math:`\Xi` should be carried out numerically via
+            the eigensystem. This is faster on GPUs, but less accurate.
+            It makes no sense to do this on CPU. It is currently not supported for update_imag.
+            Default is `False`.
+        compute_err : bool
+            Whether the truncation error should be computed exactly.
+            Compared to SVD-based TEBD, computing the truncation error is significantly more expensive.
+            If `True` (default), the full error is computed.
+            Otherwise, the truncation error is set to NaN.
+    """
+
+    def _expansion_rate(self, i):
+        """get expansion rate for updating bond i"""
+        expand = self.options.get('cbe_expand', 0.1, 'real')
+        expand_0 = self.options.get('cbe_expand_0', None, 'real')
+
+        if expand_0 is None or expand_0 == expand:
+            return expand
+
+        chi_max = self.trunc_params.get('chi_max', None, int)
+        if chi_max is None:
+            raise ValueError('Need to specify trunc_params["chi_max"] in order to use cbe_expand_0.')
+
+        chi = min(self.psi.get_SL(i).shape)
+        return max(expand_0 - chi / chi_max * (expand_0 - expand), expand)
+
+    def update_new_psi(self, theta: npc.Array):
+        """Given a new two-site wave function `theta`, split it and save it in :attr:`psi`."""
+        i0 = self.i0
+        new_psi = self.psi
+
+        if self.move_right:
+            old_T_L = new_psi.get_B(i0, 'Th')
+            old_T_R = new_psi.get_B(i0+1, 'B')
+            old_bond_leg = old_T_R.get_leg('vL')
+            # for old_T_L `'B'` form fine as well, but i0 in `'Th'` form if ``use_eig_based_svd=True``
+        else:
+            old_T_L = new_psi.get_B(i0, 'A')
+            old_T_R = new_psi.get_B(i0+1, 'Th')
+            old_bond_leg = old_T_L.get_leg('vR')
+            # for old_T_R `'A'` form fine as well, but i0+1 in `'Th'` form if ``use_eig_based_svd=True``
+        expand = self._expansion_rate(i0)
+        use_eig_based_svd = self.options.get('use_eig_based_svd', False, bool)
+
+        T_Lc, S, T_Rc, form, err, renormalize = decompose_theta_qr_based(
+            old_qtotal_L=old_T_L.qtotal, old_qtotal_R=old_T_R.qtotal, old_bond_leg=old_bond_leg,
+            theta=theta, move_right=self.move_right,
+            expand=expand, min_block_increase = self.options.get('cbe_min_block_increase', 1, int),
+            use_eig_based_svd=use_eig_based_svd,
+            trunc_params=self.trunc_params,
+            compute_err=self.options.get('compute_err', True, bool),
+            return_both_T=True
+        )
+
+        if self.move_right:
+            assert form[0] == 'A'
+            U = T_Lc
+        else:
+            assert form[1] == 'B'
+            VH = T_Rc
+
+        T_L = T_Lc.split_legs(['(vL.p)'])
+        T_R = T_Rc.split_legs(['(p.vR)'])
+        U, VH = None, None
+
+        self.renormalize.append(renormalize)
+
+        # compare to old best guess to check convergence of the sweeps
+        if self._tol_theta_diff is not None and self.update_LP_RP[0] == False:
+            theta_old = new_psi.get_theta(i0)
+            if use_eig_based_svd:
+                theta_new_trunc = npc.tensordot(T_L, T_R, ['vR', 'vL'])
+            else:
+                theta_new_trunc = npc.tensordot(T_L.scale_axis(S, 'vR'), T_R, ['vR', 'vL'])
+            theta_new_trunc.iset_leg_labels(['vL', 'p0', 'p1', 'vR'])
+            ov = npc.inner(theta_new_trunc, theta_old, do_conj=True, axes='labels')
+            theta_diff = 1. - abs(ov)
+            self._theta_diff.append(theta_diff)
+
+        # set the new tensors to the MPS
+        new_psi.set_B(i0, T_L, form=form[0])
+        new_psi.set_B(i0+1, T_R, form=form[1])
+        new_psi.set_SR(i0, S)
+        return {'U': U, 'VH': VH, 'err': err}
