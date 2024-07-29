@@ -429,11 +429,6 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         # Construct the theta matrix
         C = self.psi.get_theta(i0, n=2, formL=0.)  # the two B without the S on the left
         C = npc.tensordot(U_bond, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))  # apply U
-        if npc.norm(C.unary_blockwise(np.imag)) < self.imaginary_cutoff:
-        #if np.linalg.norm([d.imag for d in C._data]) < self.imaginary_cutoff: # Remove small imaginary part
-            # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
-            C.iunary_blockwise(np.real)
-            #C.dtype = 'float64' # I think this may automatically be happening?
         C.itranspose(['vL', 'p0', 'p1', 'vR'])
         theta = C.scale_axis(self.psi.get_SL(i0), 'vL')
         # now theta is the same as if we had done
@@ -560,9 +555,6 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         theta = self.psi.get_theta(i0, n=2)  # 'vL', 'vR', 'p0', 'p1'
         theta = npc.tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
 
-        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
-            theta.iunary_blockwise(np.real)
-
         theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
         # Perform the SVD and truncate the wavefunction
         U, S, V, trunc_err, renormalize = svd_theta(theta,
@@ -597,6 +589,15 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         else:
             raise ValueError("Expect either 'real' or 'imag'inary time, got " + repr(type_evo))
         U = npc.expm(H2)
+        if npc.norm(U.unary_blockwise(np.imag)) < self.imaginary_cutoff:
+            # Remove imaginary part of Trotter gate
+            # If we are evolving a mixed state / operator in the Hermitian basis, then
+            # we know that U should be real. So we remove imaginary parts.
+            # However, this is dropping imaginary terms near machine precision, so there is
+            # a machine precision error between A(t) and A(-t)* for time reversal invariant
+            # A and H.
+            U.iunary_blockwise(np.real)
+
         assert (tuple(U.get_leg_labels()) == ('(p0.p1)', '(p0*.p1*)'))
         return U.split_legs()
 
@@ -678,11 +679,6 @@ class DMTTEBDEngine(TEBDEngine):
         theta = self.psi.get_theta(i0, n=2)  # 'vL', 'vR', 'p0', 'p1'
         theta = npc.tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
         theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
-
-        if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
-            # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
-            theta.iunary_blockwise(np.real)
-            #C.dtype = 'float64' # I think this may automatically be happening?
 
         # Perform the SVD and truncate the wavefunction
         svd_trunc_params_0 = self.options.get('svd_trunc_params_0', _machine_prec_trunc_par)

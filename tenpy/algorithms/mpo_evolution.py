@@ -73,7 +73,7 @@ class ExpMPOEvolution(TimeEvolutionAlgorithm):
     # run from TimeEvolutionAlgorithm
 
     def prepare_evolve(self, dt):
-        order = self.options.get('order', 2, int)
+        order = self.options.get('order', 2)    # SAJANT - I added fractional orders
         approximation = self.options.get('approximation', 'II', str)
 
         self.calc_U(dt, order, approximation)

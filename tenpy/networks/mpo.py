@@ -719,9 +719,10 @@ class MPO:
         Id = [0] * (self.L + 1)
         return MPO(self.sites, U, self.bc, Id, Id, max_range=self.max_range)
 
-    def make_quadrupled_MPO(self, hermitian=True):
-        r"""Creates the MPO for evolution in the Quadrupled space. The input mpo is originally in the single Hilbert
-        space, so :math:`O`, we want to turn this into
+    def make_quadrupled_MPO(self, hermitian=True, trivial=False):
+        r"""Creates the MPO for evolution in the Quadrupled space.
+
+        The input mpo is originally in the single Hilbert space, so :math:`O`, we want to turn this into
         :math:`O \otimes I \otimes I \otimes I + I \otimes O \otimes I \otimes I - I \otimes I \otimes O^* \otimes I - I \otimes I \otimes I \otimes O^*`.
         The legs of the operator should correspond to p0, p1, p0*, p1*.
         If the operator is the Hamiltonian, this will exponentiate to form the unitary
@@ -758,13 +759,13 @@ class MPO:
         IdR = self.IdR
 
         chinfo = self.chinfo
-        trivial = chinfo.make_valid()
+        trivial_CHI = chinfo.make_valid()
         U = []
         sites = []
         for i in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
             W = self.get_W(i).itranspose(labels)
-            assert np.all(W.qtotal == trivial) # Need to make this work with charges.
+            assert np.all(W.qtotal == trivial_CHI) # Need to make this work with charges.
             DL, DR, d, d = W.shape
 
             A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
@@ -811,14 +812,14 @@ class MPO:
                 dW[i+1+3*(DL-2), -1] = -1*_combine_npc(Idd_npc, _combine_npc(Id_npc, B_npc[i,0], conj=False), conj=True)
             #Bottom Rows
             dW[-1,-1] = _combine_nps(Idd_npc, Idd_npc)
-            sites.append(DoubledSite(d**2, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sort, hermitian=hermitian))
+            sites.append(DoubledSite(d**2, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sort, hermitian=hermitian, trivial=trivial))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         return dMPO
 
-    def make_doubled_MPO(self, hermitian=True):
+    def make_doubled_MPO(self, hermitian=True, trivial=False):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
@@ -849,13 +850,13 @@ class MPO:
         IdR = self.IdR
 
         chinfo = self.chinfo
-        trivial = chinfo.make_valid()
+        trivial_CHI = chinfo.make_valid()
         U = []
         sites = []
         for k in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
             W = self.get_W(k).itranspose(labels)
-            assert np.all(W.qtotal == trivial) # Need to make this work with charges.
+            assert np.all(W.qtotal == trivial_CHI) # Need to make this work with charges.
             DL, DR, d, d = W.shape
 
             A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[k], IdR[k], IdL[k+1], IdR[k+1])
@@ -879,14 +880,14 @@ class MPO:
                 dW[i+1+DL-2, -1] = -1*_combine_npc(Id_npc, B_npc[i,0])
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sort, hermitian=hermitian))
+            sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sort, hermitian=hermitian, trivial=trivial))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         return dMPO
 
-    def make_embedded_MPO(self, hermitian=True):
+    def make_embedded_MPO(self, hermitian=True, trivial=True):
         r"""Embeds an operator into a doubled Hilbert space. Given an operator :math:`O`, we
         turn this into :math:`O \otimes I`.
         We will do this tensor by tensor in the MPO, and we require
@@ -916,13 +917,13 @@ class MPO:
         IdR = self.IdR
 
         chinfo = self.chinfo
-        trivial = chinfo.make_valid()
+        trivial_CHI = chinfo.make_valid()
         U = []
         sites = []
         for k in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
             W = self.get_W(k).itranspose(labels)
-            assert np.all(W.qtotal == trivial)
+            assert np.all(W.qtotal == trivial_CHI)
             DL, DR, d, d = W.shape
 
             A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[k], IdR[k], IdL[k+1], IdR[k+1])
@@ -943,16 +944,18 @@ class MPO:
                 dW[i+1, -1] = _combine_npc(B_npc[i,0], Id_npc)
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sorted, hermitian=hermitian))
+            sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sorted, hermitian=hermitian, trivial=trivial))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         return dMPO
 
-    def make_twice_embedded_MPO(self, hermitian=True):
-        r"""Embeds an operator into a quadrupled Hilbert space. Given an operator :math:`O`, we
-        turn this into :math:`O \otimes I \otimes I \otimes I + I \otimes O \otimes I \otimes I`.
+    def make_twice_embedded_MPO(self, hermitian=True, trivial=False):
+        r"""Embeds an operator into a quadrupled Hilbert space.
+
+        Given an operator :math:`O`, we turn this into
+        :math:`O \otimes I \otimes I \otimes I + I \otimes O \otimes I \otimes I`.
         We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
 
@@ -981,13 +984,13 @@ class MPO:
         IdR = self.IdR
 
         chinfo = self.chinfo
-        trivial = chinfo.make_valid()
+        trivial_CHI = chinfo.make_valid()
         U = []
         sites = []
         for i in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
             W = self.get_W(i).itranspose(labels)
-            assert np.all(W.qtotal == trivial)
+            assert np.all(W.qtotal == trivial_CHI)
             DL, DR, d, d = W.shape
 
             A_npc, B_npc, C_npc, D_npc = _partition_W(W, IdL[i], IdR[i], IdL[i+1], IdR[i+1])
@@ -1019,7 +1022,7 @@ class MPO:
                 dW[i+1+DL-2, -1] = _combine_npc(_combine_npc(Id_npc, B_npc[i,0], conj=False), Idd_npc)
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d**2, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sorted, hermitian=hermitian))
+            sites.append(DoubledSite(d**2, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sorted, hermitian=hermitian, trivial=trivial))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
@@ -1027,12 +1030,8 @@ class MPO:
         return dMPO
 
     def conjugate_MPO(self, Ms):
-        """Conjugate MPO M with matrices M on each site. M is guaranteed to be unitary.
-
-        This leaves the block structure of U intact, as we are acting on the physical legs.
+        """Conjugate MPO with matrices M on each site. M is guaranteed to be unitary.
         """
-        #assert U.ndim == 2
-        #assert np.isclose(npc.norm(npc.tensordot(U, U.conj(), axes=([1],[1])) - npc.eye_like(U)), 0), "U is not unitary."
 
         for i in range(self.L):
             M = Ms[i % len(Ms)]
@@ -1043,13 +1042,6 @@ class MPO:
             W = npc.tensordot(W, Minv, axes=(['p*'], ['p']))
             W.itranspose(W_labels)
             self.set_W(i, W)
-        """
-        # SAJANT - THIS ISN'T USED I THINK>
-        try:
-            self.rotated_basis = not self.rotated_basis
-        except AttributeError:
-            self.rotated_basis = True
-        """
 
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
         """Calculate ``<psi|self|psi>/<psi|psi>`` (or density for infinite).

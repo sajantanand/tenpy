@@ -8,11 +8,12 @@ from ..networks.mps import MPSEnvironment, MPS
 from ..networks.doubled_mps import DoubledMPS
 from ..networks.site import DoubledSite
 from ..linalg import np_conserved as npc
-from ..linalg.charges import LegPipe
+from ..linalg.krylov_based import gram_schmidt
+from ..linalg.charges import LegPipe, ChargeInfo
 from ..algorithms.truncation import svd_theta, TruncationError, _machine_prec_trunc_par
 import warnings
 
-def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True):
+def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True, trivial=False):
     """
     args:
         NN: Boolean
@@ -20,24 +21,24 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True
         doubled: Boolean
             Whether the model is ALREADY in doubled Hilbert space
         conjugate: Boolean
-            Do we conjugate the MPO by change of basis matrices; typically one moves to Hermitian or charge-conserving basis
+            Do we conjugate the MPO by change of basis matrices; typically one moves to hermitian or charge-conserving basis
         hermitian: Boolean
-            Is the basis Hermitian or charge conserving?
+            Is the basis hermitian or charge conserving?
+        trivial: Boolean
+            Do we have a trivial |i><j| basis?
     returns:
         doubled_model: TeNPy model
             Either `MPOModel` or `NearestNeighborModel` depending on the `NN` parameter
     """
     if not doubled:
-        doubled_MPO = H_MPO.make_doubled_MPO(hermitian)
+        doubled_MPO = H_MPO.make_doubled_MPO(hermitian, trivial)
     else:
         doubled_MPO = deepcopy(H_MPO)
 
     if conjugate:
         doubled_MPO.conjugate_MPO([s.s2d for s in doubled_MPO.sites])
 
-    #doubled_lat = lat(H_MPO.L, doubled_MPO.sites[0]) # SAJANT - what if we have different types of sites in the lattice?
     doubled_lat = TrivialLattice(doubled_MPO.sites) # Trivial lattice uses the sites of the doubled MPO.
-    # What if we don't want a chain lattice?
 
     doubled_model = MPOModel(doubled_lat, doubled_MPO)
     if NN:
@@ -99,13 +100,12 @@ def distribute_pairs(pairs, bi, symmetric=True):
                     right_points.append(cp[1])
     return left_points, right_points
 
-def trace_identity_DMPS(DMPS, traceful_id=None):
+def trace_identity_DMPS(DMPS):
     """
     Bra for density matrix expectation value; we simply represent the identity matrix.
     We are in the computational / standard basis. Make doubled MPS with two physical legs
     per site, using the identity on each site
     """
-    assert traceful_id == None, "Not used here since the doubled MPS has both bra and ket legs"
     Is = [np.eye(ds.dim).reshape(ds.dim, ds.dim, 1, 1) for ds in DMPS.sites]
     return DoubledMPS.from_Bflat(DMPS.sites,
                                  Is,
@@ -127,13 +127,12 @@ def make_swap_gate(d):
                 swap[i,j] = 1
     return swap
 
-def trace_swap_DMPS(DMPS, traceful_id=None):
+def trace_swap_DMPS(DMPS):
     """
     Bra for quadrupled space OTOCs; the matrix represents a swap operator in the physical
     space. Given a quadupled DMPS of local Hilbert space dimension :math:`d`, we want the swap
     in this space that represents two operators.
     """
-    assert traceful_id == None, "Not used here since the doubled MPS has both bra and ket legs"
     Swaps = []
     for ds in DMPS.sites:
         swap = make_swap_gate(ds.dim).reshape(ds.dim, ds.dim, 1, 1)
@@ -170,7 +169,7 @@ def trace_identity_MPS(DMPS):#, traceful_id=None):
             # No charges!
             ti = ds.traceful_ind
         """
-        ti = 0 #ds.traceful_ind
+        ti = ds.traceful_ind
         I[ti,0,0] = 1 # 1 for every operator with trace 1.
         Is.append(I)
     return MPS.from_Bflat(DMPS.sites,
@@ -219,8 +218,38 @@ this to 4 operators on each side. The issue is that we cannot reused contracted 
 new MPOs on each site. This is not desirable. So while we can think about this for pedagongical purposes, we will not implement the code
 this way.
 
-Instead, we should put the MPO to preserve INTO the state $\rho$ we trace against (typically the infintie temperature density matrix).
+Instead, we should put the MPO to preserve INTO the state $\rho$ we trace against (typically the infinite temperature density matrix).
 """
+
+def orthogonalize_rows(vecs):
+    """
+    Given a set of vectors, we want to find the orthogonal vectors from these.
+    Since we may have charges, we must only do Gram Schmidt within each charge sector.
+    Afterwards, the vectors are sorted by charge, so we want to know the index of the initially first vector.
+    """
+    if vecs[0].chinfo != ChargeInfo([], []):    # charges
+        v0_charge = vecs[0].qtotal.item()
+        charged_vecs = {}
+        for v in vecs:
+            if v.qtotal.item() in charged_vecs.keys():
+                charged_vecs[v.qtotal.item()].append(v)
+            else:
+                charged_vecs[v.qtotal.item()] = [v]
+        charges = list(charged_vecs.keys())
+        ch_sort = np.argsort(charges)
+
+        # Now do GS within each sector
+        new_vecs = []
+        v0_index = 0
+        for chs in ch_sort:
+            new_vecs.extend(gram_schmidt(charged_vecs[charges[chs]]))
+            if charges[chs] < v0_charge:
+                v0_index = len(new_vecs)
+    else:
+        new_vecs = gram_schmidt(vecs)
+        v0_index = 0
+    return new_vecs, v0_index
+
 
 def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
     """
@@ -256,8 +285,9 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
     #############################################
 
     # Bond i between sites i and i+1; truncating bond i
-    QR_Rs = []
-    keep_R = 0
+    # Start with identity on all sites to the right; this corresponds to the trace
+    QR_Rs = [trace_env.get_RP(i, store=True).replace_label('vL*', 'p')]
+    keep_R = 1
     local_params = dmt_params.get('k_local_params', None)
     conjoined_params = dmt_params.get('conjoined_params', None)
     if i == dMPS.L-1: # Bond to the right of last site; do nothing
@@ -336,8 +366,21 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
             # Why? Maybe this reduces overhead if the pipe is very deep?
             QR_R.legs[p_index] = QR_R.get_leg('p').to_LegCharge()
     # QR_R: labels=('vL', 'p), qconj=(+1, -1)
-    #print('QR Legs:', [(qr_R, qr_R.legs) for qr_R in QR_Rs])
-    QR_R = npc.concatenate(QR_Rs, axis='p')
+    # print('QR Legs:', [(qr_R, qr_R.legs) for qr_R in QR_Rs])
+
+    QR_R_vecs = []
+    for QR_R in QR_Rs:
+        QR_R_vecs.extend([QR_R[:,i] for i in range(QR_R.shape[1])])
+    assert keep_R == len(QR_R_vecs)
+    QR_R_vecs, _ = orthogonalize_rows(QR_R_vecs)       # Could potentially kill all vectors if all are zero.
+    if len(QR_R_vecs) == 0:
+        QR_R_vecs = [QR_Rs[0]]
+    else:
+        QR_R_vecs = [qr_r.add_trivial_leg(axis=1, label='p', qconj=-1).gauge_total_charge('p') for qr_r in QR_R_vecs]
+    keep_R = len(QR_R_vecs)
+    QR_R = npc.concatenate(QR_R_vecs, axis='p')
+    perm_R, QR_R = QR_R.sort_legcharge(sort=True, bunch=True)
+    #id_ind = list(perm_R[1]).index(id_ind)  # this seems to leave id_ind invariant
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
     return QR_R, keep_R, trace_env, MPO_envs
 
@@ -345,10 +388,10 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
     """
     See documentation for build_QR_matrix_R
     """
-
     # Bond i between sites i and i+1; truncating bond i
-    QR_Ls = []
-    keep_L = 0
+    # Start with identity on all sites to the left; this corresponds to the trace
+    QR_Ls = [trace_env.get_LP(i+1, store=True).replace_label('vR*', 'p')]
+    keep_L = 1
     local_params = dmt_params.get('k_local_params', None)
     conjoined_params = dmt_params.get('conjoined_params', None)
     if i == -1: # Bond to the left of first site; do nothing
@@ -395,7 +438,7 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         left_pairs, _ = distribute_pairs(pairs, i, symmetric=symmetric)
 
         # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
-        #keep_R += int(np.sum([dMPS.dim[k]-1 for k in left_pairs]))
+        # keep_L += int(np.sum([dMPS.dim[k]-1 for k in left_pairs]))
         keep_L += int(np.sum([dMPS.dim[k] for k in left_pairs]))
 
         if len(left_pairs) == 0:
@@ -425,7 +468,19 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
             QR_L.legs[p_index] = QR_L.get_leg('p').to_LegCharge()
     # QR_L: labels=('p', 'vR), qconj=(+1, -1)
     #print('QL Legs:', [(qr_L, qr_L.legs) for qr_L in QR_Ls])
-    QR_L = npc.concatenate(QR_Ls, axis='p')
+    QR_L_vecs = []
+    for QR_L in QR_Ls:
+        QR_L_vecs.extend([QR_L[i,:] for i in range(QR_L.shape[0])])
+    assert keep_L == len(QR_L_vecs)
+    QR_L_vecs, _ = orthogonalize_rows(QR_L_vecs)
+    if len(QR_L_vecs) == 0:
+        QR_L_vecs = [QR_Ls[0]]
+    else:
+        QR_L_vecs = [qr_l.add_trivial_leg(axis=0, label='p', qconj=+1).gauge_total_charge('p') for qr_l in QR_L_vecs]
+    keep_L = len(QR_L_vecs)
+    QR_L = npc.concatenate(QR_L_vecs, axis='p')
+    perm_L, QR_L = QR_L.sort_legcharge(sort=True, bunch=True)
+    #id_ind = list(perm_L[0]).index(id_ind)
     assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
     return QR_L, keep_L, trace_env, MPO_envs
 
@@ -496,7 +551,8 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
 
     proj_L, new_keep_L = get_indices(R_L, R_cutoff)
     proj_R, new_keep_R = get_indices(R_R, R_cutoff)
-
+    assert keep_L == new_keep_L
+    assert keep_R == new_keep_R
     return Q_L, R_L, Q_R, R_R, new_keep_L, new_keep_R, proj_L, proj_R
 
 def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
@@ -585,7 +641,7 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
     #assert keep_R == R_R.get_leg('vL').ind_len - np.sum(proj_R)
     return Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R
 
-def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, traceful_ind_L=0, traceful_ind_R=0):
+def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
     """
     Truncate the lower right block once we've moved to desired basis
 
@@ -597,7 +653,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, t
         connected: Boolean
             Do we perform the operation in Eq. 25 of https://arxiv.org/pdf/1707.01506.pdf?
         keep_L, keep_R: int, int
-            Number of independent operator combinations to preserve; needed to  extract lower right block
+            Number of independent operator combinations to preserve; needed to extract lower right block
         proj_L, proj_R: list (bools), list (bools)
             which indices of M do we keep for the "lower right" block; length of each arguement is the dimension of M
     """
@@ -605,13 +661,19 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, t
     # With MPOs, we can't really use `connected=True` since there will not be a single operator corresponding to the Identity.
     if connected:
         orig_M = M.copy()
+        if orig_M.chinfo != ChargeInfo([], []):
+            qinds = [l.get_qindex_of_charges([0]) for l in orig_M.legs]
+            traceful_ind_L, traceful_ind_R = [l.slices[qi] for l, qi in zip(orig_M.legs, qinds)]
+        else:
+            traceful_ind_L, traceful_ind_R = 0, 0
+        assert not proj_L[traceful_ind_L] and not proj_R[traceful_ind_R], "Need to be keeping the element corresponding to the identity."
+        #print(traceful_ind_L, traceful_ind_R, orig_M[traceful_ind_L, traceful_ind_R])
         if np.isclose(orig_M[traceful_ind_L,traceful_ind_R], 0.0): # traceless op
             print("Tried 'connected=True' on traceless operator; you sure about this?")
             assert False
         else:
             M = orig_M - npc.outer(orig_M.take_slice([traceful_ind_R], ['vR']),
                                    orig_M.take_slice([traceful_ind_L], ['vL'])) / orig_M[traceful_ind_L, traceful_ind_R]
-
     M_DR = M[proj_L, proj_R]
 
     # Do SVD of M_prime block, truncating according to svd_trunc_par
@@ -685,9 +747,10 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
                 raise ValueError(f"Ket in 'MPO ENV' {j} is not the current doubled MPS.")
             Me.del_RP(i)
             Me.del_LP(i+1)
-    else:
+    else:   # MPO_envs is None
         # MPO preservation doesn't work with connected correlations
-        assert dmt_params.get('connected', False) == False
+        # assert dmt_params.get('connected', False) == False
+        pass
 
     S = dMPS.get_SR(i) # singular values to the right of site i
     chi = len(S)
@@ -701,18 +764,21 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
         time2 = time.time()
         print('Get QR Time:', time2 - time1, flush=True)
         time1 = time2
+
+    if keep_L >= chi or keep_R >= chi:
+        # We cannot truncate, so return.
+        # Nothing is done to the MPS, except for moving the OC one site ot the left
+        return TruncationError(), 1, trace_env, MPO_envs
+
     # Always need to call this function, as it performs the QR; remove redundancy if R_cutoff > 0.0
     Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))#1.e-14))
+
     if timing:
         time2 = time.time()
         print('Remove redundancy Time:', time2 - time1, flush=True)
         time1 = time2
     #Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))
 
-    if keep_L >= chi or keep_R >= chi:
-        # We cannot truncate, so return.
-        # Nothing is done to the MPS, except for moving the OC one site ot the left
-        return TruncationError(), 1, trace_env, MPO_envs
 
     # Build M matrix, Eqn. 15 of paper
     M = npc.tensordot(Q_L, Q_R.scale_axis(S, axis='vL'), axes=(['vR', 'vL'])).ireplace_labels(['vR*', 'vL*'], ['vL', 'vR'])
@@ -726,8 +792,10 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     # Identity is still in the permuted 0th index.
     # For MPO preservation, there is not guaranteed to be one operator for the identity.
     M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False),
-                              keep_L, keep_R, proj_L, proj_R,
-                              traceful_ind_L=np.argsort(dMPS.sites[i].perm)[0], traceful_ind_R=np.argsort(dMPS.sites[i+1].perm)[0])
+                              keep_L, keep_R, proj_L, proj_R)
+                              #traceful_ind_L=id_ind_L, traceful_ind_R=id_ind_R)
+                              #traceful_ind_L=dMPS.sites[i].perm[0], traceful_ind_R=dMPS.sites[i+1].perm[0])
+                              #traceful_ind_L=np.argsort(dMPS.sites[i].perm)[0], traceful_ind_R=np.argsort(dMPS.sites[i+1].perm)[0])
     if timing:
         time2 = time.time()
         print('Truncate M Block Time:', time2 - time1, flush=True)

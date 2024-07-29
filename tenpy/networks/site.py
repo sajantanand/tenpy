@@ -2026,7 +2026,42 @@ class DoubledSite(Site):
     r"""Doubled site for Heisenberg or density matrix evolution.
 
     Given some physical Hilbert space of dimenison $d$, we want to define the vectorized,
-    doubled Hilbert space of dimension $d^2$. We want to define a basis of Hermitian,
+    doubled Hilbert space of dimension $d^2$. Often we might want to specify the opertor as
+    a set of operators rather than ket-bra basis elements. This allows us to perform DMT
+    by picking out specific operators. We allow for 3 types of basis, specified by the function
+    parameters `trivial` and `hermitian`.
+
+    1. `trivial=True`, `hermitian=False` - standard ket-bra basis |i><j|. These are not
+    operators we typically consider. This is the basis one gets by trivially vectorizing
+    a density matrix.
+    2. `trivial=False`, `hermitian=True` - basis of Hermitian operators, such as the Pauli
+    basis {I, X, Y, Z} for d=2. For d > 2, this will be generalizations of the Pauli matrices.
+    Only one operator (I) will have unit trace while the rest will be traceless.
+    3. `trivial=False`, `hermitian=False` - basis of operators for U(1) (or parity) charge
+    conservation. For d = 2, this corresponds to {I, Z, S+, S-}. For d > 2, we have analogous
+    operators that correspond to powers of raising and lowering operators.
+
+    In each basis, we define the set of operators as {sigma_alpha}. We then vectorize these
+    operators and build a matrix using these vectors as columns. Call this matrix OP
+    (operators). What is the meaning of OP? OP|i> is the vectorized representation of a
+    state specified by operator sigma_i, for |i> a unit basis vector. OP for the trivial basis
+    is simply the identity matrix; the unit basis vectors simply represent |i><j| once vectorized.
+
+    Suppose we have a site in the computational basis spanned by |i>. The density matrix is
+    spanned by |i><j| which gives |i,j>> when vectorized with OP = I. The state of the density
+    matrix is given by |rho>> = \sum_{i,j} c_{i,j} |i,j>>. Suppose we want to work in some other
+    basis OP. We thus want to find the vector |s> such that |rho>> = OP |s>. |s> specifies the
+    linear combination of operators of OP that give the state |rho>>. However, OP isn't
+    necessarily unitary, so we can't use it as a change of basis matrix. So instead, we
+    decompose OP = QR. Then Q is an orthogonal version of OP. We use Q to do the basis transforms.
+    So in the orthogonal basis, |t> = R |s> = Q^\dagger |rho>> or |rho>> = Q |t>
+
+    Suppose we have an initial vector |rho>> in the vectorized |i><j| basis and we want the
+    expectation value with respect to operator P; i.e. <<rho| P |rho>>. Once we rotate this,
+    we find <<rho| P |rho> = <t| Q^\dagger P Q |t>.
+
+    ---------------- OLD COMMENTS --------------------------
+    We want to define a basis of Hermitian,
     orthogonal, and mostly traceless (HOMT) operators for use in DMT and DAOE.
     What do these words mean?
         (1) Hermitian - this is self-evident.
@@ -2043,9 +2078,9 @@ class DoubledSite(Site):
     will make them so via a rotation and rescaling. Suppose we have a vector $\vec{v}$ in the standard
     bra-ket basis, where $\vec{v}$ represents a Hermitian density matrix or Hermitian operator.
     To write $\vec{v}$ as a linear combination of our HMT operators defined above, note that
-    $\vec{v} = BK \vec{s}$.
+    $\vec{v} = OP \vec{s}$.
 
-    But we want the coefficients of $\vec{v}$ in a HOMT basis, so define $BK = QR$ and gauge-fix
+    But we want the coefficients of $\vec{v}$ in a HOMT basis, so define $OP = QR$ and gauge-fix
     the $R$ such that all of the diagonals are positive. Then $Q$ defines an HOMT basis.
     So then let $\vec{v} = Q \vec{\lambda}$ where $\vec{\lambda} = R \vec{s}$. So $\vec{\lambda}$
     defines how to make $\vec{v}$ as a linear combinations of elements of the HOMT $Q$ basis.
@@ -2055,13 +2090,13 @@ class DoubledSite(Site):
     = \vec{w}^\dagger Q^\dagger M Q \vec{w}$.
 
     Let us give an example for $d=2$. The Pauli operators $I, Z, Y, X$ define an HOMT basis already.
-    The HMT operators we typically define are `already` the Pauli operators. So $BK = Q * 1$ is already
+    The HMT operators we typically define are `already` the Pauli operators. So $OP = Q * 1$ is already
     unitary (the hallmark of an HOMT basis). The $R$ matrix is trivial. Then, to map from the
     computation, bra-ket basis to the basis in which index 0,1,2,3 corresponds to operators I, Z, X, Y,
     one must use $Q$.
 
     For the general case, $R$ is non-trivial. While it seem paradoxical that we don't actually use $R$
-    anywhere, we could by first finding $\vec{s} = BK^{-1} \vec{v}$ and then $\vec{\lambda} = R \vec{s}$,
+    anywhere, we could by first finding $\vec{s} = OP^{-1} \vec{v}$ and then $\vec{\lambda} = R \vec{s}$,
     but this is equivalent to $\vec{\lambda} = Q^\dagger \vec{v}$.
 
     =========================== ================================================
@@ -2097,84 +2132,125 @@ class DoubledSite(Site):
 
     # Generalize this to double ANY type of site. Need to take in kwargs for the desired type
     # of site and pass them on to the class initialization. This will be needed for bosons.
-    def __init__(self, d, conserve=None, sort_charge=True, hermitian=True):
+    def __init__(self, d, conserve=None, sort_charge=True, hermitian=True, trivial=False):
         if not conserve:
             conserve = 'None'
         if conserve not in ['None', 'Sz', 'parity']:
             raise ValueError("invalid `conserve`: " + repr(conserve))
         if hermitian:
             assert conserve == 'None'
+            assert not trivial
+        if trivial:
+            # We can conserve charge with a trivial site
+            assert not hermitian
         self.d = d # Dimension of original Hilbert space
         self.hermitian = hermitian
-        if not hermitian:
-            # If we don't care about having a Hermitian basis, one choice is to make a basis of operators |i><j|.
-            # But there will be $d$ traceful operators (the diagonal ones) and no single operator representing
-            # the identity. For DAOE, we'd like an identity operator.
-            # So we choose a basis of I, |0><0| - |i><i|, and |i><j!=i|.
+        self.trivial = trivial
 
-            # sort_charge=False as the sorting should be done later
-            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
-            # Bunch doesn't matter if we don't sort since the neighboring charges are not the same
-            # If we are to sort the charges, it should be done now so that we still have a leg pipe.
-            # If we just sort at the end when calling the Site initializer, the leg pipe will get replaced
-            # with a leg charge, meaning that we cannot split the leg later.
-            leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
-            # leg1._perm is the index of where the charge GOES; i.e. _perm[0] is the new index of charges[0] after sorting
-            if conserve == 'Sz':
-                # The site should record the permutation done.
-                self.perm = leg1._perm
+        # sort_charge=False as the sorting should be done later
+        ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
+        # Bunch doesn't matter if we don't sort since the neighboring charges are not the same
+        # If we are to sort the charges, it should be done now so that we still have a leg pipe.
+        # If we just sort at the end when calling the Site initializer, the leg pipe will get replaced
+        # with a leg charge, meaning that we cannot split the leg later.
+        leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
+        # leg1._perm is the index of where the charge GOES; i.e. _perm[0] is the new index of charges[0] after sorting
+        if conserve != 'None':
+            # The site should record the permutation done.
+            self.perm = leg1._perm
+            # perm = array([0, 5, 1, 6, 2, 7, 3, 8, 4]) for d=3, 'parity'
+            # We order the indices as [0, 2, 4, 6, 8, 1, 3, 5, 7]
+            # charges (below) are [0, 1, 0, 1, 0, 1, 0, 1, 0]
+        if trivial:
+            # Don't rotate the basis at all. The basis is simply |i><j|
 
-            def build_COB(d):
-                COB = np.eye(d**2)
-                charge_0s = np.array([j+j*d for j in range(d)])
-                COB[charge_0s,charge_0s] = 0
-                COB[charge_0s,0] = 1
-                for j in charge_0s[1:]:
-                    COB[0,j] = 1
-                    COB[j,j] = -1
-                return COB
-
-            BK_flat = build_COB(d)
-            self.BK_ops = BK_ops = []
+            OP_flat = np.eye(d**2)
+            self.OP_ops = OP_ops = []
             self.charges = charges = []
 
             for i in range(d**2):
-                BK_ops.append(npc.Array.from_ndarray(BK_flat[:,i].reshape(d,d), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                OP_ops.append(npc.Array.from_ndarray(OP_flat[:,i].reshape(d,d), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
                 if conserve != 'None':
-                    charges.append(BK_ops[-1].qtotal.item())
+                    charges.append(OP_ops[-1].qtotal.item())
             if conserve != 'None':
-                self.identity_ind = 0 #list(np.argsort(charges)).index(0)
                 inverted_perm = np.argsort(leg1._perm)
+                # This will cause an error since there is ambiguity in ordering indices correspondong to the same charge.
+                assert np.all(inverted_perm == np.argsort(charges))
             else:
-                self.identity_ind = 0
                 inverted_perm = np.arange(d**2)
-            self.BK = npc.Array.from_ndarray(BK_flat[inverted_perm[:,None],inverted_perm[None,:]], [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
-
+            self.identity_ind = [j+j*d for j in range(d)]   # multiple operators with trace; d of them in fact.
+            # We must reorder the OP array so that the charges work out; otherwise the charge structure is incompatible.
+            self.OP = npc.Array.from_ndarray(OP_flat[inverted_perm[:,None],inverted_perm[None,:]], [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
         else:
-            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
-            leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
+            if not hermitian:
+                # Choose a basis of I, |0><0| - |i><i|, and |i><j!=i|.
+                # All of the operators will have define U(1) charge.
 
-            self.BK_ops = BK_ops = []
-            # Want legPipes, so let's do this with NPC.
-            BK_ops.append(npc.Array.from_ndarray(np.eye(d, dtype=np.complex128), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
-            self.identity_ind = 0
-            for i in range(1, d):
-                BK_ops.append(npc.Array.from_ndarray(np.diag([1+0.j] + (i-1)*[0] + [-1] + [0] * (d-1-i)), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                def build_COB(d):
+                    """
+                    Each column will represent an operator once it has been vectorized.
+                    For d = 1, charges_0s = [0, 3]. So the first column is I and the last is Z.
+                    """
+                    COB = np.eye(d**2)
+                    charge_0s = np.array([j+j*d for j in range(d)])
+                    COB[charge_0s,charge_0s] = 0
+                    COB[charge_0s,0] = 1
+                    for j in charge_0s[1:]:
+                        COB[0,j] = 1
+                        COB[j,j] = -1
+                    return COB
 
-            for j in range(0, d-1):
-                for i in range(j+1, d):
-                    op = np.zeros((d,d), dtype=np.complex128)
-                    op[j,i] = 1
-                    BK_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                OP_flat = build_COB(d)
+                self.OP_ops = OP_ops = []
+                self.charges = charges = []
 
-                    op *= -1.j
-                    BK_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                for i in range(d**2):
+                    OP_ops.append(npc.Array.from_ndarray(OP_flat[:,i].reshape(d,d), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                    if conserve != 'None':
+                        charges.append(OP_ops[-1].qtotal.item())
+                if conserve != 'None':
+                    inverted_perm = np.argsort(leg1._perm)
+                    # This will cause an error since there is ambiguity in ordering indices correspondong to the same charge.
+                    assert np.all(inverted_perm == np.argsort(charges))
+                else:
+                    inverted_perm = np.arange(d**2)
+                self.identity_ind = 0   # this might be moved by the permutation
+                # We must reorder the OP array so that the charges work out; otherwise the charge structure is incompatible.
+                self.OP = npc.Array.from_ndarray(OP_flat[inverted_perm[:,None],inverted_perm[None,:]], [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
 
-            BK_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in BK_ops])
-            self.BK = npc.Array.from_ndarray(BK_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
+            else:
+                # Choose a basis of I, |0><0| - |i><i|, |i><j!=i| + |j!=i><i|, and |i><j!=i| - 1.j |j!=i><i|.
+                # All of the operators are hermitian.
 
-        # Turn original BK basis into orthogonal Q basis
-        self.Q, self.R = npc.qr(self.BK, inner_labels=['p*', 'p'], mode='complete', pos_diag_R=True)
+                # We choose a convention that generates the (normalized) TENPY spin-1/2 matrices
+                # Sz = [[-1,0],[0,1]]/2, Sx = [[0,1],[1,0]]/2, Sy = [[0,1.j],[-1.j,0]]/2
+
+                assert conserve == 'None'
+
+                self.OP_ops = OP_ops = []
+                # Want legPipes, so let's do this with NPC.
+                OP_ops.append(npc.Array.from_ndarray(np.eye(d, dtype=np.complex128), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                self.identity_ind = 0
+
+
+                for j in range(0, d-1):
+                    for i in range(j+1, d):
+                        op = np.zeros((d,d), dtype=np.complex128)
+                        op[j,i] = 1
+                        OP_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+
+                        op *= 1.j
+                        OP_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+
+                for i in range(1, d):
+                    OP_ops.append(npc.Array.from_ndarray(np.diag([-1+0.j] + (i-1)*[0] + [1+0.j] + [0] * (d-1-i)), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+
+
+                OP_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in OP_ops])
+                self.OP = npc.Array.from_ndarray(OP_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
+
+        # Turn original OP basis into orthogonal Q basis
+        self.Q, self.R = npc.qr(self.OP, inner_labels=['p*', 'p'], mode='complete', pos_diag_R=True)
         self.Q.legs[1] = leg1.conj() # Need second leg of Q to be a LegPipe
         self.R.legs[0] = leg1
 
@@ -2205,6 +2281,12 @@ class DoubledSite(Site):
                 if not hermitian: # Found an operator which is not Hermitian; need to reconstruct Q using the updated operator
                     new_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in self.new_ops])
                     self.Q = npc.Array.from_ndarray(new_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
+                    # Find new R by Q^\dagger OP; I suppose we aren't guaranteed it's upper triangular.
+                    self.R = npc.tensordot(Q.conj(), self.OP, axes=(['p*', 'p']))
+                    R_diag = np.sign(np.diag(self._R.to_ndarray()))
+                    self.Q.iscale_axis(R_diag, axis='p*')
+                    self.R.iscale_axis(R_diag, axis='p')
+                    assert np.isclose(npc.norm(self.OP - npc.tensordot(self.Q, self.R, axes=(['p*', 'p']))), 0.0)
         else:
             traces = []
             for i, Q in enumerate(self.new_ops):
@@ -2231,9 +2313,13 @@ class DoubledSite(Site):
         # Check mostly traceless - only identity should have trace
         self.traces = traces = np.array(traces)
         self.traceful_ind = np.where(traces > 1.e-13)[0]
-        assert len(self.traceful_ind) == 1
-        self.traceful_ind = self.traceful_ind.item()
-        assert self.traceful_ind == self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
+        if not trivial:
+            assert len(self.traceful_ind) == 1
+            self.traceful_ind = self.traceful_ind.item()
+            assert self.traceful_ind == self.identity_ind == 0, f"traceful_ind={self.traceful_ind}, identity_ind={self.identity_ind}."
+        else:
+            assert len(self.traceful_ind) == len(self.identity_ind)
+            #self.traceful_ind = self.identity_ind = -1
 
         # We already checked that the basis is hermitian if `hermitian==True`.
 
@@ -2244,4 +2330,4 @@ class DoubledSite(Site):
 
     def __repr__(self):
         """Debug representation of self."""
-        return f'DoubledSite(q={self.d}, conserve={self.conserve}, sort_charge={self.leg.sorted}, hermitian={self.hermitian})'
+        return f'DoubledSite(q={self.d}, conserve={self.conserve}, sort_charge={self.leg.sorted}, hermitian={self.hermitian}, trivial={self.trivial})'

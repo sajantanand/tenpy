@@ -437,7 +437,7 @@ class LanczosGroundState(KrylovBased):
     """Lanczos algorithm to find the ground state.
 
     **Assumes** that `H` is hermitian.
-    
+
     Options
     -------
     .. cfg:config :: LanczosGroundState
@@ -708,7 +708,7 @@ def lanczos_arpack(H, psi, options={}):
     return Es[0], psi0
 
 
-def gram_schmidt(vecs, rcond=1.e-14):
+def gram_schmidt(vecs, rcond=1.e-14, do_conj=True):
     """In place Gram-Schmidt Orthogonalization and normalization for npc Arrays.
 
     Parameters
@@ -728,7 +728,7 @@ def gram_schmidt(vecs, rcond=1.e-14):
     res = []
     for vec in vecs:
         for other in res:
-            ov = npc.inner(other, vec, 'range', do_conj=True)
+            ov = npc.inner(other, vec, 'range', do_conj=do_conj)
             iadd_prefactor_other(vec, -ov, other)
         n = npc.norm(vec)
         if n > rcond:

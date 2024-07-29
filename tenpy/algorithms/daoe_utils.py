@@ -2,6 +2,7 @@ import numpy as np
 from copy import deepcopy
 
 from ..networks.mpo import MPO
+from ..networks.site import DoubledSite
 from ..linalg import np_conserved as npc
 from ..linalg.charges import LegCharge
 import warnings
@@ -37,8 +38,13 @@ def DAOE_MPO(L, sites, gamma, lstar, danging_right=False):
     Build the MPO specified in https://arxiv.org/abs/2004.05177. This MPO represents the superoperator
     $$ \hat{S} = e^{-\gamma max[0, (\hat{l} - l_star)]}. $$
     When applied to an operator $O$ with length $l$, this superoperator applies $e^{-gamma (l - l_star)}$
-    if $l - l_star > 0$ and 1 otherwise. This has the effect of shortening the
+    if $l - l_star > 0$ and 1 otherwise. This has the effect of reducing the amplitude of long strings.
 
+    If we conserve 'Sz', then we need to define this in terms of the non-Hermitian doubled basis,
+    {I, Z, S+, S-} for qubits. If we don't conserve anything, we can use the Hermitian doubled basis,
+    {I, X, Y, Z} for qubits, or the non-Hermitian basis. We should define the DAOE superoperator in this
+    basis, convert back to the standard |i><j| basis, and then rotate to the desired basis for evolution.
+    
     args:
         L: int
             length of produced MPO
@@ -68,11 +74,20 @@ def DAOE_MPO(L, sites, gamma, lstar, danging_right=False):
     bulk_tensors_npc = []
     for i in range(L):
         s = sites[i % len(sites)]
-        leg_p = s.leg
-        leg_vL = LegCharge.from_trivial(D, s.leg.chinfo, qconj=+1).sort()[1]
-        inverted_perm = np.argsort(s.perm)
+        
+        # build dummy site
+        if s.conserve == 'Sz':
+            ds = DoubledSite(int(np.sqrt(s.dim)), conserve=s.conserve, hermitian=False, trivial=False)
+        elif s.conserve == 'None':
+            ds = DoubledSite(int(np.sqrt(s.dim)), conserve=s.conserve, hermitian=True, trivial=False)
+        else:
+            raise NotImplementedError(f"conservation{s.conserve} not yet implemented for DAOE.")
+            
+        leg_p = ds.leg
+        leg_vL = LegCharge.from_trivial(D, ds.leg.chinfo, qconj=+1).sort()[1]
+        inverted_perm = np.argsort(ds.perm)
 
-        d = s.dim
+        d = ds.dim
         bulk_tensor = np.zeros((D, D, d, d))
         bulk_tensor[:,:,0,0] = np.eye(D)
         for i in range(1, d):
@@ -82,6 +97,9 @@ def DAOE_MPO(L, sites, gamma, lstar, danging_right=False):
         bulk_tensor_npc = npc.Array.from_ndarray(bulk_tensor[:,:,inverted_perm[:,None],inverted_perm[None,:]],
                                                  [leg_vL, leg_vL.conj(), leg_p, leg_p.conj()], dtype=np.float64,
                                                  qtotal=None, labels=['wL','wR', 'p', 'p*'])
+
+        # rotate back to |i><j| basis
+        bulk_tensor_npc = npc.tensordot(npc.tensordot(ds.d2s, bulk_tensor_npc, axes=(['p*'], ['p'])), ds.s2d, axes=(['p*'], ['p'])).transpose(['wL','wR', 'p', 'p*'])
         bulk_tensors_npc.append(bulk_tensor_npc)
 
     bulk_tensors_npc[0] = bulk_tensors_npc[0][0,:,:,:].add_trivial_leg(axis=0, label='wL', qconj=+1)

@@ -6148,7 +6148,7 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
 
     def get_initialization_data(self, first=0, last=None, include_bra=False, include_ket=False):
         raise NotImplementedError("Not sure we need this.")
-    
+
     # Functions from "BaseMPSExpectationValue"
     def _to_valid_index(self, i):
         """Make sure `i` is a valid index (depending on `finite`)."""
