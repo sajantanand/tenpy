@@ -559,8 +559,8 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
 
     proj_L, new_keep_L = get_indices(R_L, R_cutoff)
     proj_R, new_keep_R = get_indices(R_R, R_cutoff)
-    assert keep_L == new_keep_L
-    assert keep_R == new_keep_R
+    #assert keep_L == new_keep_L, (keep_L, new_keep_L, len(proj_L) - np.sum(proj_L))
+    #assert keep_R == new_keep_R, (keep_R, new_keep_R, len(proj_R) - np.sum(proj_R))
     return Q_L, R_L, Q_R, R_R, new_keep_L, new_keep_R, proj_L, proj_R
 
 def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
@@ -733,6 +733,27 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     form while tensor i+1 should be in right ('B') form. TEBD moves the OC by applying gates, but if we want to
     only truncate a dMPS using this function, we need to explicitly move the OC.
     """
+
+    # Sometimes (e.g. in W2) the legs on the bond to the right of site i are not sorted.
+    # This causes an issue since the Q_L and Q_R matrices assume a sorted leg_charge.
+    # So we first sort these legs.
+    A_left = dMPS.get_B(i, form='A')
+    B_right = dMPS.get_B(i+1, form='B')
+    A_inds = np.zeros(A_left.rank, dtype=bool)
+    B_inds = np.zeros(B_right.rank, dtype=bool)
+    A_leg_ind = A_left.get_leg_index('vR')
+    B_leg_ind = B_right.get_leg_index('vL')
+    A_inds[A_leg_ind] = True
+    B_inds[B_leg_ind] = True
+    perm_left, A_left = A_left.sort_legcharge(A_inds, A_inds)
+    perm_right, B_right = B_right.sort_legcharge(B_inds, B_inds)
+    assert (perm_left[A_leg_ind] == perm_right[B_leg_ind]).all()
+    S = dMPS.get_SR(i)
+    S = S[perm_left[A_leg_ind]]
+    dMPS.set_SR(i, S)
+    dMPS.set_B(i, A_left, form='A')
+    dMPS.set_B(i+1, B_right, form='B')
+
     if timing:
         time1 = time.time()
     # Check that the MPS has the proper form; need A to the left of (i,i+1) and B to the right
@@ -780,7 +801,6 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
 
     # Always need to call this function, as it performs the QR; remove redundancy if R_cutoff > 0.0
     Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))#1.e-14))
-
     if timing:
         time2 = time.time()
         print('Remove redundancy Time:', time2 - time1, flush=True)

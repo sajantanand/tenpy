@@ -151,7 +151,7 @@ class DoubledMPS(MPS):
                       bc='finite'):
         raise NotImplementedError()
 
-    def to_regular_MPS(self, hermitian=True, trivial=False, doubled_site=None, warn=True):
+    def to_regular_MPS(self, hermitian=True, trivial=False, doubled_site=None, warn=True, cutoff=0.0):
         """
         Convert a doubled MPS to a regular MPS by combining together the 'p' and 'q' legs
         """
@@ -165,7 +165,7 @@ class DoubledMPS(MPS):
         if warn and not np.isclose(self.norm, 1.0):
             warnings.warn("to_regular_MPS: DMPS has norm != 1; this IS copied over to the MPS! DMPS norm: " + str(self.norm), stacklevel=3)
         new_MPS = MPS(doubled_sites, new_Bs, self._S, bc='finite', form='B', norm=self.norm)
-        new_MPS.canonical_form(renormalize=False) # norm now contains the rescaling factor needed to establish
+        new_MPS.canonical_form(renormalize=False, cutoff=cutoff) # norm now contains the rescaling factor needed to establish
         # newMPS as a normalized MPS.
         return new_MPS
 

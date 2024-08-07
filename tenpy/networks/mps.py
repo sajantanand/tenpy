@@ -1423,7 +1423,7 @@ class MPS(BaseMPSExpectationValue):
                 assert isinstance(f, tuple)
                 assert len(f) == 2
         for i, B in enumerate(self._B):
-            if B.get_leg_labels() != self._B_labels:
+            if B.get_leg_labels() != self._B_labels:    # DOES NOT HANDLE TRANSPOSED LEGS
                 raise ValueError("B has wrong labels {0!r}, expected {1!r}".format(
                     B.get_leg_labels(), self._B_labels))
             if len(self._S[i + 1].shape) == 1:
