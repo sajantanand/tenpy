@@ -201,7 +201,6 @@ class XXXChain(SpinChain):
 
         return CC_MPO
 
-
 class AnisotropicSpinModel(SpinModel):
     r"""SpinModel on 2D (or more) lattice where two-spin couplings in the Bravais lattice directions
     are allowed to be different. This allows for the creation of decoupled chains, and then
@@ -323,7 +322,6 @@ class ExponentiallyDecayingXXZ(CouplingMPOModel):
         # done
 
     def conserved_charge_MPO(self, k, center=None, verbose=False):
-        print("conserved charge")
         assert k == 1, "Only conserve total Sz."
         if not hasattr(self, 'MPOs'):
             self.MPOs = {}

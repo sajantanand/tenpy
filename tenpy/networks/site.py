@@ -1285,6 +1285,7 @@ class SpinSite(Site):
     ``'Sz'``       [1]   ``Sx, Sy, Sigmax, Sigmay``
     ``'parity'``   [2]   --
     ``'None'``     []    --
+    ``'phony'``    [1]   --
     ============== ====  ============================
 
     Parameters
@@ -1307,7 +1308,7 @@ class SpinSite(Site):
     def __init__(self, S=0.5, conserve='Sz', sort_charge=True):
         if not conserve:
             conserve = 'None'
-        if conserve not in ['Sz', 'parity', 'None']:
+        if conserve not in ['Sz', 'parity', 'None', 'phony']:
             raise ValueError("invalid `conserve`: " + repr(conserve))
         self.S = S = float(S)
         d = 2 * S + 1
@@ -1342,6 +1343,9 @@ class SpinSite(Site):
             if conserve == 'parity':
                 chinfo = npc.ChargeInfo([2], ['parity_Sz'])
                 leg = npc.LegCharge.from_qflat(chinfo, np.mod(np.arange(d), 2))
+            elif conserve == 'phony':   # Used for when we want to have a trivial charge site embedded an otherwise Sz conserving system
+                chinfo = npc.ChargeInfo([1], ['2*Sz'])
+                leg = npc.LegCharge.from_qflat(chinfo, np.array([0]*d, dtype=np.int64))
             else:
                 leg = npc.LegCharge.from_trivial(d)
         self.conserve = conserve
