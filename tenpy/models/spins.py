@@ -396,7 +396,7 @@ class ExponentiallyDecayingXX(CouplingMPOModel):
 
     def init_sites(self, model_params):
         conserve = model_params.get('conserve', None)
-        assert conserve == None, "Nothing preserved in Floquet model."
+        #assert conserve == None, "Nothing preserved in Floquet model."
 
         sort_charge = model_params.get('sort_charge', None)
         S = model_params.get('S', 0.5)

@@ -3388,8 +3388,14 @@ def _mpo_graph_state_order(key):
         return (0, key)
     return (0, str(key))
 
-
 def _partition_W(W, IdL_L, IdR_L, IdL_R, IdR_R):
+    """Split MPO into blocks with respect to standard upper triangular form.
+
+    1 C D
+    0 A B
+    0 0 1
+
+    """
     DL, DR, d, d = W.shape
     proj_L = np.ones(DL, dtype=np.bool_)
     proj_L[IdL_L] = False
