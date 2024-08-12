@@ -158,8 +158,11 @@ class DoubledMPS(MPS):
         # Build new site of squared dimension
         if doubled_site is None:
             doubled_sites = [DoubledSite(s.dim, s.conserve, s.leg.sorted, hermitian, trivial) for s in self.sites]
-        else:
+        elif len(doubled_site) == 1:
             doubled_sites = [doubled_site] * self.L
+        else:
+            assert len(doubled_site) == self.L
+            doubled_sites = doubled_site
 
         new_Bs = [B.combine_legs(('p', 'q')).replace_label('(p.q)', 'p') for B in self._B]
         if warn and not np.isclose(self.norm, 1.0):

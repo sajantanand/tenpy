@@ -1346,6 +1346,7 @@ class SpinSite(Site):
             elif conserve == 'phony':   # Used for when we want to have a trivial charge site embedded an otherwise Sz conserving system
                 chinfo = npc.ChargeInfo([1], ['2*Sz'])
                 leg = npc.LegCharge.from_qflat(chinfo, np.array([0]*d, dtype=np.int64))
+                _, leg = leg.bunch()    # Bunch the charges since all physical legs have charge 0
             else:
                 leg = npc.LegCharge.from_trivial(d)
         self.conserve = conserve
@@ -2139,7 +2140,7 @@ class DoubledSite(Site):
     def __init__(self, d, conserve=None, sort_charge=True, hermitian=True, trivial=False):
         if not conserve:
             conserve = 'None'
-        if conserve not in ['None', 'Sz', 'parity']:
+        if conserve not in ['None', 'Sz', 'parity', 'phony']:
             raise ValueError("invalid `conserve`: " + repr(conserve))
         if hermitian:
             assert conserve == 'None'
@@ -2159,7 +2160,7 @@ class DoubledSite(Site):
         # with a leg charge, meaning that we cannot split the leg later.
         leg1 = npc.LegPipe([ss_op.leg, ss_op.leg.conj()], qconj=+1, sort=sort_charge, bunch=True)
         # leg1._perm is the index of where the charge GOES; i.e. _perm[0] is the new index of charges[0] after sorting
-        if conserve != 'None':
+        if conserve != 'None' and conserve != 'phony':
             # The site should record the permutation done.
             self.perm = leg1._perm
             # perm = array([0, 5, 1, 6, 2, 7, 3, 8, 4]) for d=3, 'parity'
@@ -2176,7 +2177,7 @@ class DoubledSite(Site):
                 OP_ops.append(npc.Array.from_ndarray(OP_flat[:,i].reshape(d,d), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
                 if conserve != 'None':
                     charges.append(OP_ops[-1].qtotal.item())
-            if conserve != 'None':
+            if conserve != 'None' and conserve != 'phony':
                 inverted_perm = np.argsort(leg1._perm)
                 # This will cause an error since there is ambiguity in ordering indices correspondong to the same charge.
                 assert np.all(inverted_perm == np.argsort(charges))
@@ -2212,7 +2213,7 @@ class DoubledSite(Site):
                     OP_ops.append(npc.Array.from_ndarray(OP_flat[:,i].reshape(d,d), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
                     if conserve != 'None':
                         charges.append(OP_ops[-1].qtotal.item())
-                if conserve != 'None':
+                if conserve != 'None' and conserve != 'phony':
                     inverted_perm = np.argsort(leg1._perm)
                     # This will cause an error since there is ambiguity in ordering indices correspondong to the same charge.
                     assert np.all(inverted_perm == np.argsort(charges))
@@ -2252,7 +2253,6 @@ class DoubledSite(Site):
 
                 OP_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in OP_ops])
                 self.OP = npc.Array.from_ndarray(OP_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
-
         # Turn original OP basis into orthogonal Q basis
         self.Q, self.R = npc.qr(self.OP, inner_labels=['p*', 'p'], mode='complete', pos_diag_R=True)
         self.Q.legs[1] = leg1.conj() # Need second leg of Q to be a LegPipe
