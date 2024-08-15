@@ -380,8 +380,16 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
 
     QR_R_vecs = []
     for QR_R in QR_Rs:
-        QR_R_vecs.extend([QR_R[:,i]/npc.norm(QR_R[:,i]) for i in range(QR_R.shape[1])])
-    id_vec = QR_R_vecs[0]
+        for i in range(QR_R.shape[1]):
+            qr_r = QR_R[:,i]
+            qr_r_n = npc.norm(qr_r)
+            if qr_r_n > 0:
+                QR_R_vecs.append(qr_r / qr_r_n)
+            else:
+                keep_R -= 1
+        #QR_R_vecs.extend([QR_R[:,i]/npc.norm(QR_R[:,i]) for i in range(QR_R.shape[1])])
+    id_vec = QR_Rs[0]           # Do this separately to make sure Id has norm
+    id_vec /= npc.norm(id_vec)
     assert keep_R == len(QR_R_vecs)
     QR_R_vecs, _ = orthogonalize_rows(QR_R_vecs)        # Could potentially kill all vectors if all are zero.
     if len(QR_R_vecs) == 0:                             # When does this happen? See one line up.
@@ -492,8 +500,16 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
     #print('QL Legs:', [(qr_L, qr_L.legs) for qr_L in QR_Ls])
     QR_L_vecs = []
     for QR_L in QR_Ls:
-        QR_L_vecs.extend([QR_L[i,:]/npc.norm(QR_L[i,:]) for i in range(QR_L.shape[0])])
-    id_vec = QR_L_vecs[0]
+        for i in range(QR_L.shape[0]):
+            qr_l = QR_L[i,:]
+            qr_l_n = npc.norm(qr_l)
+            if qr_l_n > 0:
+                QR_L_vecs.append(qr_l / qr_l_n)
+            else:
+                keep_L -= 1
+        #QR_L_vecs.extend([QR_L[i,:]/npc.norm(QR_L[i,:]) for i in range(QR_L.shape[0])])
+    id_vec = QR_Ls[0]           # Do this separately to make sure Id has norm
+    id_vec /= npc.norm(id_vec)
     assert keep_L == len(QR_L_vecs)
     QR_L_vecs, _ = orthogonalize_rows(QR_L_vecs)        # Could potentially kill all vectors if all are zero.
     if len(QR_L_vecs) == 0:                             # when does this happen? It shouldn't I think.
@@ -552,7 +568,6 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, R_cutof
             Number of independent operator combinations to preserve on left and right after redundancy removed
     """
 
-    """
     def get_indices(R, cutoff):
         """
         Determine which rows of R have norm < cutoff. These are the columns of Q that we can eventually
@@ -563,11 +578,11 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, R_cutof
             # indices is True for rows that have norm > cutoff
             indices[R.legs[0].slices[s[0]]:R.legs[0].slices[s[0]+1]] = d
         return np.logical_not(indices), np.sum(indices)
-    """
     def get_indices_2(Q, QR, id_ind, axes):
         ips = npc.tensordot(Q.conj(), QR, axes).to_ndarray()    # p*, p
         proj = np.isclose(ips.sum(axis=1), 1.0)                 # Where do the preserved operators live in the expanded set?
         new_id_ind,  = np.where(np.isclose(ips[:,id_ind], 1.0))
+        assert len(new_id_ind) == 1
         return np.logical_not(proj), new_id_ind.item(), np.sum(proj)
 
     Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
@@ -722,7 +737,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, t
            print(f"traceful_ind_R {traceful_ind_R} is to be projected; fix this by hand.")
         """
         assert not proj_L[traceful_ind_L] and not proj_R[traceful_ind_R], "Need to be keeping the element corresponding to the identity."
-        #print(traceful_ind_L, traceful_ind_R, orig_M[traceful_ind_L, traceful_ind_R])
+        # print(traceful_ind_L, traceful_ind_R, orig_M[traceful_ind_L, traceful_ind_R])
         if np.isclose(orig_M[traceful_ind_L,traceful_ind_R], 0.0): # traceless op
             print("Tried 'connected=True' on traceless operator; you sure about this?")
             assert False
