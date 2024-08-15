@@ -232,11 +232,13 @@ Instead, we should put the MPO to preserve INTO the state $\rho$ we trace agains
 def orthogonalize_rows(vecs):
     """
     Given a set of vectors, we want to find the orthogonal vectors from these.
-    Since we may have charges, we must only do Gram Schmidt within each charge sector.
+    Since we may have charges, we must only do Gram-Schmidt within each charge sector.
     Afterwards, the vectors are sorted by charge, so we want to know the index of the initially first vector.
+
+    We call Gram-Schmidt twice since it seems to reduce numerical error.
     """
     if vecs[0].chinfo != ChargeInfo([], []):    # charges
-        v0_charge = vecs[0].qtotal.item()
+        v0_charge = vecs[0].qtotal.item()   # should be zero since Id has no charge
         charged_vecs = {}
         for v in vecs:
             if v.qtotal.item() in charged_vecs.keys():
@@ -250,11 +252,11 @@ def orthogonalize_rows(vecs):
         new_vecs = []
         v0_index = 0
         for chs in ch_sort:
-            new_vecs.extend(gram_schmidt(charged_vecs[charges[chs]]))
+            new_vecs.extend(gram_schmidt(gram_schmidt(charged_vecs[charges[chs]])))
             if charges[chs] < v0_charge:
                 v0_index = len(new_vecs)
     else:
-        new_vecs = gram_schmidt(vecs)
+        new_vecs = gram_schmidt(gram_schmidt(vecs))
         v0_index = 0
     return new_vecs, v0_index
 
@@ -378,19 +380,31 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
 
     QR_R_vecs = []
     for QR_R in QR_Rs:
-        QR_R_vecs.extend([QR_R[:,i] for i in range(QR_R.shape[1])])
+        QR_R_vecs.extend([QR_R[:,i]/npc.norm(QR_R[:,i]) for i in range(QR_R.shape[1])])
+    id_vec = QR_R_vecs[0]
     assert keep_R == len(QR_R_vecs)
-    QR_R_vecs, _ = orthogonalize_rows(QR_R_vecs)       # Could potentially kill all vectors if all are zero.
-    if len(QR_R_vecs) == 0:
+    QR_R_vecs, _ = orthogonalize_rows(QR_R_vecs)        # Could potentially kill all vectors if all are zero.
+    if len(QR_R_vecs) == 0:                             # When does this happen? See one line up.
         QR_R_vecs = [QR_Rs[0]]
     else:
         QR_R_vecs = [qr_r.add_trivial_leg(axis=1, label='p', qconj=-1).gauge_total_charge('p') for qr_r in QR_R_vecs]
     keep_R = len(QR_R_vecs)
     QR_R = npc.concatenate(QR_R_vecs, axis='p')
-    perm_R, QR_R = QR_R.sort_legcharge(sort=True, bunch=True)
-    #id_ind = list(perm_R[1]).index(id_ind)  # this seems to leave id_ind invariant
+    _, QR_R = QR_R.sort_legcharge(sort=True, bunch=True)
+    # Check that only one leg has unit overlap with id_vec; rest have 0 overlap
+    if QR_R.chinfo != ChargeInfo([], []):
+        p_leg = QR_R.get_leg('p')
+        qind = p_leg.get_qindex_of_charges([0])
+        charge_zero_inds = list(range(p_leg.slices[qind], p_leg.slices[qind+1]))
+        overlaps = npc.tensordot(id_vec.conj(), QR_R[:,charge_zero_inds], axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
+        id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind = charge_zero_inds[id_ind.item()]
+    else:
+        overlaps = npc.tensordot(id_vec.conj(), QR_R, axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
+        id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind = id_ind.item()
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
-    return QR_R, keep_R, trace_env, MPO_envs
+    return QR_R, keep_R, trace_env, MPO_envs, id_ind
 
 def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
     """
@@ -478,31 +492,43 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
     #print('QL Legs:', [(qr_L, qr_L.legs) for qr_L in QR_Ls])
     QR_L_vecs = []
     for QR_L in QR_Ls:
-        QR_L_vecs.extend([QR_L[i,:] for i in range(QR_L.shape[0])])
+        QR_L_vecs.extend([QR_L[i,:]/npc.norm(QR_L[i,:]) for i in range(QR_L.shape[0])])
+    id_vec = QR_L_vecs[0]
     assert keep_L == len(QR_L_vecs)
-    QR_L_vecs, _ = orthogonalize_rows(QR_L_vecs)
-    if len(QR_L_vecs) == 0:
+    QR_L_vecs, _ = orthogonalize_rows(QR_L_vecs)        # Could potentially kill all vectors if all are zero.
+    if len(QR_L_vecs) == 0:                             # when does this happen? It shouldn't I think.
         QR_L_vecs = [QR_Ls[0]]
     else:
         QR_L_vecs = [qr_l.add_trivial_leg(axis=0, label='p', qconj=+1).gauge_total_charge('p') for qr_l in QR_L_vecs]
     keep_L = len(QR_L_vecs)
     QR_L = npc.concatenate(QR_L_vecs, axis='p')
-    perm_L, QR_L = QR_L.sort_legcharge(sort=True, bunch=True)
-    #id_ind = list(perm_L[0]).index(id_ind)
+    _, QR_L = QR_L.sort_legcharge(sort=True, bunch=True)
+    # Check that only one leg has unit overlap with id_vec; rest have 0 overlap
+    if QR_L.chinfo != ChargeInfo([], []):
+        p_leg = QR_L.get_leg('p')
+        qind = p_leg.get_qindex_of_charges([0])
+        charge_zero_inds = list(range(p_leg.slices[qind], p_leg.slices[qind+1]))
+        overlaps = npc.tensordot(id_vec.conj(), QR_L[charge_zero_inds,:], axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
+        id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind = charge_zero_inds[id_ind.item()]
+    else:
+        overlaps = npc.tensordot(id_vec.conj(), QR_L, axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
+        id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind = id_ind.item()
     assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
-    return QR_L, keep_L, trace_env, MPO_envs
+    return QR_L, keep_L, trace_env, MPO_envs, id_ind
 
 def build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs):
     """
     Actually call the functions above; see funcations above for documentation.
     """
 
-    QR_L, keep_L, trace_env, MPO_envs = build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs)
-    QR_R, keep_R, trace_env, MPO_envs = build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs)
+    QR_L, keep_L, trace_env, MPO_envs, id_ind_L = build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs)
+    QR_R, keep_R, trace_env, MPO_envs, id_ind_R = build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs)
 
-    return QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs
+    return QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, trace_env, MPO_envs
 
-def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
+def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, R_cutoff):
     """
     We may have redundant copies of operators to preserve; most commonly, we will have several copies of the identity.
     Here we remove them by doing a QR and seeing what is unneeded (i.e. zero diagonals)
@@ -525,6 +551,8 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
         keep_L, keep_R: int, int
             Number of independent operator combinations to preserve on left and right after redundancy removed
     """
+
+    """
     def get_indices(R, cutoff):
         """
         Determine which rows of R have norm < cutoff. These are the columns of Q that we can eventually
@@ -535,6 +563,12 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
             # indices is True for rows that have norm > cutoff
             indices[R.legs[0].slices[s[0]]:R.legs[0].slices[s[0]+1]] = d
         return np.logical_not(indices), np.sum(indices)
+    """
+    def get_indices_2(Q, QR, id_ind, axes):
+        ips = npc.tensordot(Q.conj(), QR, axes).to_ndarray()    # p*, p
+        proj = np.isclose(ips.sum(axis=1), 1.0)                 # Where do the preserved operators live in the expanded set?
+        new_id_ind,  = np.where(np.isclose(ips[:,id_ind], 1.0))
+        return np.logical_not(proj), new_id_ind.item(), np.sum(proj)
 
     Q_L, R_L = npc.qr(QR_L.itranspose(['vR', 'p']),
                           mode='complete',
@@ -557,11 +591,15 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, R_cutoff):
     """
     # SAJANT TODO - Do I need to worry about charge of Q and R? Q is chargeless by default, but I put the charge into Q
 
-    proj_L, new_keep_L = get_indices(R_L, R_cutoff)
-    proj_R, new_keep_R = get_indices(R_R, R_cutoff)
-    #assert keep_L == new_keep_L, (keep_L, new_keep_L, len(proj_L) - np.sum(proj_L))
-    #assert keep_R == new_keep_R, (keep_R, new_keep_R, len(proj_R) - np.sum(proj_R))
-    return Q_L, R_L, Q_R, R_R, new_keep_L, new_keep_R, proj_L, proj_R
+    #proj_L2, new_keep_L2 = get_indices(R_L, R_cutoff)
+    #proj_R2, new_keep_R2 = get_indices(R_R, R_cutoff)
+    proj_L, new_id_ind_L, new_keep_L = get_indices_2(Q_L, QR_L, id_ind_L, ['vR*', 'vR'])
+    proj_R, new_id_ind_R, new_keep_R = get_indices_2(Q_R, QR_R, id_ind_R, ['vL*', 'vL'])
+    #print(proj_L, proj_L2, new_keep_L, new_keep_L2, id_ind_L, new_id_ind_L)
+    #print(proj_R, proj_R2, new_keep_R, new_keep_R2, id_ind_R, new_id_ind_R)
+    assert keep_L == new_keep_L, (keep_L, new_keep_L, new_id_ind_L)
+    assert keep_R == new_keep_R, (keep_R, new_keep_R, new_id_ind_R)
+    return Q_L, R_L, Q_R, R_R, new_keep_L, new_keep_R, new_id_ind_L, new_id_ind_R, proj_L, proj_R
 
 def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
     """
@@ -649,7 +687,7 @@ def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
     #assert keep_R == R_R.get_leg('vL').ind_len - np.sum(proj_R)
     return Q_L, R_L, Q_R, R_R, keep_L, keep_R, proj_L, proj_R
 
-def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
+def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, traceful_ind_L, traceful_ind_R):
     """
     Truncate the lower right block once we've moved to desired basis
 
@@ -669,6 +707,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
     # With MPOs, we can't really use `connected=True` since there will not be a single operator corresponding to the Identity.
     if connected:
         orig_M = M.copy()
+        """
         if orig_M.chinfo != ChargeInfo([], []):
             qinds = [l.get_qindex_of_charges([0]) for l in orig_M.legs]
             traceful_ind_L, traceful_ind_R = [l.slices[qi] for l, qi in zip(orig_M.legs, qinds)]
@@ -681,7 +720,8 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R):
         if proj_R[traceful_ind_R]:
            proj_R[traceful_ind_R]=False
            print(f"traceful_ind_R {traceful_ind_R} is to be projected; fix this by hand.")
-
+        """
+        assert not proj_L[traceful_ind_L] and not proj_R[traceful_ind_R], "Need to be keeping the element corresponding to the identity."
         #print(traceful_ind_L, traceful_ind_R, orig_M[traceful_ind_L, traceful_ind_R])
         if np.isclose(orig_M[traceful_ind_L,traceful_ind_R], 0.0): # traceless op
             print("Tried 'connected=True' on traceless operator; you sure about this?")
@@ -795,7 +835,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
         svd_trunc_params.touch('svd_min')
         return TruncationError(), 1, trace_env, MPO_envs
 
-    QR_L, QR_R, keep_L, keep_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs)
+    QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, trace_env, MPO_envs = build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs)
     if timing:
         time2 = time.time()
         print('Get QR Time:', time2 - time1, flush=True)
@@ -807,7 +847,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
         return TruncationError(), 1, trace_env, MPO_envs
 
     # Always need to call this function, as it performs the QR; remove redundancy if R_cutoff > 0.0
-    Q_L, _, Q_R, _, keep_L, keep_R, proj_L, proj_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, dmt_params.get('R_cutoff', 1.e-18))#1.e-14))
+    Q_L, _, Q_R, _, keep_L, keep_R, id_ind_L, id_ind_R, proj_L, proj_R = remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, dmt_params.get('R_cutoff', 1.e-18))#1.e-14))
     if timing:
         time2 = time.time()
         print('Remove redundancy Time:', time2 - time1, flush=True)
@@ -827,7 +867,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     # Identity is still in the permuted 0th index.
     # For MPO preservation, there is not guaranteed to be one operator for the identity.
     M_trunc, err = truncate_M(M, svd_trunc_params, dmt_params.get('connected', False),
-                              keep_L, keep_R, proj_L, proj_R)
+                              keep_L, keep_R, proj_L, proj_R, id_ind_L, id_ind_R)
                               #traceful_ind_L=id_ind_L, traceful_ind_R=id_ind_R)
                               #traceful_ind_L=dMPS.sites[i].perm[0], traceful_ind_R=dMPS.sites[i+1].perm[0])
                               #traceful_ind_L=np.argsort(dMPS.sites[i].perm)[0], traceful_ind_R=np.argsort(dMPS.sites[i+1].perm)[0])
