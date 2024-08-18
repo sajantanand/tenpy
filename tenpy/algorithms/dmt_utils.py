@@ -114,6 +114,7 @@ def trace_identity_DMPS(DMPS):
     We are in the computational / standard basis. Make doubled MPS with two physical legs
     per site, using the identity on each site
     """
+    assert DMPS.grouped == 1, "I assume that the doubled MPS is always ungrouped."
     Is = [np.eye(ds.dim).reshape(ds.dim, ds.dim, 1, 1) for ds in DMPS.sites]
     return DoubledMPS.from_Bflat(DMPS.sites,
                                  Is,
@@ -166,8 +167,17 @@ def trace_identity_MPS(DMPS):#, traceful_id=None):
     #for ds in DMPS.sites:
     #    assert type(ds) is DoubledSite
 
-    Is = []
+    ds_list = []
+    grouped = DMPS.grouped > 1
+    if grouped:
+        assert DMPS.grouped == 2, "We don't handle grouping more than 2 sites."
     for ds in DMPS.sites:
+        if grouped:  # Asuume all sites are gouped, not some combination of grouped and ungrouped sites.
+            ds_list.extend(ds.sites)
+        else:
+            ds_list.append(ds)
+    Is = []
+    for ds in ds_list:
         I = np.zeros((ds.dim,1,1))
         """
         try:
@@ -180,14 +190,17 @@ def trace_identity_MPS(DMPS):#, traceful_id=None):
         ti = ds.traceful_ind
         I[ti,0,0] = 1 # 1 for every operator with trace 1.
         Is.append(I)
-    return MPS.from_Bflat(DMPS.sites,
-                          Is,
-                          SVs=None,
-                          bc='finite',
-                          dtype=None,
-                          permute=True, # The site is typically permutted, so we NEED this to be true.
-                          form='B', # Form doesn't matter since it's a product state?
-                          legL=None)
+    trace_MPS = MPS.from_Bflat(ds_list,
+                               Is,
+                               SVs=None,
+                               bc='finite',
+                               dtype=None,
+                               permute=True, # The site is typically permutted, so we NEED this to be true.
+                               form='B', # Form doesn't matter since it's a product state?
+                               legL=None)
+    if grouped:
+        trace_MPS.group_sites(2)
+    return trace_MPS
 
 def trace_swap_MPS(DMPS):#, traceful_id=None):
     """
