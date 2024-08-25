@@ -165,13 +165,9 @@ from ..tools.math import lcm, entropy
 from ..tools.params import asConfig
 from ..tools.cache import DictCache
 from ..tools import hdf5_io
-<<<<<<< HEAD
-from ..algorithms.truncation import TruncationError, svd_theta, _machine_prec_trunc_par
-=======
 from ..algorithms.truncation import TruncationError, svd_theta, eigh_rho, _machine_prec_trunc_par
-from ..algorithms.tebd import RandomUnitaryEvolution
+#from ..algorithms.tebd import RandomUnitaryEvolution
 from ..linalg.random_matrix import GOE, GUE
->>>>>>> TDVP_Krylov
 
 __all__ = ['BaseMPSExpectationValue', 'MPS', 'BaseEnvironment', 'MPSEnvironment', 'NonTrivialMPSEnvironment', 'TransferMatrix',
            'InitialStateBuilder', 'build_initial_state']
@@ -4468,7 +4464,7 @@ class MPS(BaseMPSExpectationValue):
 
         current_Cs = []
         for i in range(len(psis)):
-            current_Cs.append(psis[i].get_theta(L-1, n=1).replace_label('p0', 'p'))
+            current_Cs.append(psis[i].get_theta(L-1, n=1).replace_label('p0', 'p').transpose(self._B_labels))
 
         for j in reversed(range(1, L)):
             current_vL_dim = current_Cs[0].get_leg('vL').ind_len
@@ -4516,7 +4512,7 @@ class MPS(BaseMPSExpectationValue):
             for i, oC in enumerate(old_Cs):
                 current_Cs.append(npc.tensordot(psis[i].get_B(j-1, form='A'),
                                                 npc.tensordot(oC, new_B.conj(), axes=(['p', 'vR'], ['p*', 'vR*'])).replace_label('vL*', 'vR'),
-                                                axes=(['vR'], ['vL'])))
+                                                axes=(['vR'], ['vL'])).transpose(self._B_labels))
              # Set new_B and padded SVs on site j AFTER we've gotten tensors on site j-1
             self.set_B(j, new_B, form='B')
             # Need to handle edge case if SVs are not 1D array but instead are npc matrices?

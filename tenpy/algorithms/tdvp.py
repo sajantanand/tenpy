@@ -135,6 +135,18 @@ class TDVPEngine(TimeEvolutionAlgorithm, Sweep):
             # Do this before expanding the basis of psi to save RAM.
             self.env.clear()
 
+            # If we do expansion and are using DMT, the trace and MPO envs are no longer valid as we have changed the state.
+            # So we must remove these.
+            trace_env = self.options.get('trace_env', None)
+            MPO_envs = self.options.get('MPO_envs', None)
+            # Remove any existing environments, since applying the MPO will mess them up.
+            new_psi = self.psi.copy()
+            if trace_env is not None:
+                trace_env.ket = new_psi
+            if MPO_envs is not None:
+                for ME in MPO_envs:
+                    ME.ket = new_psi
+
             logger.info(f"Original bond dimension: {self.psi.chi}.")
             # Get the MPO A that will be used to generate Krylov vectors; {A^k |psi>}
             # We might want to use the WII MPO or (1 - itH) rather than H
@@ -147,15 +159,30 @@ class TDVPEngine(TimeEvolutionAlgorithm, Sweep):
                 Krylov_mpo = [Krylov_mpo] if not isinstance(Krylov_mpo, list) else Krylov_mpo
                 # First generate Krylov basis
                 Krylov_apply_mpo_options = self.Krylov_options.subconfig('apply_mpo_options')
+                Krylov_apply_mpo_options.update({'trace_env': trace_env,
+                                                 'MPO_envs': MPO_envs})
                 # Needs to contain 'compression_method' and options for doing the MPO application
                 Krylov_extended_basis = []
-                new_psi = self.psi.copy()
                 for i in range(Krylov_expansion_dim):
                     for krylov_mpo in Krylov_mpo:
                         krylov_mpo.apply(new_psi, Krylov_apply_mpo_options)
                     Krylov_extended_basis.append(new_psi.copy())
                 extension_err = self.psi.subspace_expansion(expand_into=Krylov_extended_basis, trunc_par=Krylov_trunc_params)
+                if 'trace_env' in Krylov_apply_mpo_options.keys():
+                    del Krylov_apply_mpo_options['trace_env']
+                if 'MPO_envs' in Krylov_apply_mpo_options.keys():
+                    del Krylov_apply_mpo_options['MPO_envs']
             logger.info(f"Extended bond dimension: {self.psi.chi}.")
+
+            if trace_env is not None:
+                trace_env.clear()
+                trace_env.ket = self.psi
+                self.options['trace_env'] = trace_env
+            if MPO_envs is not None:
+                for ME in MPO_envs:
+                    ME.clear()
+                    ME.ket = self.psi
+                self.options['MPO_envs'] = MPO_envs
         return
 
     def evolve(self, N_steps, dt):

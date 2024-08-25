@@ -2,7 +2,7 @@ import numpy as np
 from copy import deepcopy
 import time
 
-from ..models.lattice import Chain, TrivialLattice
+from ..models.lattice import TrivialLattice
 from ..models.model import MPOModel, NearestNeighborModel
 from ..networks.mps import MPSEnvironment, MPS
 from ..networks.doubled_mps import DoubledMPS
