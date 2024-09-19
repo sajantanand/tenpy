@@ -819,7 +819,7 @@ class MPO:
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         return dMPO
 
-    def make_doubled_MPO(self, hermitian=True, trivial=False):
+    def make_doubled_MPO(self, hermitian=True, trivial=False, ds=None):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
@@ -852,7 +852,10 @@ class MPO:
         chinfo = self.chinfo
         trivial_CHI = chinfo.make_valid()
         U = []
-        sites = []
+        if ds is not None:
+            sites = [ds] * self.L
+        else:
+            sites = []
         for k in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
             W = self.get_W(k).itranspose(labels)
@@ -880,14 +883,15 @@ class MPO:
                 dW[i+1+DL-2, -1] = -1*_combine_npc(Id_npc, B_npc[i,0])
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sort, hermitian=hermitian, trivial=trivial))
+            if ds is None:
+                sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sort, hermitian=hermitian, trivial=trivial))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         return dMPO
 
-    def make_embedded_MPO(self, hermitian=True, trivial=True):
+    def make_embedded_MPO(self, hermitian=True, trivial=True, ds=None):
         r"""Embeds an operator into a doubled Hilbert space. Given an operator :math:`O`, we
         turn this into :math:`O \otimes I`.
         We will do this tensor by tensor in the MPO, and we require
@@ -919,7 +923,10 @@ class MPO:
         chinfo = self.chinfo
         trivial_CHI = chinfo.make_valid()
         U = []
-        sites = []
+        if ds is not None:
+            sites = [ds] * self.L
+        else:
+            sites = []
         for k in range(0, self.L):
             labels = ['wL', 'wR', 'p', 'p*']
             W = self.get_W(k).itranspose(labels)
@@ -944,7 +951,8 @@ class MPO:
                 dW[i+1, -1] = _combine_npc(B_npc[i,0], Id_npc)
             #Bottom Rows
             dW[-1,-1] = Idd_npc
-            sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sorted, hermitian=hermitian, trivial=trivial))
+            if ds is None:
+                sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sorted, hermitian=hermitian, trivial=trivial))
             U.append(dW)
         IdL = [0] * (self.L + 1)
         IdR = [-1] * (self.L + 1)
