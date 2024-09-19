@@ -13,7 +13,7 @@ from ..linalg.charges import LegPipe, ChargeInfo
 from ..algorithms.truncation import svd_theta, TruncationError, _machine_prec_trunc_par
 import warnings
 
-def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True, trivial=False):
+def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True, trivial=False, ds=None):
     """
     args:
         NN: Boolean
@@ -26,12 +26,14 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True
             Is the basis hermitian or charge conserving?
         trivial: Boolean
             Do we have a trivial |i><j| basis?
+        ds: DoubledSite
+            Site to use for new models
     returns:
         doubled_model: TeNPy model
             Either `MPOModel` or `NearestNeighborModel` depending on the `NN` parameter
     """
     if not doubled:
-        doubled_MPO = H_MPO.make_doubled_MPO(hermitian, trivial)
+        doubled_MPO = H_MPO.make_doubled_MPO(hermitian, trivial, ds=ds)
     else:
         doubled_MPO = deepcopy(H_MPO)
 
