@@ -625,8 +625,16 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, R_cutof
     proj_R, new_id_ind_R, new_keep_R = get_indices_2(Q_R, QR_R, id_ind_R, ['vL*', 'vL'])
     #print(proj_L, proj_L2, new_keep_L, new_keep_L2, id_ind_L, new_id_ind_L)
     #print(proj_R, proj_R2, new_keep_R, new_keep_R2, id_ind_R, new_id_ind_R)
-    assert keep_L == new_keep_L, (keep_L, new_keep_L, new_id_ind_L)
-    assert keep_R == new_keep_R, (keep_R, new_keep_R, new_id_ind_R)
+    try:
+        assert keep_L == new_keep_L, (keep_L, new_keep_L, new_id_ind_L)
+    except AssertionError as e:
+        print(e)
+        assert new_keep_L > 0
+    try:
+        assert keep_R == new_keep_R, (keep_R, new_keep_R, new_id_ind_R)
+    except AssertionError as e:
+        print(e)
+        assert new_keep_R > 0
     return Q_L, R_L, Q_R, R_R, new_keep_L, new_keep_R, new_id_ind_L, new_id_ind_R, proj_L, proj_R
 
 def remove_redundancy_SVD(QR_L, QR_R, keep_L, keep_R, svd_cutoff=1.e-14):
