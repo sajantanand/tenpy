@@ -763,7 +763,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, t
         # print(traceful_ind_L, traceful_ind_R, orig_M[traceful_ind_L, traceful_ind_R])
         if np.isclose(orig_M[traceful_ind_L,traceful_ind_R], 0.0): # traceless op
             print("Tried 'connected=True' on traceless operator; you sure about this?")
-            assert False
+            assert False, (orig_M[traceful_ind_L, traceful_ind_R], traceful_ind_L, traceful_ind_R)
         else:
             M = orig_M - npc.outer(orig_M.take_slice([traceful_ind_R], ['vR']),
                                    orig_M.take_slice([traceful_ind_L], ['vL'])) / orig_M[traceful_ind_L, traceful_ind_R]

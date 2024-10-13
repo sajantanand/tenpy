@@ -562,9 +562,9 @@ class DoubledMPS(MPS):
 
     # We modify this so that the d x d operator is applied to both physical 'p' and conjugate
     # 'q' leg. So if we have a density matrix or operator rho, it becomes U rho U^\dagger.
-    def apply_local_op(self, i, op, unitary=None, renormalize=False, cutoff=1.e-13,
-                       understood_infinite=False):
-        raise NotImplementedError()
+    #def apply_local_op(self, i, op, unitary=None, renormalize=False, cutoff=1.e-13,
+    #                   understood_infinite=False):
+    #    raise NotImplementedError()
 
     def apply_product_op(self, ops, unitary=None, renormalize=False):
         raise NotImplementedError()
