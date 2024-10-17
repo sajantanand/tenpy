@@ -2747,6 +2747,31 @@ class Square(SimpleLattice):
         SimpleLattice.__init__(self, [Lx, Ly], site, **kwargs)
 
 
+class Cubic(SimpleLattice):
+    """A cubic lattice.
+
+    Parameters
+    ----------
+    Lx, Ly, Lz : int
+        The length in each direction.
+    site : :class:`~tenpy.networks.site.Site`
+        The local lattice site. The `unit_cell` of the :class:`Lattice` is just ``[site]``.
+    **kwargs :
+        Additional keyword arguments given to the :class:`Lattice`.
+        `pairs` are set accordingly.
+        If `order` is specified in the form ``('standard', snake_winding, priority)``,
+        the `snake_winding` and `priority` should only be specified for the spatial directions.
+        Similarly, `positions` can be specified as a single vector.
+    """
+    dim = 3  #: the dimension of the lattice
+
+    def __init__(self, Lx, Ly, Lz, site, **kwargs):
+        NN = [(0, 0, np.array([1, 0, 0])), (0, 0, np.array([0, 1, 0])), (0, 0, np.array([0, 0, 1]))]
+        kwargs.setdefault('pairs', {})
+        kwargs['pairs'].setdefault('nearest_neighbors', NN)
+        SimpleLattice.__init__(self, [Lx, Ly, Lz], site, **kwargs)
+
+
 class Triangular(SimpleLattice):
     """A triangular lattice.
 

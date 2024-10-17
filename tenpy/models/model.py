@@ -1913,8 +1913,9 @@ class CouplingMPOModel(CouplingModel, MPOModel):
             L : int
                 The length in x-direction; only read out for 1D lattices.
                 For an infinite system the length of the unit cell.
-            Lx, Ly : int
+            Lx, Ly, Lz : int
                 The length in x- and y-direction; only read out for 2D lattices.
+                Length in z-direction is only read out for 3D (cubic) lattice.
                 For ``"infinite"`` `bc_MPS`, the system is infinite in x-direction and
                 `Lx` is the number of "rings" in the infinite MPS unit cell,
                 while `Ly` gives the circumference around the cylinder or width of th the rung
@@ -1922,6 +1923,10 @@ class CouplingMPOModel(CouplingModel, MPOModel):
             bc_y : ``"cylinder" | "ladder" | "open" | "periodic"``
                 The boundary conditions in y-direction.
                 Only read out for 2D lattices.
+                "cylinder" is equivalent to "periodic", "ladder" is equivalent to "open".
+            bc_z : ``"cylinder" | "ladder" | "open" | "periodic"``
+                The boundary conditions in z-direction.
+                Only read out for 3D lattices.
                 "cylinder" is equivalent to "periodic", "ladder" is equivalent to "open".
             bc_x : ``"open" | "periodic"``.
                 Can be used to force "periodic" boundaries for the lattice,
@@ -1977,6 +1982,24 @@ class CouplingMPOModel(CouplingModel, MPOModel):
                 elif bc_y == 'ladder':
                     bc_y = 'open'
                 lat = LatticeClass(Lx, Ly, sites, order=order, bc=[bc_x, bc_y], bc_MPS=bc_MPS)
+            elif LatticeClass.dim == 3:
+                Lx = model_params.get('Lx', 1, int)
+                Ly = model_params.get('Ly', 4, int)
+                Lz = model_params.get('Lz', 4, int)
+                bc_y = model_params.get('bc_y', 'cylinder', str)
+                bc_z = model_params.get('bc_z', 'cylinder', str)
+                assert bc_y in ['cylinder', 'ladder', 'open', 'periodic']
+                assert bc_z in ['cylinder', 'ladder', 'open', 'periodic']
+                if bc_y == 'cylinder':
+                    bc_y = 'periodic'
+                elif bc_y == 'ladder':
+                    bc_y = 'open'
+                if bc_z == 'cylinder':
+                    bc_z = 'periodic'
+                elif bc_z == 'ladder':
+                    bc_z = 'open'
+                lat = LatticeClass(Lx, Ly, Lz, sites, order=order, bc=[bc_x, bc_y, bc_z], bc_MPS=bc_MPS)
+
             else:
                 raise ValueError("Can't auto-determine parameters for the lattice. "
                                  "Overwrite the `init_lattice` in your model!")
