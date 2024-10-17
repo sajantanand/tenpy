@@ -1,5 +1,5 @@
 """A collection of tests for :mod:`tenpy.models.site`."""
-# Copyright (C) TeNPy Developers, GNU GPLv3
+# Copyright (C) TeNPy Developers, Apache license
 
 import numpy as np
 import numpy.testing as npt
@@ -137,7 +137,9 @@ def test_spin_half_site():
                Sm='Sp',
                Sigmax='Sigmax',
                Sigmay='Sigmay',
-               Sigmaz='Sigmaz')
+               Sigmaz='Sigmaz',
+               P0='P0',
+               P1='P1')
     sites = []
     for conserve in [None, 'Sz', 'parity']:
         for sort_charge in [True, False]:

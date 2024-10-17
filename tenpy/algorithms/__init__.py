@@ -6,7 +6,6 @@
     :toctree: .
 
     algorithm
-    truncation
     tebd
     mps_common
     dmrg
@@ -20,9 +19,9 @@
     exact_diag
     disentangler
 """
-# Copyright (C) TeNPy Developers, GNU GPLv3
+# Copyright (C) TeNPy Developers, Apache license
 
-from . import algorithm, truncation, dmrg, dmrg_parallel, disentangler, mps_common, tebd, tdvp, \
+from . import algorithm, dmrg, dmrg_parallel, disentangler, mps_common, tebd, tdvp, \
     exact_diag, purification, network_contractor, mpo_evolution, vumps, plane_wave_excitation
 from .algorithm import *
 from .disentangler import *
@@ -35,14 +34,12 @@ from .network_contractor import *
 from .purification import *
 from .tdvp import *
 from .tebd import *
-from .truncation import *
 from .vumps import *
 from .plane_wave_excitation import *
 
 
 __all__ = [
     "algorithm",
-    "truncation",
     "dmrg",
     "dmrg_parallel",
     "mps_common",
@@ -56,7 +53,6 @@ __all__ = [
     "vumps",
     "plane_wave_excitation",
     *algorithm.__all__,
-    *truncation.__all__,
     *[n for n in dmrg.__all__ if n not in ['Mixer', 'SubspaceExpansion', 'DensityMatrixMixer']],
     *dmrg_parallel.__all__,
     *disentangler.__all__,

@@ -33,7 +33,7 @@ All other modules in this folder contain model classes derived from these base c
     mixed_xk
     clock
 """
-# Copyright (C) TeNPy Developers, GNU GPLv3
+# Copyright (C) TeNPy Developers, Apache license
 
 from . import lattice, model
 from . import tf_ising, xxz_chain, spins, spins_nnn
@@ -57,7 +57,7 @@ from .clock import *
 
 __all__ = [
     'lattice', 'model', 'tf_ising', 'xxz_chain', 'spins', 'spins_nnn', 'fermions_spinless',
-    'hubbard', 'tj_model', 'hofstadter', 'haldane', 'toric_code', 'aklt', 'mixed_xk',
+    'hubbard', 'tj_model', 'hofstadter', 'haldane', 'toric_code', 'aklt', 'mixed_xk', 'clock',
     *lattice.__all__,
     *model.__all__,
     *tf_ising.__all__,

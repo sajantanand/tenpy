@@ -2,7 +2,7 @@ r"""Test several time evolution methods and compare to exact expectation values
 
 Setup is a time evolution with TFI Model starting from a spin polarized state.
 """
-# Copyright (C) TeNPy Developers, GNU GPLv3
+# Copyright (C) TeNPy Developers, Apache license
 
 import numpy as np
 import scipy.linalg as LA
@@ -261,7 +261,7 @@ def test_time_methods(algorithm):
 class RabiOscillations(CouplingMPOModel,NearestNeighborModel):
     def init_sites(self, model_params):
         site = SpinHalfSite(conserve=None)
-        site.add_op('P1', -0.5*(site.Sigmaz - site.Id))
+        #site.add_op('P1', -0.5*(site.Sigmaz - site.Id))
         return site
 
     def init_terms(self, model_params):

@@ -34,7 +34,7 @@ We store these indices in `IdL` and `IdR` (if there are such indices).
 Similar as for the MPS, a bond index ``i`` is *left* of site `i`,
 i.e. between sites ``i-1`` and ``i``.
 """
-# Copyright (C) TeNPy Developers, GNU GPLv3
+# Copyright (C) TeNPy Developers, Apache license
 
 import numpy as np
 from scipy.linalg import expm
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 from ..linalg import np_conserved as npc
 from ..linalg.sparse import NpcLinearOperator, FlatLinearOperator
+from ..linalg.truncation import TruncationError, svd_theta, _machine_prec_trunc_par
 from .site import group_sites, Site, DoubledSite
 from ..tools.string import vert_join
 from .mps import MPS as _MPS  # only for MPS._valid_bc
@@ -54,8 +55,6 @@ from .terms import TermList
 from ..tools.misc import to_iterable, add_with_None_0
 from ..tools.math import lcm
 from ..tools.params import asConfig
-from ..algorithms.truncation import TruncationError, svd_theta, _machine_prec_trunc_par
-from ..algorithms import dmt_utils as dmt
 
 __all__ = [
     'MPO', 'make_W_II', 'MPOGraph', 'MPOEnvironment', 'MPOTransferMatrix', 'grid_insert_ops'
@@ -1815,6 +1814,7 @@ class MPO:
 
         See documentation of `apply_zipup` for details
         """
+        from ..algorithms import dmt_utils as dmt # local import to avoid circular import
 
         dmt_params = options['dmt_params']
         trace_env = options.get('trace_env', None)

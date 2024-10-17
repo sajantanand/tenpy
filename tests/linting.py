@@ -4,7 +4,7 @@ These are checks for coding guidelines, best practices etc.
 The code may still run fine even if these checks fail.
 We therefore consider them part of a linting routine and do *not* call them from pytest.
 """
-# Copyright (C) TeNPy Developers, GNU GPLv3
+# Copyright (C) TeNPy Developers, Apache license
 
 import tenpy
 import types
@@ -46,10 +46,6 @@ def check_all_attribute(check_module=tenpy):
             # got a class or function defined in the module
             raise AssertionError("object {0!r} defined in {1} but not in __all__".format(
                 obj, _name_))
-        if _name_ == "tenpy.models":
-            # HACK: submodules of models (like xxz_chain.py) are not imported by default,
-            # but by the other tests. They can be ignored here.
-            continue
         if hasattr(obj, "__package__") and obj.__name__.startswith(_name_):
             # imported submodule
             raise AssertionError("Module {0!r} imported in {1} but not listed in __all__".format(
@@ -84,7 +80,7 @@ def check_copyright_notice():
     for fn in tenpy_files:
         with open(fn, 'r') as f:
             for line in f:
-                if line.startswith('# Copyright (C) TeNPy Developers, GNU GPLv3'):
+                if line.startswith('# Copyright (C) TeNPy Developers, Apache license'):
                     break
             else:  # no break
                 raise AssertionError(f'No/wrong copyright notice in {fn}.')

@@ -37,7 +37,7 @@ If one chooses imaginary :math:`dt`, the exponential projects
     Yet, imaginary TEBD might be useful for cross-checks and testing.
 
 """
-# Copyright (C) TeNPy Developers, GNU GPLv3
+# Copyright (C) TeNPy Developers, Apache license
 
 import numpy as np
 import time
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 from .algorithm import TimeEvolutionAlgorithm, TimeDependentHAlgorithm
 from ..linalg import np_conserved as npc
-from .truncation import svd_theta, decompose_theta_qr_based, TruncationError, truncate, _machine_prec_trunc_par
+from ..linalg.truncation import svd_theta, decompose_theta_qr_based, TruncationError, _machine_prec_trunc_par
 from ..linalg import random_matrix
 from ..algorithms import dmt_utils as dmt
 from ..tools.misc import consistency_check
@@ -66,8 +66,6 @@ class TEBDEngine(TimeEvolutionAlgorithm):
     .. cfg:config :: TEBDEngine
         :include: TimeEvolutionAlgorithm
 
-        start_trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
-            Initial truncation error for :attr:`trunc_err`.
         order : int
             Order of the algorithm. The total error for evolution up to a fixed time `t`
             scales as ``O(t*dt^order)``.
@@ -82,13 +80,6 @@ class TEBDEngine(TimeEvolutionAlgorithm):
 
     Attributes
     ----------
-    trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
-        The error of the represented state which is introduced due to the truncation during
-        the sequence of update steps.
-    psi : :class:`~tenpy.networks.mps.MPS`
-        The MPS, time evolved in-place.
-    model : :class:`~tenpy.models.model.NearestNeighborModel`
-        The model defining the Hamiltonian.
     _U : list of list of :class:`~tenpy.linalg.np_conserved.Array`
         Exponentiated `H_bond` (bond Hamiltonians), i.e. roughly ``exp(-i H_bond dt_i)``.
         First list for different `dt_i` as necessary for the chosen `order`,

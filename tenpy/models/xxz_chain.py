@@ -3,7 +3,7 @@
 The XXZ chain is contained in the more general :class:`~tenpy.models.spins.SpinChain`; the idea of
 this module is more to serve as a pedagogical example for a model.
 """
-# Copyright (C) TeNPy Developers, GNU GPLv3
+# Copyright (C) TeNPy Developers, Apache license
 
 from .lattice import Site, Chain
 from .model import CouplingModel, NearestNeighborModel, MPOModel, CouplingMPOModel
@@ -41,6 +41,7 @@ class XXZChain(CouplingModel, NearestNeighborModel, MPOModel):
             Length of the chain.
         Jxx, Jz, hz : float | array
             Coupling as defined for the Hamiltonian above.
+            Defaults to ``Jxx=Jz=1`` without field ``hz=0``.
         bc_MPS : {'finite' | 'infinite'}
             MPS boundary conditions. Coupling boundary conditions are chosen appropriately.
         sort_charge : bool
