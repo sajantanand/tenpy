@@ -38,7 +38,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from .lattice import (get_lattice, Lattice, MultiSpeciesLattice, TrivialLattice, HelicalLattice,
-                      IrregularLattice)
+                      IrregularLattice, Hypercubic)
 from ..linalg import np_conserved as npc
 from ..linalg.charges import LegCharge
 from ..tools.misc import to_array, add_with_None_0
@@ -1567,6 +1567,8 @@ class CouplingModel(Model):
             ...     self.add_exponentially_decaying_coupling(pr, la, 'N', 'N')
 
         """
+        if not np.any(np.asarray(strength) != 0.):
+            return  # nothing to do: can even accept non-defined onsite operators
         if self.explicit_plus_hc:
             if plus_hc:
                 plus_hc = False  # explicitly add the h.c. later; don't do it here.
@@ -1999,7 +2001,18 @@ class CouplingMPOModel(CouplingModel, MPOModel):
                 elif bc_z == 'ladder':
                     bc_z = 'open'
                 lat = LatticeClass(Lx, Ly, Lz, sites, order=order, bc=[bc_x, bc_y, bc_z], bc_MPS=bc_MPS)
-
+            elif LatticeClass.dim == -1:  # Hypercubic lattice
+                assert LatticeClass == Hypercubic
+                Ls = model_params['Ls']
+                bcs = model_params['bcs']
+                for i, bc in enumerate(bcs):
+                    assert bc in ['cylinder', 'ladder', 'open', 'periodic']
+                    if bc == 'cylinder':
+                        bc = 'periodic'
+                    elif bc == 'ladder':
+                        bc = 'open'
+                    bcs[i] = bc
+                lat = LatticeClass(Ls, sites, order=order, bc=bcs, bc_MPS=bc_MPS)
             else:
                 raise ValueError("Can't auto-determine parameters for the lattice. "
                                  "Overwrite the `init_lattice` in your model!")

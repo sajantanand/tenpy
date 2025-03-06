@@ -14,7 +14,8 @@ from ..tools.params import asConfig
 
 __all__ = ['SpinModel', 'SpinChain', 'XXXChain', 
         'AnisotropicSpinModel', 'AnisotropicBarberPole', 
-        'ExponentiallyDecayingXXZ', 'ExponentiallyDecayingXX', 'ExponentiallyDecayingXY', 'ExponentiallyDecayingSpinModel']
+        'ExponentiallyDecayingXXZ', 'VDWExponentiallyDecayingXXZ', 
+        'ExponentiallyDecayingXX', 'ExponentiallyDecayingXY', 'ExponentiallyDecayingSpinModel']
 
 
 class SpinModel(CouplingMPOModel):
@@ -382,6 +383,41 @@ class ExponentiallyDecayingXXZ(CouplingMPOModel):
             CC_MPO = MPO(sites, [I]*(center - k//2) + CC_MPO._W + [I]*(L-center + k//2 - k), bc=H_MPO.bc, IdL=IdL, IdR=IdR, max_range=k, explicit_plus_hc=False)
 
         return CC_MPO
+
+class VDWExponentiallyDecayingXXZ(CouplingMPOModel):
+    """
+    f(r) * [X_i X_{i+r} + Y_i Y_{i+r}] + g(r) * [Delta*Z_i Z_{i+r}]
+    f(r), g(r) is approximated by a set of exponentials
+    bond dimension is 3 * num_exponentials + 2
+
+    One needs to approximate f(r) prior to initialization of the model.
+    """
+
+    def init_sites(self, model_params):
+        conserve = model_params.get('conserve', None)
+
+        sort_charge = model_params.get('sort_charge', None)
+        S = model_params.get('S', 0.5)
+
+        site = SpinSite(S=S, conserve=conserve, sort_charge=sort_charge)
+        return site
+
+    def init_terms(self, model_params):
+        lambdas1 = model_params['lambdas1']
+        prefactors1 = model_params['prefactors1']
+        lambdas2 = model_params['lambdas2']
+        prefactors2 = model_params['prefactors2']
+        delta = model_params.get('delta', 1)
+
+        for lam, pre in zip(lambdas1, prefactors1):
+            # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+            # Sp Sm + Sm Sp = 2 (Sx Sx + Sy Sy)
+            self.add_exponentially_decaying_coupling(pre*2, lam, 'Sp', 'Sm', plus_hc=True)
+        for lam, pre in zip(lambdas2, prefactors2):
+            # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+            # Sp Sm + Sm Sp = 2 (Sx Sx + Sy Sy)
+            self.add_exponentially_decaying_coupling(pre*4*delta, lam, 'Sz', 'Sz')
+        # done
 
 class ExponentiallyDecayingXX(CouplingMPOModel):
     """

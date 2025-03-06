@@ -31,7 +31,7 @@ from ..networks.mps import MPS  # only to check boundary conditions
 
 __all__ = [
     'Lattice', 'TrivialLattice', 'SimpleLattice', 'MultiSpeciesLattice', 'IrregularLattice',
-    'HelicalLattice', 'Chain', 'Ladder', 'NLegLadder', 'Square', 'Triangular', 'Honeycomb',
+    'HelicalLattice', 'Chain', 'Ladder', 'NLegLadder', 'Square', 'Cubic', 'Hypercubic', 'Triangular', 'Honeycomb',
     'Kagome', 'SimpleBZ', 'get_lattice', 'get_order', 'get_order_grouped'
 ]
 
@@ -2770,6 +2770,33 @@ class Cubic(SimpleLattice):
         kwargs.setdefault('pairs', {})
         kwargs['pairs'].setdefault('nearest_neighbors', NN)
         SimpleLattice.__init__(self, [Lx, Ly, Lz], site, **kwargs)
+
+class Hypercubic(SimpleLattice):
+    """A cubic lattice in d dimensions
+
+    Parameters
+    ----------
+    Ls: list of int
+        The length in each direction.
+        Number of Ls is the dimension of the lattice
+    site : :class:`~tenpy.networks.site.Site`
+        The local lattice site. The `unit_cell` of the :class:`Lattice` is just ``[site]``.
+    **kwargs :
+        Additional keyword arguments given to the :class:`Lattice`.
+        `pairs` are set accordingly.
+        If `order` is specified in the form ``('standard', snake_winding, priority)``,
+        the `snake_winding` and `priority` should only be specified for the spatial directions.
+        Similarly, `positions` can be specified as a single vector.
+    """
+    dim = -1  #: the dimension of the lattice
+
+    def __init__(self, Ls, site, **kwargs):
+        self.dim = len(Ls)
+        NN = [(0, 0, np.array([0]*i + [1] + [0]*(self.dim-1-i))) for i in range(self.dim)]
+        #NN = [(0, 0, np.array([1, 0, 0])), (0, 0, np.array([0, 1, 0])), (0, 0, np.array([0, 0, 1]))]
+        kwargs.setdefault('pairs', {})
+        kwargs['pairs'].setdefault('nearest_neighbors', NN)
+        SimpleLattice.__init__(self, Ls, site, **kwargs)
 
 
 class Triangular(SimpleLattice):
