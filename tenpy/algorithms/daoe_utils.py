@@ -101,10 +101,19 @@ def DAOE_MPO(L, sites, gamma, lstar, danging_right=False):
         # rotate back to |i><j| basis
         bulk_tensor_npc = npc.tensordot(npc.tensordot(ds.d2s, bulk_tensor_npc, axes=(['p*'], ['p'])), ds.s2d, axes=(['p*'], ['p'])).transpose(['wL','wR', 'p', 'p*'])
         bulk_tensors_npc.append(bulk_tensor_npc)
-
+    
+    # Basis change only affects physical indices, not bond indices.
+    # Start off counter in 0 weight strings.
     bulk_tensors_npc[0] = bulk_tensors_npc[0][0,:,:,:].add_trivial_leg(axis=0, label='wL', qconj=+1)
     if not danging_right:
-        bulk_tensors_npc[-1] = bulk_tensors_npc[-1][:,-1,:,:].add_trivial_leg(axis=-1, label='wR', qconj=-1)
+        # This is WRONG! We don't want to just take the strings of length >= lstar, which are those in the last MPO index.
+        # bulk_tensors_npc[-1] = bulk_tensors_npc[-1][:,-1,:,:].add_trivial_leg(axis=-1, label='wR', qconj=-1)
+        
+        # Instead, we want to keep ALL strings at this point since we are at the end of the chain.
+        boundary_vector = npc.ones(bulk_tensor_npc.legs[1].conj(), qtotal=None, labels='wR')
+        bulk_tensors_npc[-1] = npc.tensordot(bulk_tensors_npc[-1], boundary_vector, axes=(['wR'], ['wL'])).add_trivial_leg(axis=1, label='wR', qconj=-1)
+        print(bulk_tensors_npc[-1])
+        
     mpo = MPO(sites, bulk_tensors_npc, bc='finite', IdL=0, IdR =-1)
 
     return mpo
