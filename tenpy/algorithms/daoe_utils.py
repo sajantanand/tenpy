@@ -110,9 +110,8 @@ def DAOE_MPO(L, sites, gamma, lstar, danging_right=False):
         # bulk_tensors_npc[-1] = bulk_tensors_npc[-1][:,-1,:,:].add_trivial_leg(axis=-1, label='wR', qconj=-1)
         
         # Instead, we want to keep ALL strings at this point since we are at the end of the chain.
-        boundary_vector = npc.ones(bulk_tensor_npc.legs[1].conj(), qtotal=None, labels='wR')
+        boundary_vector = npc.ones([bulk_tensor_npc.legs[1].conj()], qtotal=None, labels=['wL'])
         bulk_tensors_npc[-1] = npc.tensordot(bulk_tensors_npc[-1], boundary_vector, axes=(['wR'], ['wL'])).add_trivial_leg(axis=1, label='wR', qconj=-1)
-        print(bulk_tensors_npc[-1])
         
     mpo = MPO(sites, bulk_tensors_npc, bc='finite', IdL=0, IdR =-1)
 
