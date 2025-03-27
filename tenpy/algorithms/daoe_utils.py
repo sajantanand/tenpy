@@ -33,6 +33,79 @@ def weight_distribution_MPO(L, sites, max_weight=-1):
 
     return DAOE_MPO(L, sites, 0, max_weight, danging_right=True)
 
+def DAOE_dia_MPO(L, sites, gamma, lstar, danging_right=False):
+    """
+    Build superoperator that dissipates operators based on DIAMETER and WEIGHT rather than weight alone.
+    The superoperator this MPO implements doesn't have a form that can be written down nicely, but in words
+    we do the following: For a operator string, we apply e^{-gamma} if the diameter exceeds l* and e^{-gamma}
+    for every operator after the first whose distance to the starting operator is greater than lstar. So once
+    we encounter the first non-identity string, we start counting ALL operators (including identity) to track
+    the diameter (with a cutoff of l*). Once we encounter another non-trivial operator at distance > l*, we
+    then switch to dissipating by weight, i.e. all non-trivial operators beyond the one we just found.
+    
+    See documentation for DAOE_MPO for details about arguments and what is returned.
+    """
+    D = lstar + 1
+
+    damp_matrix = np.zeros((D, D))
+    for i in range(D-1):
+        damp_matrix[i,i+1] = 1              # Shift the register even if we haven't seen anything yet
+    damp_matrix[D-1,D-1] = np.exp(-gamma)   # See a non-trivial operator while in max register state; stay in that state and dissipate
+    
+    eye_matrix = np.zeros((D, D))
+    eye_matrix[0,0] = 1                     # Haven't seen anything yet
+    eye_matrix[1:,1:] = damp_matrix[1:,1:]  # We've seen an operator already, so shift the register    
+    eye_matrix[D-1,D-1] = 1                   # See an identity while in max register state; stay in that state but don't dissipate
+
+    bulk_tensors = []
+    bulk_tensors_npc = []
+    for i in range(L):
+        s = sites[i % len(sites)]
+        
+        # build dummy site
+        if s.conserve == 'Sz':
+            ds = DoubledSite(int(np.sqrt(s.dim)), conserve=s.conserve, hermitian=False, trivial=False)
+        elif s.conserve == 'None':
+            ds = DoubledSite(int(np.sqrt(s.dim)), conserve=s.conserve, hermitian=True, trivial=False)
+        else:
+            raise NotImplementedError(f"conservation{s.conserve} not yet implemented for DAOE.")
+            
+        leg_p = ds.leg
+        leg_vL = LegCharge.from_trivial(D, ds.leg.chinfo, qconj=+1).sort()[1]
+        inverted_perm = np.argsort(ds.perm)
+
+        d = ds.dim
+        bulk_tensor = np.zeros((D, D, d, d))
+        # Assumes d=0 in operator basis corresponds to the identity
+        bulk_tensor[:,:,0,0] = eye_matrix
+        for i in range(1, d):
+            bulk_tensor[:,:,i,i] = damp_matrix
+
+        bulk_tensors.append(bulk_tensor)
+        bulk_tensor_npc = npc.Array.from_ndarray(bulk_tensor[:,:,inverted_perm[:,None],inverted_perm[None,:]],
+                                                 [leg_vL, leg_vL.conj(), leg_p, leg_p.conj()], dtype=np.float64,
+                                                 qtotal=None, labels=['wL','wR', 'p', 'p*'])
+
+        # rotate back to |i><j| basis
+        bulk_tensor_npc = npc.tensordot(npc.tensordot(ds.d2s, bulk_tensor_npc, axes=(['p*'], ['p'])), ds.s2d, axes=(['p*'], ['p'])).transpose(['wL','wR', 'p', 'p*'])
+        bulk_tensors_npc.append(bulk_tensor_npc)
+    
+    # Basis change only affects physical indices, not bond indices.
+    # Start off counter in 0 weight strings.
+    bulk_tensors_npc[0] = bulk_tensors_npc[0][0,:,:,:].add_trivial_leg(axis=0, label='wL', qconj=+1)
+    if not danging_right:
+        # This is WRONG! We don't want to just take the strings of length >= lstar, which are those in the last MPO index.
+        # bulk_tensors_npc[-1] = bulk_tensors_npc[-1][:,-1,:,:].add_trivial_leg(axis=-1, label='wR', qconj=-1)
+        
+        # Instead, we want to keep ALL strings at this point since we are at the end of the chain.
+        boundary_vector = npc.ones([bulk_tensor_npc.legs[1].conj()], qtotal=None, labels=['wL'])
+        bulk_tensors_npc[-1] = npc.tensordot(bulk_tensors_npc[-1], boundary_vector, axes=(['wR'], ['wL'])).add_trivial_leg(axis=1, label='wR', qconj=-1)
+        
+    mpo = MPO(sites, bulk_tensors_npc, bc='finite', IdL=0, IdR =-1)
+
+    return mpo
+
+
 def DAOE_MPO(L, sites, gamma, lstar, danging_right=False):
     """
     Build the MPO specified in https://arxiv.org/abs/2004.05177. This MPO represents the superoperator

@@ -567,7 +567,19 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         * ``U_bond = exp(-i dt (H_bond-E_offset_bond))`` for ``type_evo='real'``, or
         * ``U_bond = exp(- dt H_bond)`` for ``type_evo='imag'``.
         """
-        h = self.model.H_bond[i_bond]
+        try:
+            h = self.model.H_bond[i_bond]
+        except AttributeError:
+            msg = (f'The model has no attribute "H_bond", which is required for TEBD.\n '
+                   f'TEBD can only be used if the model is nearest-neighbor (in the MPS geometry!). '
+                   f'If you are using a pre-defined model, make sure you are using the '
+                   f'nearest-neighbor version, e.g. SpinChain, not SpinModel. '
+                   f'If you are using a custom model, check if it actually is  nearest-neighbor in '
+                   f'the MPS geometry. If yes, make sure you subclass  NearestNeighborModel, which '
+                   f'will set "H_bond" for you. If no, you can not directly use TEBD, you need to '
+                   f'either group sites to achieve a nearest-neighbor model, or use some other '
+                   f'time evolution method, e.g. ExpMPO or TDVP.')
+            raise AttributeError(msg)
         if h is None:
             return None  # don't calculate exp(i H t), if `H` is None
         H2 = h.combine_legs([('p0', 'p1'), ('p0*', 'p1*')], qconj=[+1, -1])
@@ -619,30 +631,7 @@ class SVDTEBDEngine(TEBDEngine):
     def update_bond(self, i, U_bond):
         raise NotImplementedError()
 
-class DMTTEBDEngine(TEBDEngine):
-    def evolve(self, N_steps, dt, call_canonical_form=False):
-        """Evolve by ``dt * N_steps``.
-
-        Parameters
-        ----------
-        N_steps : int
-            The number of steps for which the whole lattice should be updated.
-        dt : float
-            The time step; but really this was already used in :meth:`prepare_evolve`.
-
-        Returns
-        -------
-        trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
-            The error of the represented state which is introduced due to the truncation during
-            this sequence of evolvution steps.
-        """
-        if dt is not None:
-            assert dt == self._U_param['delta_t']
-        return self.update_imag(N_steps, call_canonical_form)
-
-    def evolve_step(self, U_idx_dt, odd):
-        raise NotImplementedError()
-
+class DMTTEBDEngine(SVDTEBDEngine):
     def update_bond_imag(self, i, U_bond):
         """Update a bond with a (possibly non-unitary) `U_bond`.
 
@@ -700,9 +689,6 @@ class DMTTEBDEngine(TEBDEngine):
         self.options['trace_env'] = trace_env
         self.options['MPO_envs'] = MPO_envs
         return trunc_err1 + trunc_err2
-
-    def update_bond(self, i, U_bond):
-        raise NotImplementedError()
 
 class QRBasedTEBDEngine(TEBDEngine):
     r"""Version of TEBD that relies on QR decompositions rather than SVD.

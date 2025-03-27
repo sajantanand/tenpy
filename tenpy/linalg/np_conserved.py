@@ -4019,6 +4019,9 @@ def qr(a,
             q_block, r_block = np.linalg.qr(block, mode)
         else:
             q_block, r_block = qr_li(block, cutoff)
+            if q_block.size == 0:
+                # empty blocks would break below
+                continue
         if pos_diag_R:
             r_diag = np.array(np.diag(r_block)) # Converted to np.array to remove the 0 elements
             #r_diag = np.diag(r_block)
@@ -4065,6 +4068,10 @@ def qr(a,
     if mode != 'complete':
         q._qdata[:, 1] = map_qind[q._qdata[:, 0]]
         r._qdata[:, 0] = q._qdata[:, 1]  # copy map_qind[q._qdata[:, 0]] from q
+        # filter out zero-size blocks
+        nonzero = q._qdata[:, 1] != -1
+        q._qdata = q._qdata[nonzero]
+        r._qdata = r._qdata[nonzero]
     else:  # mode == 'complete'
         q._qdata[:, 1] = q._qdata[:, 0]
         if len(q_data) < a_leg0.block_number:

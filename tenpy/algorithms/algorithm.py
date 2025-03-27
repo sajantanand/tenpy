@@ -13,6 +13,9 @@ from ..tools.params import asConfig
 from ..tools.cache import DictCache
 
 __all__ = ['Algorithm', 'TimeEvolutionAlgorithm', 'TimeDependentHAlgorithm']
+__deprecated_submodules__ = [
+    'truncation', # moved to tenpy.linalg
+]
 
 
 class Algorithm:
@@ -97,7 +100,6 @@ class Algorithm:
                 max_N_sites_per_ring = psi.L
         except AttributeError:  # for e.g. VariationalApplyMPO, model is just the MPO and has no lat
             N_sites_per_ring = 1
-
         consistency_check(N_sites_per_ring, self.options, 'max_N_sites_per_ring', max_N_sites_per_ring,
                           'Maximum number of sites per ring (``max_N_sites_per_ring``) exceeded.')
 
