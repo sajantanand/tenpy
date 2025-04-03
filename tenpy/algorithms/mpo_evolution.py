@@ -44,7 +44,7 @@ class ExpMPOEvolution(TimeEvolutionAlgorithm):
 
     Attributes
     ----------
-    _U : list of :class:`~tenpy.networks.mps.MPO`
+    _U_MPO : list of :class:`~tenpy.networks.mps.MPO`
         Exponentiated `H_MPO`;
     _U_param : dict
         A dictionary containing the information of the latest created `_U`.
@@ -74,7 +74,7 @@ class ExpMPOEvolution(TimeEvolutionAlgorithm):
         Parameters
         ----------
         dt : float
-            Size of the time-step used in calculating `_U`
+            Size of the time-step used in calculating `_U_MPO`
         order : int
             The order of the algorithm. Only 1 and 2 are allowed.
         approximation : 'I' or 'II'

@@ -810,7 +810,7 @@ class MPO:
                 # -IIIB^*
                 dW[i+1+3*(DL-2), -1] = -1*_combine_npc(Idd_npc, _combine_npc(Id_npc, B_npc[i,0], conj=False), conj=True)
             #Bottom Rows
-            dW[-1,-1] = _combine_nps(Idd_npc, Idd_npc)
+            dW[-1,-1] = _combine_npc(Idd_npc, Idd_npc)
             sites.append(DoubledSite(d**2, conserve=self.sites[i].conserve, sort_charge=self.sites[i].leg.sort, hermitian=hermitian, trivial=trivial))
             U.append(dW)
         IdL = [0] * (self.L + 1)
@@ -1049,6 +1049,63 @@ class MPO:
             W = npc.tensordot(W, Minv, axes=(['p*'], ['p']))
             W.itranspose(W_labels)
             self.set_W(i, W)
+
+    def make_kronecker_MPO(self, hermitian=True, trivial=False, ds=None):
+        r"""Creates the unitary MPO for evolution in the Doubled space. Given a unitary operator :math:`U`, 
+        we want to form :math:`U \otimes U^*`. We will do this tensor by tensor in the MPO, and we do NOT require
+        that the MPO has the usual block form.
+
+        We simply do the Kronecker product of each MPO tensor.
+        Suppose that the MPO originally had bond dimension $D$, the new MPO has bond dimension D*D.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        DMPO : :class:`~tenpy.networks.mpo.MPO`
+            The MPO in the doubled Hilbert space.
+
+        """
+        # SAJANT - remove `embed` and use functions defined at end of file to make function cleaner
+
+        if self.explicit_plus_hc:
+            raise NotImplementedError("MPO.make_kronecker_MPO assumes unitary U, you can't use "
+                                      "the `explicit_plus_hc=True` flag!\n"
+                                      "See also https://github.com/tenpy/tenpy/issues/265")
+        dtype = self.dtype
+        IdL = self.IdL
+        IdR = self.IdR
+
+        chinfo = self.chinfo
+        trivial_CHI = chinfo.make_valid()
+        U = []
+        if ds is not None:
+            sites = [ds] * self.L
+        else:
+            sites = []
+        for k in range(0, self.L):
+            labels = ['wL', 'wR', 'p', 'p*']
+            W = self.get_W(k).itranspose(labels)
+            assert np.all(W.qtotal == trivial_CHI) # Need to make this work with charges.
+            DL, DR, d, d = W.shape
+
+            dW = np.empty((DL**2, DR**2), dtype=object)
+            for i in range(DL**2):
+                iW1 = i // DL
+                iW2 = i % DL
+                for j in range(DR**2):
+                    jW1 = j // DR
+                    jW2 = j % DR
+                    dW[i,j] = _combine_npc(W[iW1,jW1,:,:], W[iW2,jW2,:,:])
+
+            if ds is None:
+                sites.append(DoubledSite(d, conserve=self.sites[k].conserve, sort_charge=self.sites[k].leg.sort, hermitian=hermitian, trivial=trivial))
+            U.append(dW)
+        IdL = [0] * (self.L + 1)
+        IdR = [-1] * (self.L + 1)
+        dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
+        return dMPO
 
     def expectation_value(self, psi, tol=1.e-10, max_range=100, init_env_data={}):
         """Calculate ``<psi|self|psi>/<psi|psi>`` (or density for infinite).

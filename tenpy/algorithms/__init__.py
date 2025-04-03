@@ -12,6 +12,7 @@
     dmrg_parallel
     tdvp
     purification
+    circuit_evolution
     mpo_evolution
     vumps
     plane_wave_excitation
@@ -22,13 +23,14 @@
 # Copyright (C) TeNPy Developers, Apache license
 
 from . import algorithm, dmrg, dmrg_parallel, disentangler, mps_common, tebd, tdvp, \
-    exact_diag, purification, network_contractor, mpo_evolution, vumps, plane_wave_excitation
+    exact_diag, purification, network_contractor, circuit_evolution, mpo_evolution, vumps, plane_wave_excitation
 from .algorithm import *
 from .disentangler import *
 from .dmrg_parallel import *
 from .dmrg import *
 from .exact_diag import *
 from .mpo_evolution import *
+from .circuit_evolution import *
 from .mps_common import *
 from .network_contractor import *
 from .purification import *
@@ -49,6 +51,7 @@ __all__ = [
     *exact_diag.__all__,
     *purification.__all__,
     *network_contractor.__all__,
+    *circuit_evolution.__all__,
     *mpo_evolution.__all__,
     *vumps.__all__,
     *plane_wave_excitation.__all__,
