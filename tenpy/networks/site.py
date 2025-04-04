@@ -1344,6 +1344,7 @@ class SpinSite(Site):
                 chinfo = npc.ChargeInfo([2], ['parity_Sz'])
                 leg = npc.LegCharge.from_qflat(chinfo, np.mod(np.arange(d), 2))
             elif conserve == 'phony':   # Used for when we want to have a trivial charge site embedded an otherwise Sz conserving system
+                # Needed for FCS statistics
                 chinfo = npc.ChargeInfo([1], ['2*Sz'])
                 leg = npc.LegCharge.from_qflat(chinfo, np.array([0]*d, dtype=np.int64))
                 _, leg = leg.bunch()    # Bunch the charges since all physical legs have charge 0

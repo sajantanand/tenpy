@@ -194,7 +194,9 @@ def disjoint_pairs(pairs, L, verbose=False):
     pairs = list(set(pairs))
     num_pairs = len(pairs)
     pairs = [((i, j) if i < j else (j, i)) for (i, j) in pairs]
-    pairs.sort(key=lambda x: x[0])
+    pairs.sort(key=lambda x: (x[0], x[1]))
+    # Interleave the pairs to try and reduce the number of crossings
+    #pairs = pairs[0::2] + pairs[1::2]
 
     disjoint_pairs = []
     disjoint_sites = []
@@ -228,14 +230,62 @@ def disjoint_pairs(pairs, L, verbose=False):
         lonely_sites.append(ls)
     return disjoint_pairs, lonely_sites
 
-def build_MPOs(site, pairs, U, L, crossing_limit=0, verbose=False):
-    Open, Close, Id1, Id2 = U_machinery(U)
-    pairs, lonely_sites = disjoint_pairs(pairs, L, verbose=verbose)
+def disjoint_pairs_crossing_aware(pairs, L, verbose=False):
+    pairs = list(set(pairs))
+    num_pairs = len(pairs)
+    pairs = [((i, j) if i < j else (j, i)) for (i, j) in pairs]
+    pairs.sort(key=lambda x: (x[0], x[1]))
+    # Interleave the pairs to try and reduce the number of crossings
+    #pairs = pairs[0::2] + pairs[1::2]
 
+    disjoint_pairs = []
+    disjoint_sites = []
+    while len(pairs) > 0:
+        p = pairs.pop(0)
+        # Find set that doesn't contain these sites with the minimal number of crossings, if added.
+        crossings = np.zeros(len(disjoint_pairs))
+        valid = False
+        for i, dd in enumerate(zip(disjoint_pairs, disjoint_sites)):
+            dp, ds = dd
+            if p[0] not in ds and p[1] not in ds:
+                crossings[i] = np.sum(count_crossings(dp + [p], L))
+                valid = True
+            else:
+                crossings[i] = np.inf
+        if len(disjoint_pairs):
+            i = np.argmin(crossings)
+
+        if valid:
+            disjoint_pairs[i].append(p)
+            disjoint_sites[i].extend((p[0],p[1]))
+            disjoint_sites[i] = list(set(disjoint_sites[i]))
+        else:
+            disjoint_pairs.append([p])
+            disjoint_sites.append([p[0],p[1]])
+        if verbose:
+            print(p, disjoint_pairs, disjoint_sites)
+
+    ds_len = [len(ds) for ds in disjoint_sites]
+    dp_num = [len(dp) for dp in disjoint_pairs]
+    assert np.sum(dp_num) == num_pairs
+
+    lonely_sites = []
+    for ds in disjoint_sites:
+        ls = list(set(list(range(L))) - set(ds))
+        lonely_sites.append(ls)
+    return disjoint_pairs, lonely_sites
+
+def build_MPOs(site, pairs, U, L, crossing_limit=0, crossing_aware=True, verbose=False):
+    Open, Close, Id1, Id2 = U_machinery(U)
+    if crossing_aware:
+        pairs, lonely_sites = disjoint_pairs_crossing_aware(pairs, L, verbose=verbose)
+    else:
+        pairs, lonely_sites = disjoint_pairs(pairs, L, verbose=verbose)
+        
     # What are breaks? It lists the index of the MPOs that represent non commuting
     # gates. At the moment, this is all of them.
     breaks = list(range(len(pairs) - 1))    # Empty if only 1 list of pairs
-    print("Original breaks:", breaks)
+    print("Original breaks and crossings:", breaks, [int(np.max(count_crossings(p, L))) for p in pairs])
     if crossing_limit > 0:
         # We have separated the pairs into disjoint sets, but we have paid little 
         # attention to how many of the pairs cross one another, which leads to
