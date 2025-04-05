@@ -595,7 +595,8 @@ def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, R_cutof
         return np.logical_not(indices), np.sum(indices)
     def get_indices_2(Q, QR, id_ind, axes):
         ips = npc.tensordot(Q.conj(), QR, axes).to_ndarray()    # p*, p
-        proj = np.isclose(ips.sum(axis=1), 1.0)                 # Where do the preserved operators live in the expanded set?
+        # Sometmes ips.sum(axis=1) will be slightly away from 0 or 1
+        proj = np.isclose(ips.sum(axis=1), 1.0, atol=1.e-3, rtol=1.e-3)         # Where do the preserved operators live in the expanded set?
         new_id_ind,  = np.where(np.isclose(ips[:,id_ind], 1.0))
         assert len(new_id_ind) == 1
         return np.logical_not(proj), new_id_ind.item(), np.sum(proj)
