@@ -68,13 +68,16 @@ def generate_pairs(lat, key='nearest_neighbors'):
         key = 'next_nearest_neighbors'
     elif key == 'nnNN':
         key = 'next_next_nearest_neighbors'
-
-    idXs, idYs = [], []
-    for dx1, dx2, bv in lat.pairs[key]:
-        idX, idY = lat.possible_couplings(dx1,dx2,bv)[:2]
-        idXs.append(idX)
-        idYs.append(idY)
-    pairs = [sorted((a,b)) for a,b in zip(np.concatenate(idXs), np.concatenate(idYs))]
+    if key != 'all':
+        idXs, idYs = [], []
+        for dx1, dx2, bv in lat.pairs[key]:
+            idX, idY = lat.possible_couplings(dx1,dx2,bv)[:2]
+            idXs.append(idX)
+            idYs.append(idY)
+        pairs = [sorted((a,b)) for a,b in zip(np.concatenate(idXs), np.concatenate(idYs))]
+    else:
+        L = lat.N_sites
+        pairs = [sorted((i,j)) for i in range(L) for j in range(i+1, L)]
     return pairs
 
 def distribute_pairs(pairs, bi, symmetric=True):
@@ -359,7 +362,7 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         pairs = conjoined_params.get('pairs')
         symmetric = conjoined_params.get('symmetric', True)
         _, right_pairs = distribute_pairs(pairs, i, symmetric=symmetric)
-
+        
         # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
         #keep_R += int(np.sum([dMPS.dim[k]-1 for k in right_pairs])) + 1
         keep_R += int(np.sum([dMPS.dim[k] for k in right_pairs]))
@@ -481,7 +484,7 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         pairs = conjoined_params.get('pairs')
         symmetric = conjoined_params.get('symmetric', True)
         left_pairs, _ = distribute_pairs(pairs, i, symmetric=symmetric)
-
+        
         # We want to keep the direct sum of the operator Hilbert spaces on each site; we don't want to overcount the Identity, so there are 3 non-trivial operators per site.
         # keep_L += int(np.sum([dMPS.dim[k]-1 for k in left_pairs]))
         keep_L += int(np.sum([dMPS.dim[k] for k in left_pairs]))
