@@ -428,7 +428,10 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
     else:
         overlaps = npc.tensordot(id_vec.conj(), QR_R, axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
         id_ind, = np.where(np.isclose(overlaps,1.0))
-        id_ind = id_ind.item()
+        #id_ind = id_ind.item()
+        if len(id_ind) > 1:
+            print("Multiple id_ind?", id_ind)
+        id_ind = id_ind[0]
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
     return QR_R, keep_R, trace_env, MPO_envs, id_ind
 
@@ -548,7 +551,10 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
     else:
         overlaps = npc.tensordot(id_vec.conj(), QR_L, axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
         id_ind, = np.where(np.isclose(overlaps,1.0))
-        id_ind = id_ind.item()
+        #id_ind = id_ind.item()
+        if len(id_ind) > 1:
+            print("Multiple id_ind?", id_ind)
+        id_ind = id_ind[0]
     assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
     return QR_L, keep_L, trace_env, MPO_envs, id_ind
 
