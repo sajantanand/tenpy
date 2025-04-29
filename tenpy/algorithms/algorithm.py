@@ -391,7 +391,8 @@ class TimeEvolutionAlgorithm(Algorithm):
         The recommended way to do this is via the
         :class:`~tenpy.simulations.time_evolution.RealTimeEvolution`.
         """
-        dt = self.options.get('dt', 0.1, 'real')
+        #dt = self.options.get('dt', 0.1, 'real')
+        dt = self.options.get('dt', 0.1)
         N_steps = self.options.get('N_steps', 1, int)
 
         start_time = time.time()

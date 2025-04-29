@@ -818,7 +818,7 @@ class MPO:
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         return dMPO
 
-    def make_doubled_MPO(self, hermitian=True, trivial=False, ds=None):
+    def make_doubled_MPO(self, hermitian=True, trivial=False, ds=None, imaginary=False):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
@@ -872,14 +872,15 @@ class MPO:
             for i in range(0, DR-2):
                 dW[0,i+1] = _combine_npc(C_npc[0,i], Id_npc)
                 dW[0,i+DR-2+1] = 1*_combine_npc(Id_npc, C_npc[0,i])
-            dW[0,-1] = _combine_npc(D_npc, Id_npc) - _combine_npc(Id_npc, D_npc)
+            dW[0,-1] = _combine_npc(D_npc, Id_npc) - _combine_npc(Id_npc, D_npc) * (-1 if imaginary else 1)
             # Middle Rows
             for i in range(0, DL-2):
                 for j in range(0, DR-2):
                     dW[i+1,j+1] = _combine_npc(A_npc[i,j], Id_npc)
                     dW[i+1+DL-2,j+1+DR-2] = 1*_combine_npc(Id_npc,A_npc[i,j])
                 dW[i+1, -1] = _combine_npc(B_npc[i,0], Id_npc)
-                dW[i+1+DL-2, -1] = -1*_combine_npc(Id_npc, B_npc[i,0])
+                dW[i+1+DL-2, -1] = -1*_combine_npc(Id_npc, B_npc[i,0]) * (-1 if imaginary else 1)
+
             #Bottom Rows
             dW[-1,-1] = Idd_npc
             if ds is None:

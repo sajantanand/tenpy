@@ -160,12 +160,12 @@ def U_MPO_disjoint(site, L, pairs, Open, Close, Id1, Id2, lonely = []):
     lonely = sorted(lonely) + [L]
 
     Bs = []
-    forms = []
+    #forms = []
     open_singlets = []  # the k-th open singlet should be closed at site open_singlets[k]
     Ts = []  # the tensors on the current site
-    labels_L = []
+    #labels_L = []
     for i in range(L):
-        labels_R = labels_L[:]
+        #labels_R = labels_L[:]
         next_Ts = Ts[:]
         if i == pairs[0][0]:  # open a new singlet
             j = pairs[0][1]
@@ -185,6 +185,26 @@ def U_MPO_disjoint(site, L, pairs, Open, Close, Id1, Id2, lonely = []):
         B = reduce(outer_tensor, Ts)
         Bs.append(B)
         Ts = next_Ts
+
+    Bnpc = [B.transpose(['wL', 'wR', 'p', 'p*']) for B in Bs]
+    U_MPO = MPO([site]*L, Bnpc, bc='finite', IdL=0, IdR =-1)
+    return U_MPO, Bs
+
+def U_MPO_joint(site, L, pairs, Open, Close, Id1, Id2, lonely = []):
+    # sort by smaller site of the pair
+    pairs = [((i, j) if i < j else (j, i)) for (i, j) in pairs]
+
+    # sort by starting site
+    pairs.sort(key=lambda x: x[0])
+
+    Bs = []
+    Ts = [[Id1] for _ in range(L)]  # the tensors on the current site
+    for p in pairs:
+        Ts[p[0]].append(Open)
+        Ts[p[1]].append(Close)
+        for i in range(p[0] + 1, p[1]):
+            Ts[i].append(Id2)
+    Bs = [reduce(outer_tensor, T) for T in Ts]
 
     Bnpc = [B.transpose(['wL', 'wR', 'p', 'p*']) for B in Bs]
     U_MPO = MPO([site]*L, Bnpc, bc='finite', IdL=0, IdR =-1)
@@ -275,15 +295,37 @@ def disjoint_pairs_crossing_aware(pairs, L, verbose=False):
         lonely_sites.append(ls)
     return disjoint_pairs, lonely_sites
 
-def build_MPOs(site, pairs, U, L, crossing_limit=0, crossing_aware=True, verbose=False):
+def build_MPOs(site, pairs, U, L, crossing_limit=0, crossing_aware=True, verbose=False, disjoint_endpoints=True):
+    # disjoint_endpoints=True is for backwards consistency, but I think False should always be used.
+    # It should be more efficient.
     Open, Close, Id1, Id2 = U_machinery(U)
-    if crossing_aware:
-        pairs, lonely_sites = disjoint_pairs_crossing_aware(pairs, L, verbose=verbose)
+    if disjoint_endpoints:
+        # Separate the pairs so that each site is active in at most one gate.
+        if crossing_aware:
+            # Distribute pairs in a greedy fashion, trying to minimize crossings.
+            pairs, lonely_sites = disjoint_pairs_crossing_aware(pairs, L, verbose=verbose)
+        else:
+            pairs, lonely_sites = disjoint_pairs(pairs, L, verbose=verbose)
     else:
-        pairs, lonely_sites = disjoint_pairs(pairs, L, verbose=verbose)
+        # We don't separate into disjoint sets; we allow a site to be active in multiple gates,
+        # i.e. a gate can both begin and end on a site in a single layer.
+        # Thus, a brick wall can be written as single MPO rather than 2.
+        # If our gates commute, as we assume they do, this is fine.
+        # If we have non-commuting gates, we should make multiple class fo build_MPOs, one for each set of
+        # pairs for the non-commuting gates.
+        # Honestly, not sure when we'd use the above disjoint_endpoints=True.
+        active_sites = []
+        for p in pairs:
+            active_sites.extend(p)
+        lonely_sites = list(set(list(range(L))) - set(active_sites))
+        pairs = [pairs]
+        lonely_sites = [lonely_sites]
         
-    # What are breaks? It lists the index of the MPOs that represent non commuting
-    # gates. At the moment, this is all of them.
+    # What are breaks? It tell us where the MPOs for the next set of disjoint pairs begins.
+    # So if we have 3 disjoint pairs from above, breaks will be [0,1], meaning that after MPO0 and MPO1,
+    # we move to different sets.
+    # At the moment, breaks will be after each MPO (supposing disjoint_endpoints=True), as we haven't worried
+    # about crossings. We simply separate the pairs into sets where each site is active in at most 1 gate.
     breaks = list(range(len(pairs) - 1))    # Empty if only 1 list of pairs
     print("Original breaks and crossings:", breaks, [int(np.max(count_crossings(p, L))) for p in pairs])
     if crossing_limit > 0:
@@ -309,7 +351,11 @@ def build_MPOs(site, pairs, U, L, crossing_limit=0, crossing_aware=True, verbose
     
     MPOs = []
     for dp, ls in zip(pairs, lonely_sites):
-        MPOs.append(U_MPO_disjoint(site, L, dp, Open, Close, Id1, Id2, lonely = ls)[0])
+        if disjoint_endpoints:
+            MPOs.append(U_MPO_disjoint(site, L, dp, Open, Close, Id1, Id2, lonely = ls)[0])
+        else:
+            # Lonely isn't actually used here.
+            MPOs.append(U_MPO_joint(site, L, dp, Open, Close, Id1, Id2, lonely = ls)[0])
     return MPOs, breaks, pairs, lonely_sites
 
 def count_crossings(pairs, L):
