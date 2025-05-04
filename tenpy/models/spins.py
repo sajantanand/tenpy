@@ -13,7 +13,7 @@ from .lattice import Chain, Square
 from ..tools.params import asConfig
 
 __all__ = ['SpinModel', 'SpinChain', 'XXXChain', 
-        'AnisotropicSpinModel', 'AnisotropicBarberPole', 
+        'AnisotropicSpinModel', 'AnisotropicBarberPole', 'FiniteRangeSpinModel',
         'ExponentiallyDecayingXXZ', 'VDWExponentiallyDecayingXXZ', 
         'ExponentiallyDecayingXX', 'ExponentiallyDecayingXY', 'ExponentiallyDecayingSpinModel']
 
@@ -583,3 +583,42 @@ class ExponentiallyDecayingSpinModel(CouplingMPOModel):
                 #self.add_exponentially_decaying_coupling(pre * muJ * 0.5j, lam, 'Sm', 'Sp', pluc_hc=True)
             if Jz != 0:
                 self.add_exponentially_decaying_coupling(pre * Jz, lam, 'Sz', 'Sz')
+
+
+class FiniteRangeSpinModel(SpinModel):
+    r"""Spin-S sites coupled by nearest neighbor interactions.
+
+    """
+
+    def init_terms(self, model_params):
+        Jx = model_params.get('Jx', 1., 'real_or_array')
+        Jy = model_params.get('Jy', 1., 'real_or_array')
+        Jz = model_params.get('Jz', 1., 'real_or_array')
+        hx = model_params.get('hx', 0., 'real_or_array')
+        hy = model_params.get('hy', 0., 'real_or_array')
+        hz = model_params.get('hz', 0., 'real_or_array')
+        D = model_params.get('D', 0., 'real_or_array')
+        E = model_params.get('E', 0., 'real_or_array')
+        muJ = model_params.get('muJ', 0., 'real_or_array')
+        interaction = model_params['interaction']
+
+        # (u is always 0 as we have only one site in the unit cell)
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(-hx, u, 'Sx')
+            self.add_onsite(-hy, u, 'Sy')
+            self.add_onsite(-hz, u, 'Sz')
+            self.add_onsite(D, u, 'Sz Sz')
+            self.add_onsite(E * 0.5, u, 'Sp Sp')
+            self.add_onsite(E * 0.5, u, 'Sm Sm')
+        # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+        # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
+        # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
+        u1 = u2 = 0
+        for dx, coup in enumerate(interaction):
+            # Unit cell is always 0 for chain
+            dx += 1
+            self.add_coupling((Jx + Jy) / 4. * coup, 0, 'Sp', 0, 'Sm', dx, plus_hc=True)
+            self.add_coupling((Jx - Jy) / 4. * coup, u1, 'Sp', u2, 'Sp', dx, plus_hc=True)
+            self.add_coupling(Jz * coup, u1, 'Sz', u2, 'Sz', dx)
+            self.add_coupling(muJ * 0.5j * coup, u1, 'Sm', u2, 'Sp', dx, plus_hc=True)
+        # done
