@@ -3,6 +3,7 @@
 # Copyright (C) TeNPy Developers, Apache license
 
 import numpy as np
+from copy import deepcopy
 import time
 import typing
 import warnings
@@ -298,6 +299,9 @@ def disjoint_pairs_crossing_aware(pairs, L, verbose=False):
 def build_MPOs(site, pairs, U, L, crossing_limit=0, crossing_aware=True, verbose=False, disjoint_endpoints=True):
     # disjoint_endpoints=True is for backwards consistency, but I think False should always be used.
     # It should be more efficient.
+
+    pairs = deepcopy(pairs)     # make copy of pairs
+
     Open, Close, Id1, Id2 = U_machinery(U)
     if disjoint_endpoints:
         # Separate the pairs so that each site is active in at most one gate.

@@ -192,7 +192,7 @@ class TDVPEngine(TimeEvolutionAlgorithm, Sweep):
         N_steps : int
             The number of steps to evolve.
         """
-        consistency_check(dt, self.options, 'max_dt', 1.,
+        consistency_check(dt, self.options, 'max_dt', 2.,
                           'dt > ``max_dt`` is unreasonably large for TDVP.',
                           compare='abs()<=')
         self.dt = dt
