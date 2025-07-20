@@ -771,7 +771,7 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, t
            proj_R[traceful_ind_R]=False
            print(f"traceful_ind_R {traceful_ind_R} is to be projected; fix this by hand.")
         """
-        assert not proj_L[traceful_ind_L] and not proj_R[traceful_ind_R], "Need to be keeping the element corresponding to the identity."
+        assert not proj_L[traceful_ind_L] and not proj_R[traceful_ind_R], f"Need to be keeping the element corresponding to the identity.\nIdentity Matrix Element: {orig_M[traceful_ind_L,traceful_ind_R]}."
         # print(traceful_ind_L, traceful_ind_R, orig_M[traceful_ind_L, traceful_ind_R])
         if np.isclose(orig_M[traceful_ind_L,traceful_ind_R], 0.0): # traceless op
             print("Tried 'connected=True' on traceless operator; you sure about this?")
