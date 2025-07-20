@@ -74,10 +74,11 @@ def generate_pairs(lat, key='nearest_neighbors'):
         idXs, idYs = [], []
         for dx1, dx2, bv in lat.pairs[key]:
             idX, idY = lat.possible_couplings(dx1,dx2,bv)[:2]
-            idXs.append(idX)
-            idYs.append(idY)
+            if len(idX):    # if the lattice is not big enough for a certain type of coupling (say vertical nnNN on ladder) to exist, we don't want to add an empty list.
+                idXs.append(idX)
+                idYs.append(idY)
         pairs = [sorted((a,b)) for a,b in zip(np.concatenate(idXs), np.concatenate(idYs))]
-    else:
+    else:   # all possible two site pairs, regardless of geometry
         L = lat.N_sites
         pairs = [sorted((i,j)) for i in range(L) for j in range(i+1, L)]
     return pairs
