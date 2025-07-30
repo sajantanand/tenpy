@@ -102,6 +102,7 @@ class MultipoleChain(CouplingMPOModel):
         # m - which order multipole do the couplings conserve; m = 0 is charge, m=1 is dipole, m=2 is quadrupole
         m = model_params.get('m', 1, int)
         assert len(r) == m + 1, "Need to have a list of couplings for every multipole level, including 0"
+        remove_invalid = model_params.get('remove_invalid', False, bool)  # Do we remove interactions that exceed the local Hilbert space
         # Coupling strengths
         J = model_params.get('J', 1., 'real_or_array')      # Strength of multipole operators; assumed to be the same for all
         Jz = model_params.get('Jz', 1., 'real_or_array')    # Strength of ZZ NN coupling
@@ -128,8 +129,24 @@ class MultipoleChain(CouplingMPOModel):
                     new_s_op = pad_s_op1 - pad_s_op2
                     new_S_op.append(new_s_op)
             S_op = new_S_op
-            print(S_op)
-                    
+            print(f"Op forms at level{mi}: {S_op}.")
+
+        if remove_invalid:
+            S = model_params.get('S', 0.5, 'real')
+            new_S_op = []
+            for s_op in S_op:
+                if np.all(s_op < int(np.round(2*S + 1))):
+                    new_S_op.append(s_op)
+                else:
+                    print(f"Op {s_op} is invalid with spin-{S}. Remove!")
+            S_op = new_S_op
+            
+        # There may be duplicates. Let's remove them.
+        # Convert inner lists to tuples and add to a set for uniqueness
+        S_op = set(tuple(sublist) for sublist in S_op)
+        # Convert the unique tuples back to lists if desired
+        S_op = [list(t) for t in S_op]
+            
         for s_op in S_op:
             ops = []
             for ind, ss_op in enumerate(s_op):
@@ -143,7 +160,8 @@ class MultipoleChain(CouplingMPOModel):
                     op_name = 'Sp' + str(ss_op)
                 elif ss_op < -1:
                     op_name = 'Sm' + str(np.abs(ss_op))
+                
                 ops.append((op_name, [ind], 0))
-            print(ops)
+            print(f"Op generated: {ops}.")
             self.add_multi_coupling(strength=J, ops=ops, plus_hc=True)
         # done
