@@ -500,7 +500,7 @@ class TimeDependentHAlgorithm(TimeEvolutionAlgorithm):
     update step, i.e., we approximate as follows:
 
     .. math ::
-        U(t_0, t) = T{exp(-i int_{t_0}^t ds H(s))}
+        U(t_0, t) = T{exp(-i \int_{t_0}^t ds H(s))}
              \approx prod_{i=0}^{N-1} exp(-i \Delta t H(t_0 + i*\Delta t))
              \textrm{ where } \Delta t = (t-t_0) / N
 
@@ -540,7 +540,7 @@ class TimeDependentHAlgorithm(TimeEvolutionAlgorithm):
 
             self.reinit_model()
 
-
+        self.trunc_err = self.trunc_err + trunc_err  # not += : make a copy!
         if preserve_norm:
             self.psi.norm = old_norm
 
