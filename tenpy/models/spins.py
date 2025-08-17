@@ -110,13 +110,109 @@ class SpinChain(SpinModel, NearestNeighborModel):
     force_default_lattice = True
 
 class XXXChain(SpinChain):
-    """The :class:`SpinChain` for the XXX model with conserved MPOs
+    """The :class:`SpinChain` for the XXX model with conserved MPOs.
+
+    We allow for both U(1) charge conserving and non charge conserving MPOs.
+
+    If we pass a "center" parameter, we only place terms centered on that site. So k tells
+    us the range of the conserved charge, and we place k MPO tensors centered on site
+    center.
 
     See the :class:`SpinModel` for the documentation of parameters.
     """
+    
+    def conserved_charge_MPO_U1(self, k, center=None, verbose=False):
+        assert k >= 1, "Conserved quantities for k>=1."
+        if not hasattr(self, 'MPOs_U1'):
+            self.MPOs_U1 = {}
+            self.Tensors_U1 = {}
+        sites = self.lat.mps_sites()
+        L = len(sites)
 
-    def conserved_charge_MPO(self, k, center=None, verbose=False):
-        assert k >= 1, "Conserved quantities for k>1."
+        if center != None:
+            assert k > 1, "Can't make MPO of L=1."
+            assert center - k // 2 >= 0
+            assert center + (k // 2 - (k+1) % 2) <= L-1
+        if k in self.MPOs_U1.keys() and center == None and not verbose:
+            return self.MPOs_U1[k]
+
+        site = sites[0] # This contains the operators we use to build the sites.
+        Sp = site.get_op('Sp')
+        Sm = site.get_op('Sm')
+        Sz = site.get_op('Sz')
+        Zero = 0 * Sz
+        I = site.get_op('Id')
+        H_MPO = self.H_MPO
+
+        if k in self.Tensors_U1.keys() and not verbose:
+            dW, dI = self.Tensors_U1[k]
+        else:
+            D = 3*k - 1
+            dI = np.empty((D, D), dtype=object)
+            dW = np.empty((D, D), dtype=object)
+            dW_str = np.empty((D, D), dtype=object)
+            for i in range(D):
+                for j in range(D):
+                    dI[i,j] = Zero
+                    dW[i,j] = Zero
+
+            dI[0, 0] = dI[D-1, D-1] = I
+            dW[0, 0] = dW[D-1, D-1] = I
+            dW_str[0, 0] = dW_str[D-1, D-1] = 'I'
+
+            if k == 1:
+                dW[0, 1] = 2*Sz
+                dW_str[0, 1] = 'Z'
+            else:
+                sigma = [np.sqrt(2)*Sm, np.sqrt(2)*Sp, 2*Sz]
+                sigma_dag = [np.sqrt(2)*Sp, np.sqrt(2)*Sm, 2*Sz]
+                sigma_str = ['sqrt(2).Sm', 'sqrt(2).Sp', '2.Sz']
+                sigma_dag_str = ['sqrt(2).Sp', 'sqrt(2).Sm', '2.Sz']
+                M = [[-2*Sz*1.j, Zero, np.sqrt(2)*Sm*1.j], [Zero, 2*Sz*1.j, -np.sqrt(2)*Sp*1.j], [np.sqrt(2)*Sp*1.j, -np.sqrt(2)*Sm*1.j, Zero]]
+                M_str = [['-2i.Sz', '0', 'i.sqrt(2).Sm'], ['0', '2i.Sz', '-i.sqrt(2).Sp'], ['i.sqrt(2).Sp', '-i.sqrt(2).Sm', '0']]
+
+                def Catalan(n):
+                    return comb(2*n, n) - comb(2*n, n-1)
+
+                dW[0, 1:4] = sigma_dag
+                dW[D-4:D-1, D-1] = sigma
+                dW_str[0, 1:4] = sigma_dag_str
+                dW_str[D-4:D-1, D-1] = sigma_str
+
+                assert (D - 1 - 3 - 1) % 3 == 0
+                for i in range(int((D - 1 - 3 - 1)//3)):
+                    dW[(1+3*i):(1+3*(i+1)), (4+3*i):(4+3*(i+1))] = M
+                    dW_str[(1+3*i):(1+3*(i+1)), (4+3*i):(4+3*(i+1))] = M_str
+                for i in range(1, k-2):
+                    for j in range(1, k-1):
+                        if j - i > 0 and (j - i) % 2:
+                            n = (j - i) // 2
+                            Cn = Catalan(n)
+                            Cn_str = 'C' + str(n)
+                            I3 = [[Cn*I, Zero, Zero], [Zero, Cn*I, Zero], [Zero, Zero, Cn*I]]
+                            I3_str = [[Cn_str, '0', '0'], ['0', Cn_str, '0'], ['0', '0', Cn_str]]
+                            dW[(1+3*(i-1)):(1+3*i), (4+3*(j-1)):(4+3*j)] = I3
+                            dW_str[(1+3*(i-1)):(1+3*i), (4+3*(j-1)):(4+3*j)] = I3_str
+
+            if verbose:
+                print(dW_str)
+            self.Tensors_U1[k] = (dW, dI)
+
+        IdL = [0] * (L + 1)
+        IdR = [-1] * (L + 1)
+        from ..networks.mpo import MPO
+        if center == None:
+            CC_MPO = MPO.from_grids(sites, [dW]*L, H_MPO.bc, IdL, IdR, max_range=k, explicit_plus_hc=False)
+            self.MPOs_U1[k] = CC_MPO
+        else:
+            CC_MPO = MPO.from_grids(list(sites[:k]), [dW]*k, H_MPO.bc, IdL[:k+1], IdR[:k+1], max_range=k, explicit_plus_hc=False)
+            I = I.add_trivial_leg(axis=0, label='wL', qconj=1).add_trivial_leg(axis=1, label='wR', qconj=-1)
+            CC_MPO = MPO(sites, [I]*(center - k//2) + CC_MPO._W + [I]*(L-center + k//2 - k), bc=H_MPO.bc, IdL=IdL, IdR=IdR, max_range=k, explicit_plus_hc=False)
+
+        return CC_MPO
+
+    def conserved_charge_MPO_trivial(self, k, center=None, verbose=False):
+        assert k >= 1, "Conserved quantities for k>=1."
         if not hasattr(self, 'MPOs'):
             self.MPOs = {}
             self.Tensors = {}
@@ -127,7 +223,7 @@ class XXXChain(SpinChain):
             assert k > 1, "Can't make MPO of L=1."
             assert center - k // 2 >= 0
             assert center + (k // 2 - (k+1) % 2) <= L-1
-        if k in self.MPOs.keys() and center == None:
+        if k in self.MPOs.keys() and center == None and not verbose:
             return self.MPOs[k]
 
         site = sites[0] # This contains the operators we use to build the sites.
@@ -138,7 +234,7 @@ class XXXChain(SpinChain):
         I = site.get_op('Id')
         H_MPO = self.H_MPO
 
-        if k in self.Tensors.keys():
+        if k in self.Tensors.keys() and not verbose:
             dW, dI = self.Tensors[k]
         else:
             D = 3*k - 1
