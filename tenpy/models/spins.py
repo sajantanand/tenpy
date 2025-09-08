@@ -11,6 +11,7 @@ from ..networks.site import SpinSite
 from .model import CouplingMPOModel, NearestNeighborModel
 from .lattice import Chain, Square
 from ..tools.params import asConfig
+from ..tools.fit import sum_of_exp
 
 __all__ = ['SpinModel', 'SpinChain', 'XXXChain', 
         'AnisotropicSpinModel', 'AnisotropicBarberPole', 'FiniteRangeSpinModel',
@@ -316,12 +317,31 @@ class ExponentiallyDecayingXXZ(CouplingMPOModel):
         lambdas = model_params['lambdas']
         prefactors = model_params['prefactors']
         delta = model_params.get('delta', 1)
+        Kac_norm = model_params.get('Kac_norm', False)
+        term_norm = model_params.get('term_norm', False)
+        L = model_params['L']
+
+
+        if term_norm:
+            term_norm = np.sqrt(1 + 1 + delta**2)
+            print(f"term_norm: {term_norm}.")
+        else:
+            term_norm = 1
+
+        if Kac_norm:
+            # See Eq. 1 of https://arxiv.org/pdf/1909.01351
+            # We use the approximate interation rather than the exact
+            approximate_interation = sum_of_exp(lambdas, prefactors, np.arange(1, L//2))
+            Kac_norm = np.sqrt(np.sum(approximate_interaction**2)*2)
+            print(f"Kac_norm: {Kac_norm}.")
+        else:
+            Kac_norm = 1
 
         for lam, pre in zip(lambdas, prefactors):
             # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
             # Sp Sm + Sm Sp = 2 (Sx Sx + Sy Sy)
-            self.add_exponentially_decaying_coupling(pre*2, lam, 'Sp', 'Sm', plus_hc=True)
-            self.add_exponentially_decaying_coupling(pre*4*delta, lam, 'Sz', 'Sz')
+            self.add_exponentially_decaying_coupling(pre*2/term_norm/Kac_norm, lam, 'Sp', 'Sm', plus_hc=True)
+            self.add_exponentially_decaying_coupling(pre*4*delta/term_norm/Kac_norm, lam, 'Sz', 'Sz')
         # done
 
     def conserved_charge_MPO(self, k, center=None, verbose=False):
