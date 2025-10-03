@@ -312,7 +312,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
             return  # nothing to do: U is cached
         self._U_param = U_param
         logger.info("Calculate U for %s", U_param)
-        consistency_check(np.abs(delta_t), self.options, 'max_delta_t', 1.,
+        consistency_check(np.abs(delta_t), self.options, 'max_delta_t', 2.,
                           'delta_t > ``max_delta_t`` is unreasonably large for trotterization.')
         L = self.psi.L
         self._U = []
