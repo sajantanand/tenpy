@@ -2230,27 +2230,31 @@ class DoubledSite(Site):
 
                 # We choose a convention that generates the (normalized) TENPY spin-1/2 matrices
                 # Sz = [[-1,0],[0,1]]/2, Sx = [[0,1],[1,0]]/2, Sy = [[0,1.j],[-1.j,0]]/2
-
+                
+                # 10/03/2025 - Reorder so that symmetric ops are first and then non-symmetric ops.
+                # So for spin-1/2, the basis goes I, Z, X, Y
                 assert conserve == 'None'
 
                 self.OP_ops = OP_ops = []
                 # Want legPipes, so let's do this with NPC.
                 OP_ops.append(npc.Array.from_ndarray(np.eye(d, dtype=np.complex128), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
                 self.identity_ind = 0
+                
+                for i in range(1, d):
+                    OP_ops.append(npc.Array.from_ndarray(np.diag([-1+0.j] + (i-1)*[0] + [1+0.j] + [0] * (d-1-i)), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
 
-
+                evens, odds = [], []
                 for j in range(0, d-1):
                     for i in range(j+1, d):
                         op = np.zeros((d,d), dtype=np.complex128)
                         op[j,i] = 1
-                        OP_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                        evens.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
 
                         op *= 1.j
-                        OP_ops.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
+                        odds.append(npc.Array.from_ndarray(op + op.conj().T, [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
 
-                for i in range(1, d):
-                    OP_ops.append(npc.Array.from_ndarray(np.diag([-1+0.j] + (i-1)*[0] + [1+0.j] + [0] * (d-1-i)), [ss_op.leg, ss_op.leg.conj()], dtype=np.complex128, labels=['p', 'p*']))
-
+                OP_ops.extend(evens)
+                OP_ops.extend(odds)
 
                 OP_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in OP_ops])
                 self.OP = npc.Array.from_ndarray(OP_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])

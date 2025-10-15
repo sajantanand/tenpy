@@ -434,6 +434,7 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         #id_ind = id_ind.item()
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
+            print("Overlaps:", overlaps)
         id_ind = id_ind[0]
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
     return QR_R, keep_R, trace_env, MPO_envs, id_ind
