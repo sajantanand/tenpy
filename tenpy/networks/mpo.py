@@ -1630,8 +1630,10 @@ class MPO:
 
             self.apply_naively(psi)
             trunc_err, trace_env, MPO_envs = psi.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs,
-                                                              svd_trunc_params_0=_machine_prec_trunc_par,
-                                                              svd_trunc_params_2=_machine_prec_trunc_par,
+                                                              #svd_trunc_params_0=_machine_prec_trunc_par,
+                                                              #svd_trunc_params_2=_machine_prec_trunc_par,
+                                                              svd_trunc_params_0=svd_trunc_params_0,
+                                                              svd_trunc_params_2=svd_trunc_params_2,
                                                               timing=timing)
             options['trace_env'] = trace_env
             options['MPO_envs'] = MPO_envs
