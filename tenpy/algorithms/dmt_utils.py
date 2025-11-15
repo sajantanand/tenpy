@@ -29,7 +29,8 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True
         ds: DoubledSite
             Site to use for new models
         imaginary: Boolean
-            If True, we want to build HI + IH*; if False, we want to build HI - IH*
+            If True, we want to build HI + IH*; if False, we want to build HI - IH*. We want the first for imaginary
+            time evolution (e^{-beta H}) and the later for real time evolution (e^{-i t H}).
     returns:
         doubled_model: TeNPy model
             Either `MPOModel` or `NearestNeighborModel` depending on the `NN` parameter

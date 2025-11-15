@@ -1231,13 +1231,13 @@ class SpinHalfSite(Site):
         Sz = [[0.5, 0.], [0., -0.5]]
         Sp = [[0., 1.], [0., 0.]]  # == Sx + i Sy
         Sm = [[0., 0.], [1., 0.]]  # == Sx - i Sy
-        ops = dict(Sp=Sp, Sm=Sm, Sz=Sz)
+        # Added computational state projectors for PXP model - SAJANT
+        ops = dict(Sp=Sp, Sm=Sm, Sz=Sz, P0=np.eye(2)/2+Sz, P1=np.eye(2)/2-Sz)
         if conserve == 'Sz':
             chinfo = npc.ChargeInfo([1], ['2*Sz'])
             leg = npc.LegCharge.from_qflat(chinfo, [1, -1])
         else:
-            # Added computational state projectors for PXP model - SAJANT
-            ops.update(Sx=Sx, Sy=Sy, P0=np.eye(2)/2+Sz, P1=np.eye(2)/2-Sz)
+            ops.update(Sx=Sx, Sy=Sy)
             if conserve == 'parity':
                 chinfo = npc.ChargeInfo([2], ['parity_Sz'])
                 leg = npc.LegCharge.from_qflat(chinfo, [1, 0])  # ([1, -1] would need ``qmod=[4]``)
