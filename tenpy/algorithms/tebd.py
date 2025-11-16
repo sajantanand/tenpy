@@ -54,7 +54,7 @@ from ..linalg import random_matrix
 from ..algorithms import dmt_utils as dmt
 from ..tools.misc import consistency_check
 
-__all__ = ['TEBDEngine', 'DMTTEBDEngine', 'SVDTEBDEngine', 'QRBasedTEBDEngine', 'RandomUnitaryEvolution', 'TimeDependentTEBD']
+__all__ = ['TEBDEngine', 'ChooseSweepTEBDEngine', 'DMTTEBDEngine', 'SVDTEBDEngine', 'QRBasedTEBDEngine', 'RandomUnitaryEvolution', 'TimeDependentTEBD']
 
 
 class TEBDEngine(TimeEvolutionAlgorithm):
@@ -312,7 +312,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
             return  # nothing to do: U is cached
         self._U_param = U_param
         logger.info("Calculate U for %s", U_param)
-        consistency_check(np.abs(delta_t), self.options, 'max_delta_t', 1.,
+        consistency_check(np.abs(delta_t), self.options, 'max_delta_t', 2.,
                           'delta_t > ``max_delta_t`` is unreasonably large for trotterization.')
         L = self.psi.L
         self._U = []
@@ -476,7 +476,10 @@ class TEBDEngine(TimeEvolutionAlgorithm):
             The number of steps for which the whole lattice should be updated.
         call_canonical_from : bool
             The singular values saved in the MPS are not exactly correct after the update,
-            since the non-unitary update on other bonds can change them.
+            since the non-unitary update on other bonds can change them. The MPS itself is
+            still in a well defined canonical form (the tensors will all be in B form), but
+            the singular values on bonds to the right will not be exactly correct to allow for
+            arbitrary change of form by inverting singular values.
             To fix this, we call `psi.canonical_form` at the end.
             Since this is about as a expensive as a single sweep, we allow to disable it,
             e.g. during the imaginary evolution looking for ground states where the intermediate
@@ -605,34 +608,163 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         assert (tuple(U.get_leg_labels()) == ('(p0.p1)', '(p0*.p1*)'))
         return U.split_legs()
 
-class SVDTEBDEngine(TEBDEngine):
-    def evolve(self, N_steps, dt, call_canonical_form=False):
-        """Evolve by ``dt * N_steps``.
+class ChooseSweepTEBDEngine(TEBDEngine):
+    """ TEBD algorithm with choice of left-right or even-odd sweep.
 
-        Parameters
-        ----------
-        N_steps : int
-            The number of steps for which the whole lattice should be updated.
-        dt : float
-            The time step; but really this was already used in :meth:`prepare_evolve`.
+    The normal TEBD engine does even-odd sweeps for real time evolution and lef-right
+    sweeps for imaginary time evolution (with a Trotter order of 2). We want to allow
+    for choice of sweeping pattern for both real and imaginary time evolution. To this 
+    end, we add `options['LR_sweep']` flag which defaults to `True. Note that we leave
+    `run_GS` unchanged, which chooses even-odd vs left-right.
 
-        Returns
-        -------
-        trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
-            The error of the represented state which is introduced due to the truncation during
-            this sequence of evolvution steps.
+    If we do even-odd sweeps, we make two changes:
+        (1) After updating a two-site theta, we leave the MPS in A - s - B form. It is
+        assumed that the bond between the two sites is the 0-site OC. Compare this to
+        leaving the MPS in the s - B - B form.
+        (2) Instead of directly moving to the next pair of sites, we do a QR sweep to
+        turn the A - A - s - B - B -> A - s - B - B - B (left sweep) or 
+        A - A - A - s - B (right sweep). Then when we get the next two-site theta to
+        update, we are already in the correct canonical form.
+
+    This only works for finite MPS since for infinite MPS, changing a single tensor
+    requires recanonicalization of the entire iMPS to reestablish good singular values
+    on each bond.
+    """
+
+    def __init__(self, psi, model, options, **kwargs):
+        TEBDEngine.__init__(self, psi, model, options, **kwargs)
+        assert psi.bc == 'finite', "Other BCs are not allowed for this TEBD engine. Use the standard one."
+
+    def evolve(self, N_steps, dt):
+        """Depending on Sweep type, do either even-odd or left-right sweeps.
         """
+        # LR_sweep == False -> do Brick Work sweeping
+        LR_sweep = self.options.get('LR_sweep', True, bool)
         if dt is not None:
             assert dt == self._U_param['delta_t']
-        return self.update_imag(N_steps, call_canonical_form)
+        trunc_err = TruncationError()
+
+        if LR_sweep:
+            # left-right sweep
+            # The SVs are not exact after a sweep to allow for measurement of observables.
+            # So we want to canonicalize the MPS before measuring. This does not need to
+            # be done to properly do another sweep since we always act on the OC.
+            call_canonical_form = self.options.get('call_canonical_form', False, bool)
+            trunc_err = self.update_imag(N_steps, call_canonical_form=call_canonical_form)
+        else:
+            # even-odd sweep
+            order = self._U_param['order']
+            for U_idx_dt, odd in self.suzuki_trotter_decomposition(order, N_steps):
+                trunc_err += self.evolve_step(U_idx_dt, odd)
+        
+            self.evolved_time = self.evolved_time + N_steps * self._U_param['tau']
+            self.trunc_err = self.trunc_err + trunc_err  # not += : make a copy!
+            # (this is done to avoid problems of users storing self.trunc_err after each `evolve`)
+        return trunc_err
 
     def evolve_step(self, U_idx_dt, odd):
-        raise NotImplementedError()
+        """Updates either even *or* odd bonds in unit cell, with QR after to move OC.
 
-    def update_bond(self, i, U_bond):
-        raise NotImplementedError()
+        After updating the bond, the MPS is in A - s - B state. We then want to move the OC
+        to either the left or the right, depending on the sweep. When starting out, we don't
+        know if the most up-to-date SVs are on the first or last bond. Depending on this, we
+        choose the sweep direction.
+        """
+        Us = self._U[U_idx_dt]
+        trunc_err = TruncationError()
 
-class DMTTEBDEngine(SVDTEBDEngine):
+        # Determine where the most up-to-date SVs are. If `psi.canonical_form()` has recently been
+        # called, the SVs are accurate everywhere and we sweep right, starting from the left endpoint.
+        sweep_right = True
+        if self.psi.form[1:] == [(0.0, 1.0)] * (self.psi.L-1):
+            # MPS (to right of site 0) is in B form
+            # A - s - B - B - B - ...
+            # or 
+            # Th - B - B - B - ...
+            sweep_right = True
+        elif self.psi.form[:-1] == [(1.0, 0.0)] * (self.psi.L-1):
+            # MPS (to left of site L-1) is in A form
+            # ... - A - A - A - s - B
+            # or 
+            # ... - A - A - A - Th
+            sweep_right = False
+        else:
+            logger.info("MPS forms: %r", self.psi.form)
+            raise NotImplementedError('The MPS is not in A or B form.')
+
+        logger.debug("Odd (%d): sweep_right (%d)", odd, sweep_right)
+        
+        sweep_range = np.arange(int(odd) % 2, self.psi.L, 2)
+        if not sweep_right:
+            sweep_range = sweep_range[::-1]
+        
+        logger.debug("Sweep range: %r", sweep_range)
+
+        for i_bond in sweep_range:
+            if Us[i_bond] is None:
+                # For finite MPS, Us[0] is none since no gate acts on the bond to the
+                # left of site 0.
+                continue  # handles finite vs. infinite boundary conditions
+            self._update_index = (U_idx_dt, i_bond)
+            trunc_err += self.update_bond(i_bond, Us[i_bond], sweep_right)
+        self._update_index = None
+        return trunc_err
+
+    def update_bond(self, i, U_bond, sweep_right):
+        # For both real and imaginary time updates, we do the same local update to absorb a
+        # gate and leave the MPS as A - s - B. `TEBD.update_bond_imag` already does this.
+        trunc_err = self.update_bond_imag(i, U_bond)
+
+        # We now want to do a QR to move the OC, which is on the bond to the left of site i.
+        if sweep_right and i < self.psi.L-1:
+            # A_{i-1} - s_i - B_i - B_{i+1} -> A_{i-1} - A_i - s_{i+1} - B_{i+1}
+            # Now we update site i+2 properly
+            theta = self.psi.get_theta(i, n=1)
+            theta = theta.combine_legs([('vL', 'p0')], qconj=[+1])
+            U, S, V, trunc_err, renormalize = svd_theta(theta,
+                                                    self.trunc_params,
+                                                    [self.psi.get_B(i, None).qtotal, None],
+                                                    inner_labels=['vR', 'vL'])
+            # trunc_err SHOULD be zero since the ungrouped virtual bond is at most chi_max to start.
+            # but sometimes small SVs are thrown away.
+            assert np.isclose(trunc_err.eps, 0.0) and np.isclose(trunc_err.ov, 1.0), trunc_err
+            if trunc_err.eps != 0:
+                logger.debug('Theta chi %d -> %d', theta.get_leg('vR').ind_len, len(S))
+            self.psi.norm *= renormalize
+            # Split legs and update matrices
+            A_L = U.split_legs(0).ireplace_label('p0', 'p')
+            self.psi.set_SR(i, S)
+            self.psi.set_B(i, A_L, form='A')
+            # Absorb V matrix into B
+            B_R = self.psi.get_B(i+1, form='B')
+            B_R = npc.tensordot(V, B_R, axes=(['vR'], ['vL']))
+            self.psi.set_B(i+1, B_R, form='B')
+        elif not sweep_right and i > 1:
+            # A_{i-2} - A_{i-1} - s_i - B_i -> A_{i-2} - s_{i-1} - B_{i-1} - B_i
+            # Now we update site i-2 properly
+            theta = self.psi.get_theta(i-1, n=1)
+            theta = theta.combine_legs([('vR', 'p0')], qconj=[-1])
+            U, S, V, trunc_err, renormalize = svd_theta(theta,
+                                                    self.trunc_params,
+                                                    [None, self.psi.get_B(i-1, None).qtotal],
+                                                    inner_labels=['vR', 'vL'])
+            # trunc_err SHOULD be zero since the ungrouped virtual bond is at most chi_max to start.
+            # but sometimes small SVs are thrown away.
+            assert np.isclose(trunc_err.eps, 0.0) and np.isclose(trunc_err.ov, 1.0), trunc_err
+            if trunc_err.eps != 0:
+                logger.debug('Theta chi %d -> %d', theta.get_leg('vL').ind_len, len(S))
+            self.psi.norm *= renormalize
+            # Split legs and update matrices
+            B_R = V.split_legs(1).ireplace_label('p0', 'p')
+            self.psi.set_SL(i-1, S)
+            self.psi.set_B(i-1, B_R, form='B')
+            # Absorb U matrix into A
+            A_L = self.psi.get_B(i-2, form='A')
+            A_L = npc.tensordot(A_L, U, axes=(['vR'], ['vL']))
+            self.psi.set_B(i-2, A_L, form='A')
+        return trunc_err
+
+class DMTTEBDEngine(ChooseSweepTEBDEngine):
     def update_bond_imag(self, i, U_bond):
         """Update a bond with a (possibly non-unitary) `U_bond`.
 
@@ -690,6 +822,33 @@ class DMTTEBDEngine(SVDTEBDEngine):
         self.options['trace_env'] = trace_env
         self.options['MPO_envs'] = MPO_envs
         return trunc_err1 + trunc_err2
+    
+    def update_bond(self, i, U_bond, sweep_right):
+        trunc_err = super().update_bond(i, U_bond, sweep_right)
+        
+        trace_env = self.options.get('trace_env', None)
+        MPO_envs = self.options.get('MPO_envs', None)
+       
+        # We want to remove the environments containing the bond changed by the supposedly bond
+        # dimension preserving SVD.
+        if sweep_right and i < self.psi.L-1:
+            i0 = i
+        elif not sweep_right and i > 1:
+            i0 = i-2
+        else:
+            i0 = None
+        if i0 is not None:
+            trace_env.del_RP(i0)
+            trace_env.del_LP(i0+1)
+            if MPO_envs is not None:
+                for Me in MPO_envs:
+                    Me.del_RP(i0)
+                    Me.del_LP(i0+1)
+        
+        self.options['trace_env'] = trace_env
+        self.options['MPO_envs'] = MPO_envs
+
+        return trunc_err
 
 class QRBasedTEBDEngine(TEBDEngine):
     r"""Version of TEBD that relies on QR decompositions rather than SVD.

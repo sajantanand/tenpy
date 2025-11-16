@@ -240,7 +240,6 @@ def truncate(S, options, norm_old=1.):
     if trunc_cut is not None:
         good2 = ((np.cumsum(S[piv]**2)/norm_old**2) > trunc_cut * trunc_cut)
         good = _combine_constraints(good, good2, "trunc_cut")
-
     cut = np.nonzero(good)[0][0]  # smallest possible cut: keep as many S as allowed
     mask = np.zeros(len(S), dtype=np.bool_)
     np.put(mask, piv[cut:], True)

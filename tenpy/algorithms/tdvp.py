@@ -329,7 +329,8 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         """
         The trace can change when doing TDVP since we evolve the entirety of the Theta matrix.
         In principle, we could evolve all of the Theta matrix except for the (0,0) entry so that the
-        norm is guaranteed to be unchanged. I'm not sure how to do this in practice.
+        norm is guaranteed to be unchanged. I'm not sure how to do this in practice. Note that we
+        wouldn't want to do this for imaginary time evolution anyway, since the trace should change.
         """
         i0 = self.i0
         L = self.psi.L

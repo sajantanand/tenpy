@@ -41,7 +41,7 @@ class PXPChain(CouplingMPOModel):
 
     def init_terms(self, model_params):
         J = model_params.get('J', 2.)
-        self.add_multi_coupling(J, [('P', [-1], 0), ('X', [0],0), ('P', [1], 0)])
+        self.add_multi_coupling(J, [('P', [-1], 0), ('X', [0], 0), ('P', [1], 0)])
 
         if model_params['bc_x'] == 'open':
             L = model_params['L']

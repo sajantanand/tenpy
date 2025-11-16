@@ -111,6 +111,54 @@ class SpinChain(SpinModel, NearestNeighborModel):
     default_lattice = Chain
     force_default_lattice = True
 
+class fSimChain(SpinChain):
+    """Model such that TEBD with dt=1.0 performs brick-wall evolution by fSim gates.
+
+    fSim(theta, phi) = [[1,0,0,0],
+                        [0,cos(theta),-isin(theta),0],
+                        [0,-isin(theta),cos(theta),0],
+                        [0,0,0,e^{-i phi}]]
+
+    We want a Hamiltonian such that brick wall TEBD generates this evolution with dt=1.0.
+    The effective Hamiltonian is given by H = alpha/2 (XX + YY) + beta/4 * (1-Z)*(1-Z),
+    where alpha = logm(fSim)[1,2]*i, beta=logm(fSim)[3,3]*i. We will implement this with
+    onsite fields for the single body Z. We drop the overall additive shift, which just
+    gives rise to a global phase.
+    """
+    def init_sites(self, model_params):
+        site = super().init_sites(model_params)
+        assert model_params.get('S', 0.5, 'real') == 0.5
+        # Id/2 - Sz
+        # We assume `type(site) == SpinSite`, as this is what the parent class constructs.
+        site.add_op('P1', np.array([[0., 0.], [0., 1.0]]), hc='P1', permute_dense=True)
+
+        return site
+
+    def init_terms(self, model_params):
+        theta = model_params.get('theta', 1., 'real') * np.pi
+        phi = model_params.get('phi', 1., 'real') * np.pi
+
+        fSim = fSim = np.array([[1, 0, 0, 0],
+                 [0,np.cos(theta), -1.j*np.sin(theta), 0],
+                 [0, -1.j*np.sin(theta), np.cos(theta), 0],
+                 [0, 0, 0, np.exp(-1.j * phi)]])
+        self.fSim = fSim
+
+        from scipy.linalg import expm, logm
+
+        Hf = 1.j * logm(fSim)
+        self.Hf = Hf
+        assert np.isclose(np.linalg.norm(Hf.imag), 0.0)
+        alpha = Hf[1,2]
+        beta = Hf[3,3]
+        
+        for u1, u2, dx in self.lat.pairs['nearest_neighbors']:
+            # Want Pauli, not Sz
+            # alpha / 2 for boh XX and YY
+            self.add_coupling(alpha, u1, 'Sp', u2, 'Sm', dx, plus_hc=True)
+            #self.add_coupling(beta, u1, 'Sz', u2, 'Sz', dx)
+            self.add_coupling(beta, u1, 'P1', u2, 'P1', dx)
+
 class XXXChain(SpinModel):
     """The :class:`SpinModel` for the XXX model with conserved MPOs.
 

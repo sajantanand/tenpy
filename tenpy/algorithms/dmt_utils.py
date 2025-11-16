@@ -29,7 +29,8 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True
         ds: DoubledSite
             Site to use for new models
         imaginary: Boolean
-            If True, we want to build HI + IH*; if False, we want to build HI - IH*
+            If True, we want to build HI + IH*; if False, we want to build HI - IH*. We want the first for imaginary
+            time evolution (e^{-beta H}) and the later for real time evolution (e^{-i t H}).
     returns:
         doubled_model: TeNPy model
             Either `MPOModel` or `NearestNeighborModel` depending on the `NN` parameter
@@ -434,6 +435,7 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         #id_ind = id_ind.item()
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
+            print("Overlaps:", overlaps)
         id_ind = id_ind[0]
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
     return QR_R, keep_R, trace_env, MPO_envs, id_ind
@@ -930,6 +932,10 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     # SAJANT - Set svd_min to 0 to make sure no SVs are dropped? Or do we need some cutoff to remove the
     # SVs corresponding to the rank we removed earlier from M_DR
     U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
+    if len(S) > svd_trunc_params['chi_max']:
+        print("Excess SVs:", S[svd_trunc_params['chi_max']:])
+        assert False
+
     err2 = TruncationError.from_norm(renormalization2, norm_old=M_norm)
     # M_trunc (if normalized) would have norm 1 (or the original norm) if we did no truncation; so the new norm (given by `renormalization2`) is akin to
     # the error.
