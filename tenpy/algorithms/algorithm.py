@@ -399,6 +399,8 @@ class TimeEvolutionAlgorithm(Algorithm):
         Sold = np.mean(self.psi.entanglement_entropy())
 
         self.run_evolution(N_steps, dt)
+        
+        logger.debug('Norm test of current psi: %r', self.psi.norm_test())
 
         S = self.psi.entanglement_entropy()
         logger.info(
