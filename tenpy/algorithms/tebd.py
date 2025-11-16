@@ -54,7 +54,7 @@ from ..linalg import random_matrix
 from ..algorithms import dmt_utils as dmt
 from ..tools.misc import consistency_check
 
-__all__ = ['TEBDEngine', 'ChooseSweepTEBDEngine', 'DMTTEBDEngine', 'SVDTEBDEngine', 'QRBasedTEBDEngine', 'RandomUnitaryEvolution', 'TimeDependentTEBD']
+__all__ = ['TEBDEngine', 'ChooseSweepTEBDEngine', 'DMTTEBDEngine', 'QRBasedTEBDEngine', 'RandomUnitaryEvolution', 'TimeDependentTEBD']
 
 
 class TEBDEngine(TimeEvolutionAlgorithm):
