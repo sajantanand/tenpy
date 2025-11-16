@@ -755,7 +755,7 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
 
     Crucially, the MPS will have non-trivial virtual boundary conditions on the leftmost and rightmost bonds.
     We do NOT require that the the left (right) virtual leg of bra is compatible to that of the ket; all we require is
-    that the left (right) leg of the bra is compatible with that of the ket.
+    that the left (right) leg of the bra is compatible with the right (left) leg of the same MPS.
 
     This class stores the partial contractions up to each bond.
 
