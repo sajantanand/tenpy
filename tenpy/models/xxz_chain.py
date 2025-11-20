@@ -5,11 +5,11 @@ this module is more to serve as a pedagogical example for a model.
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-from .lattice import Site, Chain
-from .model import CouplingModel, NearestNeighborModel, MPOModel, CouplingMPOModel
 from ..linalg import np_conserved as npc
-from ..tools.params import asConfig
 from ..networks.site import SpinHalfSite  # if you want to use the predefined site
+from ..tools.params import asConfig
+from .lattice import Chain, Site
+from .model import CouplingModel, CouplingMPOModel, MPOModel, NearestNeighborModel
 
 __all__ = ['XXZChain', 'XXZChain2']
 
@@ -39,6 +39,8 @@ class XXZChain(CouplingModel, NearestNeighborModel, MPOModel):
 
         L : int
             Length of the chain.
+        conserve : 'parity' | None
+            What should be conserved. See :class:`~tenpy.networks.Site.SpinHalfSite`.
         Jxx, Jz, hz : float | array
             Coupling as defined for the Hamiltonian above.
             Defaults to ``Jxx=Jz=1`` without field ``hz=0``.
@@ -48,31 +50,40 @@ class XXZChain(CouplingModel, NearestNeighborModel, MPOModel):
             Whether to sort by charges of physical legs. `True` by default.
 
     """
+
     def __init__(self, model_params):
         # 0) read out/set default parameters
-        model_params = asConfig(model_params, "XXZChain")
+        model_params = asConfig(model_params, 'XXZChain')
         L = model_params.get('L', 2, int)
-        Jxx = model_params.get('Jxx', 1., 'real_or_array')
-        Jz = model_params.get('Jz', 1., 'real_or_array')
-        hz = model_params.get('hz', 0., 'real_or_array')
+        Jxx = model_params.get('Jxx', 1.0, 'real_or_array')
+        Jz = model_params.get('Jz', 1.0, 'real_or_array')
+        hz = model_params.get('hz', 0.0, 'real_or_array')
         bc_MPS = model_params.get('bc_MPS', 'finite', str)
+        conserve = model_params.get('conserve', 'best', str)
+        if conserve == 'best':
+            conserve = 'Sz'
         sort_charge = model_params.get('sort_charge', True, bool)
         # 1-3):
         USE_PREDEFINED_SITE = False
         if not USE_PREDEFINED_SITE:
             # 1) charges of the physical leg. The only time that we actually define charges!
-            leg = npc.LegCharge.from_qflat(npc.ChargeInfo([1], ['2*Sz']), [1, -1])
+            if conserve == 'Sz':
+                leg = npc.LegCharge.from_qflat(npc.ChargeInfo([1], ['2*Sz']), [1, -1])
+            elif conserve == 'parity':
+                leg = npc.LegCharge.from_qflat(npc.ChargeInfo([2], ['parity_Sz']), [1, 0])
+            else:
+                leg = npc.LegCharge.from_trivial(2)
             # 2) onsite operators
-            Sp = [[0., 1.], [0., 0.]]
-            Sm = [[0., 0.], [1., 0.]]
-            Sz = [[0.5, 0.], [0., -0.5]]
+            Sp = [[0.0, 1.0], [0.0, 0.0]]
+            Sm = [[0.0, 0.0], [1.0, 0.0]]
+            Sz = [[0.5, 0.0], [0.0, -0.5]]
             # (Can't define Sx and Sy as onsite operators: they are incompatible with Sz charges.)
             # 3) local physical site
             site = Site(leg, ['up', 'down'], sort_charge=sort_charge, Sp=Sp, Sm=Sm, Sz=Sz)
         else:
             # there is a site for spin-1/2 defined in TeNPy, so just we can just use it
             # replacing steps 1-3)
-            site = SpinHalfSite(conserve='Sz', sort_charge=sort_charge)
+            site = SpinHalfSite(conserve=conserve, sort_charge=sort_charge)
         # 4) lattice
         bc = 'open' if bc_MPS == 'finite' else 'periodic'
         lat = Chain(L, site, bc=bc, bc_MPS=bc_MPS)
@@ -101,19 +112,24 @@ class XXZChain2(CouplingMPOModel, NearestNeighborModel):
     ----------
     model_params : dict | :class:`~tenpy.tools.params.Config`
         See :cfg:config:`XXZChain`
+
     """
-    default_lattice = "Chain"
+
+    default_lattice = 'Chain'
     force_default_lattice = True
 
     def init_sites(self, model_params):
         sort_charge = model_params.get('sort_charge', True, bool)
-        return SpinHalfSite(conserve='Sz', sort_charge=sort_charge)  # use predefined Site
+        conserve = model_params.get('conserve', 'best', str)
+        if conserve == 'best':
+            conserve = 'Sz'
+        return SpinHalfSite(conserve=conserve, sort_charge=sort_charge)  # use predefined Site
 
     def init_terms(self, model_params):
         # read out parameters
-        Jxx = model_params.get('Jxx', 1., 'real_or_array')
-        Jz = model_params.get('Jz', 1., 'real_or_array')
-        hz = model_params.get('hz', 0., 'real_or_array')
+        Jxx = model_params.get('Jxx', 1.0, 'real_or_array')
+        Jz = model_params.get('Jz', 1.0, 'real_or_array')
+        hz = model_params.get('hz', 0.0, 'real_or_array')
         # add terms
         for u in range(len(self.lat.unit_cell)):
             self.add_onsite(-hz, u, 'Sz')

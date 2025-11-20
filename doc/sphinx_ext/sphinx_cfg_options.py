@@ -5,22 +5,20 @@ import re
 from collections import namedtuple
 
 import docutils
+import sphinx
 from docutils import nodes
 from docutils.parsers import rst
 from docutils.parsers.rst import directives
 from docutils.statemachine import StringList
-import sphinx
+from sphinx import addnodes
+from sphinx.directives import ObjectDescription
 from sphinx.domains import Domain, Index, ObjType
 from sphinx.domains.std import StandardDomain
 from sphinx.errors import NoUri
 from sphinx.roles import XRefRole
-from sphinx.directives import ObjectDescription
-from sphinx.util.nodes import make_id, make_refnode
-from sphinx.util.docutils import new_document
-from sphinx import addnodes
-from sphinx.util.docutils import SphinxDirective
-
 from sphinx.util import logging
+from sphinx.util.docutils import SphinxDirective, new_document
+from sphinx.util.nodes import make_id, make_refnode
 
 logger = logging.getLogger(__name__)
 
@@ -422,7 +420,7 @@ class ConfigNodeProcessor:
             par += nodes.Text(")")
         if option.context is not None:
             opt_context = option.context
-            if opt_context.startswith(context):
+            if context and opt_context.startswith(context):
                 opt_context = opt_context[len(context):]
             if opt_context:
                 par += nodes.Text(" in ")

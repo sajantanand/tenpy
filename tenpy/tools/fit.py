@@ -5,15 +5,23 @@ import numpy as np
 import scipy.optimize as optimize
 
 __all__ = [
-    'alg_decay', 'linear_fit', 'lin_fit_res', 'alg_decay_fit_res', 'alg_decay_fit',
-    'alg_decay_fits', 'plot_alg_decay_fit', 'fit_with_sum_of_exp', 'sum_of_exp',
-    'entropy_profile_from_CFT', 'central_charge_from_S_profile'
+    'alg_decay',
+    'linear_fit',
+    'lin_fit_res',
+    'alg_decay_fit_res',
+    'alg_decay_fit',
+    'alg_decay_fits',
+    'plot_alg_decay_fit',
+    'fit_with_sum_of_exp',
+    'sum_of_exp',
+    'entropy_profile_from_CFT',
+    'central_charge_from_S_profile',
 ]
 
 
 def alg_decay(x, a, b, c):
     """Algebraic decay function :math :`a * x^{-b} + c`."""
-    return a * x**(-b) + c
+    return a * x ** (-b) + c
 
 
 def linear_fit(x, y):
@@ -34,6 +42,7 @@ def linear_fit(x, y):
         They "y-intercept" parameter of the fit function.
     res : float
         The (squared) residue, i.e. ``sum((y - (a * x + b)) ** 2)``.
+
     """
     assert x.ndim == 1 and y.ndim == 1
     fit = np.linalg.lstsq(np.vstack([x, np.ones(len(x))]).T, y, rcond=None)
@@ -51,10 +60,10 @@ def lin_fit_res(x, y):
 
 def alg_decay_fit_res(log_b, x, y):
     """Returns the residue of an algebraic decay fit of the form ``x**(-np.exp(log_b))``."""
-    return lin_fit_res(x**(-np.exp(log_b)), y)
+    return lin_fit_res(x ** (-np.exp(log_b)), y)
 
 
-def alg_decay_fit(x, y, npts=5, power_range=(0.01, 4.), power_mesh=[60, 10]):
+def alg_decay_fit(x, y, npts=5, power_range=(0.01, 4.0), power_mesh=[60, 10]):
     """Fit `y` to an algebraic decay of the form :math :`a * x^{-b} + c`.
 
     The exponent ``b`` is first determined via a brute-force search with a fixed search grid
@@ -90,6 +99,7 @@ def alg_decay_fit(x, y, npts=5, power_range=(0.01, 4.), power_mesh=[60, 10]):
     See Also
     --------
     alg_decay_fits
+
     """
     x = np.array(x)
     y = np.array(y)
@@ -106,17 +116,15 @@ def alg_decay_fit(x, y, npts=5, power_range=(0.01, 4.), power_mesh=[60, 10]):
         # number of points inclusive
         brute_Ns = (power_mesh[i] if i == 0 else 2 * power_mesh[i]) + 1
         log_power_step = (log_power_range[1] - log_power_range[0]) / float(brute_Ns - 1)
-        brute_fit = optimize.brute(alg_decay_fit_res, [log_power_range], (x, y),
-                                   Ns=brute_Ns,
-                                   finish=None)
+        brute_fit = optimize.brute(alg_decay_fit_res, [log_power_range], (x, y), Ns=brute_Ns, finish=None)
         if brute_fit <= global_log_power_range[0] + 1e-6:
-            return [0., 0., y[-1]]  # shit happened
+            return [0.0, 0.0, y[-1]]  # shit happened
         log_power_range = (brute_fit - log_power_step, brute_fit + log_power_step)
-    l_fit = linear_fit(x**(-np.exp(brute_fit)), y)
+    l_fit = linear_fit(x ** (-np.exp(brute_fit)), y)
     return [l_fit[0], np.exp(brute_fit), l_fit[1]]
 
 
-def alg_decay_fits(x, ys, npts=5, power_range=(0.01, 4.), power_mesh=[60, 10]):
+def alg_decay_fits(x, ys, npts=5, power_range=(0.01, 4.0), power_mesh=[60, 10]):
     """Batched version of :func:`~tenpy.tools.fit.alg_decay`.
 
     Parameters
@@ -140,6 +148,7 @@ def alg_decay_fits(x, ys, npts=5, power_range=(0.01, 4.), power_mesh=[60, 10]):
     See Also
     --------
     alg_decay_fit
+
     """
     x = np.array(x)
     if x.ndim != 1:
@@ -147,11 +156,13 @@ def alg_decay_fits(x, ys, npts=5, power_range=(0.01, 4.), power_mesh=[60, 10]):
     ys = np.array(ys)
     y_shape = ys.shape
     assert y_shape[-1] == len(x)
-    abc_flat = np.array([
-        alg_decay_fit(x, yyy, npts=npts, power_range=power_range, power_mesh=power_mesh)
-        for yyy in ys.reshape(-1, len(x))
-    ])
-    return abc_flat.reshape(y_shape[:-1] + (3, ))
+    abc_flat = np.array(
+        [
+            alg_decay_fit(x, yyy, npts=npts, power_range=power_range, power_mesh=power_mesh)
+            for yyy in ys.reshape(-1, len(x))
+        ]
+    )
+    return abc_flat.reshape(y_shape[:-1] + (3,))
 
 
 def plot_alg_decay_fit(plot_module, x, y, fit_par, xfunc=None, kwargs={}, plot_fit_args={}):
@@ -172,29 +183,32 @@ def plot_alg_decay_fit(plot_module, x, y, fit_par, xfunc=None, kwargs={}, plot_f
     plot_fit_args : dict
         A dictionary that controls how the fit is shown via the following key value pairs::
 
-        =================== ====== ========= =======================================================================
-        key                 type   default   description
-        =================== ====== ========= =======================================================================
-        show_data_points    bool   True      If the datapoint `x`, `y` should be plotted.
-        ------------------- ------ --------- -----------------------------------------------------------------------
-        n_interp            int    30        The number of points to plot for the fit.
-        ------------------- ------ --------- -----------------------------------------------------------------------
-        show_fit            bool   True      If the fit should be plotted.
-        ------------------- ------ --------- -----------------------------------------------------------------------
-        extrap_line_start   int    -2        Define the start of the extrapolation line as ``x[extrap_line_start]``.
-        ------------------- ------ --------- -----------------------------------------------------------------------
-        extrap_line_end     int    ...       Define the end of the extrapolation as ``x[extrap_line_end]``.
-                                             Per default, it ends at the end of the x-axis.
-        =================== ====== ========= =======================================================================
+            =================== ====== ========= =======================================================================
+            key                 type   default   description
+            =================== ====== ========= =======================================================================
+            show_data_points    bool   True      If the datapoint `x`, `y` should be plotted.
+            ------------------- ------ --------- -----------------------------------------------------------------------
+            n_interp            int    30        The number of points to plot for the fit.
+            ------------------- ------ --------- -----------------------------------------------------------------------
+            show_fit            bool   True      If the fit should be plotted.
+            ------------------- ------ --------- -----------------------------------------------------------------------
+            extrap_line_start   int    -2        Define the start of the extrapolation line as ``x[extrap_line_start]``.
+            ------------------- ------ --------- -----------------------------------------------------------------------
+            extrap_line_end     int    ...       Define the end of the extrapolation as ``x[extrap_line_end]``.
+                                                Per default, it ends at the end of the x-axis.
+            =================== ====== ========= =======================================================================
+
     """
     if xfunc is None:
-        xfunc = lambda x: x
+
+        def xfunc(x):
+            return x
+
     if plot_fit_args.get('show_data_points', True):
         plot_module.plot(xfunc(x), y, 'o', **kwargs)
     n_interp = plot_fit_args.get('n_interp', 30)
     if len(x) > 1:
-        interp_x = np.arange(-0.03, 1.1, 1. / n_interp) * \
-            (np.max(x) - np.min(x)) + np.min(x)
+        interp_x = np.arange(-0.03, 1.1, 1.0 / n_interp) * (np.max(x) - np.min(x)) + np.min(x)
         if plot_fit_args.get('show_fit', True):
             plot_module.plot(xfunc(interp_x), alg_decay(interp_x, *fit_par), '-', **kwargs)
         extrap_xrange = np.array([x[-2], np.max(interp_x)])
@@ -240,13 +254,14 @@ def fit_with_sum_of_exp(f, n, N=50):
     lambdas, prefactors: 1D arrays
         Such that :math:`f(k) \approx \sum_i x_i \lambda_i^k` for (integer) 1 <= `k` <= `N`.
         The function :func:`sum_of_exp` evaluates this for given `x`.
+
     """
     assert n < N
     x = np.arange(1, N + 1)
     f_x = f(x)
     F = np.zeros([N - n + 1, n])
     for i in range(n):
-        F[:, i] = f_x[i:i + N - n + 1]
+        F[:, i] = f_x[i : i + N - n + 1]
 
     U, V = np.linalg.qr(F)
     U1 = U[:-1, :]
@@ -308,17 +323,18 @@ def central_charge_from_S_profile(psi, exclude=None):
         Central charge and constant offset as in :func:`entropy_profile_from_CFT`.
     res : float
         Residuum of the error.
+
     """
     if not psi.bc == 'finite':
-        raise ValueError("works only for finite MPS at a critical point")
+        raise ValueError('works only for finite MPS at a critical point')
     L = psi.L
     if exclude is None:
         exclude = L // 4
     if 2 * exclude >= L - 8:
-        raise ValueError("Not enough points for a reasonable fit left")
+        raise ValueError('Not enough points for a reasonable fit left')
     S = psi.entanglement_entropy()
     size_A = np.arange(1, psi.L)[exclude:-exclude]
-    expected = entropy_profile_from_CFT(size_A, L, 1., 0.)
+    expected = entropy_profile_from_CFT(size_A, L, 1.0, 0.0)
     # fit S ~=~ central_charge * expected + const
     c, const, res = linear_fit(expected, S[exclude:-exclude])
     return c, const, res

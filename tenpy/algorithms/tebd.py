@@ -39,7 +39,7 @@ If one chooses imaginary :math:`dt`, the exponential projects
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-import numpy as np
+import logging
 import time
 import typing
 import warnings
@@ -47,12 +47,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from .algorithm import TimeEvolutionAlgorithm, TimeDependentHAlgorithm
+import numpy as np
+
 from ..linalg import np_conserved as npc
 from ..linalg.truncation import svd_theta, decompose_theta_qr_based, TruncationError, _machine_prec_trunc_par
 from ..linalg import random_matrix
 from ..algorithms import dmt_utils as dmt
 from ..tools.misc import consistency_check
+from .algorithm import TimeDependentHAlgorithm, TimeEvolutionAlgorithm
+
+logger = logging.getLogger(__name__)
 
 __all__ = ['TEBDEngine', 'ChooseSweepTEBDEngine', 'DMTTEBDEngine', 'QRBasedTEBDEngine', 'RandomUnitaryEvolution', 'TimeDependentTEBD']
 
@@ -93,7 +97,9 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         The `i`-th entry is left of site `i`.
     _update_index : None | (int, int)
         The indices ``i_dt,i_bond`` of ``U_bond = self._U[i_dt][i_bond]`` during update_step.
+
     """
+
     def __init__(self, psi, model, options, **kwargs):
         TimeEvolutionAlgorithm.__init__(self, psi, model, options, **kwargs)
         self._trunc_err_bonds = [TruncationError() for i in range(psi.L + 1)]
@@ -103,7 +109,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
 
     @property
     def trunc_err_bonds(self):
-        """truncation error introduced on each non-trivial bond."""
+        """Truncation error introduced on each non-trivial bond."""
         return self._trunc_err_bonds[self.psi.nontrivial_bonds]
 
     # run() as defined in TimeEvolutionAlgorithm
@@ -131,9 +137,9 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         """
         # initialize parameters
         delta_tau_list = self.options.get(
-            'delta_tau_list',
-            [0.1, 0.01, 0.001, 1.e-4, 1.e-5, 1.e-6, 1.e-7, 1.e-8, 1.e-9, 1.e-10, 1.e-11, 0.])
-        max_error_E = self.options.get('max_error_E', 1.e-13, 'real')
+            'delta_tau_list', [0.1, 0.01, 0.001, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-7, 1.0e-8, 1.0e-9, 1.0e-10, 1.0e-11, 0.0]
+        )
+        max_error_E = self.options.get('max_error_E', 1.0e-13, 'real')
         N_steps = self.options.get('N_steps', 10, int)
         TrotterOrder = self.options.get('order', 2, int)
 
@@ -142,11 +148,11 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         start_time = time.time()
 
         for delta_tau in delta_tau_list:
-            logger.info("delta_tau=%e", delta_tau)
+            logger.info('delta_tau=%e', delta_tau)
             self.calc_U(TrotterOrder, delta_tau, type_evo='imag')
             DeltaE = 2 * max_error_E
             step = 0
-            while (DeltaE > max_error_E):
+            while DeltaE > max_error_E:
                 if self.psi.finite and TrotterOrder == 2:
                     self.update_imag(N_steps, call_canonical_form=False)
                 else:
@@ -161,9 +167,10 @@ class TEBDEngine(TimeEvolutionAlgorithm):
                 DeltaS = S - Sold
                 Sold = S
                 logger.info(
-                    "--> step=%(step)6d, beta=%(beta)3.3f, max(chi)=%(max_chi)d,"
-                    "DeltaE=%(dE).2e, E_bond=%(E).10f, Delta_S=%(dS).4e, "
-                    "max(S)=%(max_S).10f, time simulated: %(wall_time).1fs", {
+                    '--> step=%(step)6d, beta=%(beta)3.3f, max(chi)=%(max_chi)d,'
+                    'DeltaE=%(dE).2e, E_bond=%(E).10f, Delta_S=%(dS).4e, '
+                    'max(S)=%(max_S).10f, time simulated: %(wall_time).1fs',
+                    {
                         'step': step,
                         'beta': -self.evolved_time.imag,
                         'max_chi': max(self.psi.chi),
@@ -172,7 +179,8 @@ class TEBDEngine(TimeEvolutionAlgorithm):
                         'dS': DeltaS,
                         'max_S': max_S,
                         'wall_time': time.time() - start_time,
-                    })
+                    },
+                )
         # done
 
     @staticmethod
@@ -190,24 +198,26 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         -------
         time_steps : list of float
             We need ``U = exp(-i H_{even/odd} delta_t * dt)`` for the `dt` returned in this list.
+
         """
         if order == 1:
-            return [1.]
+            return [1.0]
         elif order == 2:
-            return [0.5, 1.]
+            return [0.5, 1.0]
         elif order == 4:
-            t1 = 1. / (4. - 4.**(1 / 3.))
-            t3 = 1. - 4. * t1
-            return [t1 / 2., t1, (t1 + t3) / 2., t3]
+            t1 = 1.0 / (4.0 - 4.0 ** (1 / 3.0))
+            t3 = 1.0 - 4.0 * t1
+            return [t1 / 2.0, t1, (t1 + t3) / 2.0, t3]
         elif order == '4_opt':
             # Eq (30a) of arXiv:1901.04974
             a1 = 0.095848502741203681182
             b1 = 0.42652466131587616168
             a2 = -0.078111158921637922695
             b2 = -0.12039526945509726545
-            return [a1, b1, a2, b2, 0.5 - a1 - a2, 1. - 2 * (b1 + b2)]  # a1 b1 a2 b2 a3 b3
+            # a1 b1 a2 b2 a3 b3 2*a1
+            return [a1, b1, a2, b2, 0.5 - a1 - a2, 1.0 - 2 * (b1 + b2), 2 * a1]
         # else
-        raise ValueError("Unknown order %r for Suzuki Trotter decomposition" % order)
+        raise ValueError(f'Unknown order {order} for Suzuki Trotter decomposition')
 
     @staticmethod
     def suzuki_trotter_decomposition(order, N_steps):
@@ -234,6 +244,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
             the decomposition of `H`.
             They are chosen such that a subsequent application of ``exp(d[j] t H[k])`` to a given
             state ``|psi>`` yields ``(exp(N_steps t H[k]) + O(N_steps t^{order+1}))|psi>``.
+
         """
         even, odd = 0, 1
         if N_steps == 0:
@@ -266,12 +277,21 @@ class TEBDEngine(TimeEvolutionAlgorithm):
             steps = steps + [a]
             return steps
         elif order == '4_opt':
-            # symmetric: a1 b1 a2 b2 a3 b3 a2 b2 a2 b1 a1
-            steps = [(0, odd), (1, even), (2, odd), (3, even), (4, odd),  (5, even),
-                     (4, odd), (3, even), (2, odd), (1, even), (0, odd)]  # yapf: disable
-            return steps * N_steps
+            # U = [a1 b1 a2 b2 a3 b3 a3 b2 a2 b1 a1] * N
+            #   = [a1 b1 a2 b2 a3 b3 a3 b2 a2 b1] + [2*a1 b1 a2 b2 a3 b3 a3 b2 a2 b1] * (N-1) + [a1]
+            a1 = (0, odd)
+            b1 = (1, even)
+            a2 = (2, odd)
+            b2 = (3, even)
+            a3 = (4, odd)
+            b3 = (5, even)
+            a1_twice = (6, odd)
+            steps = [a1, b1, a2, b2, a3, b3, a3, b2, a2, b1]
+            steps = steps + [a1_twice, b1, a2, b2, a3, b3, a3, b2, a2, b1] * (N_steps - 1)
+            steps = steps + [a1]
+            return steps
         # else
-        raise ValueError("Unknown order {0!r} for Suzuki Trotter decomposition".format(order))
+        raise ValueError(f'Unknown order {order!r} for Suzuki Trotter decomposition')
 
     def prepare_evolve(self, dt):
         order = self.options.get('order', 2, int)
@@ -299,27 +319,31 @@ class TEBDEngine(TimeEvolutionAlgorithm):
             Determines whether we perform real or imaginary time-evolution.
         E_offset : None | list of float
             Possible offset added to `H_bond` for real-time evolution.
+
         """
         U_param = dict(order=order, delta_t=delta_t, type_evo=type_evo, E_offset=E_offset)
         if type_evo == 'real':
             U_param['tau'] = delta_t
         elif type_evo == 'imag':
-            U_param['tau'] = -1.j * delta_t
+            U_param['tau'] = -1.0j * delta_t
         else:
-            raise ValueError("Invalid value for `type_evo`: " + repr(type_evo))
+            raise ValueError('Invalid value for `type_evo`: ' + repr(type_evo))
         if self._U_param == U_param and not self.force_prepare_evolve:
-            logger.debug("Skip recalculation of U with same parameters as before")
+            logger.debug('Skip recalculation of U with same parameters as before')
             return  # nothing to do: U is cached
         self._U_param = U_param
-        logger.info("Calculate U for %s", U_param)
-        consistency_check(np.abs(delta_t), self.options, 'max_delta_t', 2.,
-                          'delta_t > ``max_delta_t`` is unreasonably large for trotterization.')
+        logger.info('Calculate U for %s', U_param)
+        consistency_check(
+            np.abs(delta_t),    # Handles complex dt
+            self.options,
+            'max_delta_t',
+            1.0,
+            'delta_t > ``max_delta_t`` is unreasonably large for trotterization.',
+        )
         L = self.psi.L
         self._U = []
         for dt in self.suzuki_trotter_time_steps(order):
-            U_bond = [
-                self._calc_U_bond(i_bond, dt * delta_t, type_evo, E_offset) for i_bond in range(L)
-            ]
+            U_bond = [self._calc_U_bond(i_bond, dt * delta_t, type_evo, E_offset) for i_bond in range(L)]
             self._U.append(U_bond)
         self.force_prepare_evolve = False
 
@@ -338,6 +362,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error of the represented state which is introduced due to the truncation during
             this sequence of evolution steps.
+
         """
         if dt is not None:
             assert dt == self._U_param['delta_t']
@@ -380,6 +405,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error of the represented state which is introduced due to the truncation
             during this sequence of update steps.
+
         """
         Us = self._U[U_idx_dt]
         trunc_err = TruncationError()
@@ -415,11 +441,12 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error of the represented state which is introduced by the truncation
             during this update step.
+
         """
         i0, i1 = i - 1, i
-        logger.debug("Update sites (%d, %d)", i0, i1)
+        logger.debug('Update sites (%d, %d)', i0, i1)
         # Construct the theta matrix
-        C = self.psi.get_theta(i0, n=2, formL=0.)  # the two B without the S on the left
+        C = self.psi.get_theta(i0, n=2, formL=0.0)  # the two B without the S on the left
         C = npc.tensordot(U_bond, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))  # apply U
         C.itranspose(['vL', 'p0', 'p1', 'vR'])
         theta = C.scale_axis(self.psi.get_SL(i0), 'vL')
@@ -431,10 +458,10 @@ class TEBDEngine(TimeEvolutionAlgorithm):
 
         theta = theta.combine_legs([('vL', 'p0'), ('p1', 'vR')], qconj=[+1, -1])
         # Perform the SVD and truncate the wavefunction
-        U, S, V, trunc_err, renormalize = svd_theta(theta,
-                                                    self.trunc_params,
-                                                    [self.psi.get_B(i0, None).qtotal, None],
-                                                    inner_labels=['vR', 'vL'])
+        U, S, V, trunc_err, renormalize = svd_theta(
+            theta, self.trunc_params, [self.psi.get_B(i0, None).qtotal, None], inner_labels=['vR', 'vL']
+        )
+
         # Split tensor and update matrices
         B_R = V.split_legs(1).ireplace_label('p1', 'p')
 
@@ -449,9 +476,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         # such that we obtain ``B_L = SL**-1 U S = SL**-1 U S V V^dagger = C V^dagger``
         # here, C is the same as theta, but without the `S` on the very left
         # (Note: this requires no inverse if the MPS is initially in 'B' canonical form)
-        B_L = npc.tensordot(C.combine_legs(('p1', 'vR'), pipes=theta.legs[1]),
-                            V.conj(),
-                            axes=['(p1.vR)', '(p1*.vR*)'])
+        B_L = npc.tensordot(C.combine_legs(('p1', 'vR'), pipes=theta.legs[1]), V.conj(), axes=['(p1.vR)', '(p1*.vR*)'])
         B_L.ireplace_labels(['vL*', 'p0'], ['vR', 'p'])
         B_L /= renormalize  # re-normalize to <psi|psi> = 1
         self.psi.norm *= renormalize
@@ -490,16 +515,17 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error of the represented state which is introduced due to the truncation during
             this sequence of update steps.
+
         """
         trunc_err = TruncationError()
         order = self._U_param['order']
         # allow only second order evolution
         if order != 2 or not self.psi.finite:
             # Would lead to loss of canonical form. What about DMRG?
-            raise NotImplementedError("Use DMRG instead...")
+            raise NotImplementedError('Use DMRG instead...')
         U_idx_dt = 0  # always with dt=0.5
-        assert (self.suzuki_trotter_time_steps(order)[U_idx_dt] == 0.5)
-        assert (self.psi.finite)  # finite or segment bc
+        assert self.suzuki_trotter_time_steps(order)[U_idx_dt] == 0.5
+        assert self.psi.finite  # finite or segment bc
         Us = self._U[U_idx_dt]
         for _ in range(N_steps):
             # sweep right
@@ -543,9 +569,10 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error of the represented state which is introduced by the truncation
             during this update step.
+
         """
         i0, i1 = i - 1, i
-        logger.debug("Update sites (%d, %d)", i0, i1)
+        logger.debug('Update sites (%d, %d)', i0, i1)
         # Construct the theta matrix
         theta = self.psi.get_theta(i0, n=2)  # 'vL', 'vR', 'p0', 'p1'
         theta = npc.tensordot(U_bond, theta, axes=(['p0*', 'p1*'], ['p0', 'p1']))
@@ -554,9 +581,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
 
         theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
         # Perform the SVD and truncate the wavefunction
-        U, S, V, trunc_err, renormalize = svd_theta(theta,
-                                                    self.trunc_params,
-                                                    inner_labels=['vR', 'vL'])
+        U, S, V, trunc_err, renormalize = svd_theta(theta, self.trunc_params, inner_labels=['vR', 'vL'])
         self.psi.norm *= renormalize
         # Split legs and update matrices
         B_R = V.split_legs(1).ireplace_label('p1', 'p')
@@ -576,15 +601,17 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         try:
             h = self.model.H_bond[i_bond]
         except AttributeError:
-            msg = (f'The model has no attribute "H_bond", which is required for TEBD.\n '
-                   f'TEBD can only be used if the model is nearest-neighbor (in the MPS geometry!). '
-                   f'If you are using a pre-defined model, make sure you are using the '
-                   f'nearest-neighbor version, e.g. SpinChain, not SpinModel. '
-                   f'If you are using a custom model, check if it actually is  nearest-neighbor in '
-                   f'the MPS geometry. If yes, make sure you subclass  NearestNeighborModel, which '
-                   f'will set "H_bond" for you. If no, you can not directly use TEBD, you need to '
-                   f'either group sites to achieve a nearest-neighbor model, or use some other '
-                   f'time evolution method, e.g. ExpMPO or TDVP.')
+            msg = (
+                f'The model has no attribute "H_bond", which is required for TEBD.\n '
+                f'TEBD can only be used if the model is nearest-neighbor (in the MPS geometry!). '
+                f'If you are using a pre-defined model, make sure you are using the '
+                f'nearest-neighbor version, e.g. SpinChain, not SpinModel. '
+                f'If you are using a custom model, check if it actually is  nearest-neighbor in '
+                f'the MPS geometry. If yes, make sure you subclass  NearestNeighborModel, which '
+                f'will set "H_bond" for you. If no, you can not directly use TEBD, you need to '
+                f'either group sites to achieve a nearest-neighbor model, or use some other '
+                f'time evolution method, e.g. ExpMPO or TDVP.'
+            )
             raise AttributeError(msg)
         if h is None:
             return None  # don't calculate exp(i H t), if `H` is None
@@ -594,7 +621,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         elif type_evo == 'real':
             if E_offset is not None:
                 H2 = H2 - npc.diag(E_offset[i_bond], H2.legs[0])
-            H2 = (-1.j * dt) * H2
+            H2 = (-1.0j * dt) * H2
         else:
             raise ValueError("Expect either 'real' or 'imag'inary time, got " + repr(type_evo))
         U = npc.expm(H2)
@@ -607,7 +634,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
             # A and H.
             U.iunary_blockwise(np.real)
 
-        assert (tuple(U.get_leg_labels()) == ('(p0.p1)', '(p0*.p1*)'))
+        assert tuple(U.get_leg_labels()) == ('(p0.p1)', '(p0*.p1*)')
         return U.split_legs()
 
 class ChooseSweepTEBDEngine(TEBDEngine):
@@ -860,6 +887,14 @@ class QRBasedTEBDEngine(TEBDEngine):
 
     As introduced in :arxiv:`2212.09782`.
 
+    .. warning ::
+        The QR-based decomposition imposes a heuristically chosen upper limit on bond dimension
+        growth. For dynamics with rapid entanglement growth, this "expansion rate" needs to be
+        chosen large enough. We issue a warning if we detect that it is too low, but if you
+        know that entanglement grows rapidly, have a look at
+        the :cfg:option:`QRBasedTEBDEngine.cbe_expand_0` and compare bond dimension growth
+        to a regular :class:`TEBDEngine`, at least for the first few Trotter steps.
+
     .. todo ::
         To use `use_eig_based_svd == True`, which makes sense on GPU only, we need to implement
         the `_eig_based_svd` for "non-square" matrices.
@@ -896,7 +931,7 @@ class QRBasedTEBDEngine(TEBDEngine):
     """
 
     def _expansion_rate(self, i):
-        """get expansion rate for updating bond i"""
+        """Get expansion rate for updating bond i"""
         expand = self.options.get('cbe_expand', 0.1, 'real')
         expand_0 = self.options.get('cbe_expand_0', None, 'real')
 
@@ -915,7 +950,7 @@ class QRBasedTEBDEngine(TEBDEngine):
         expand = self._expansion_rate(i)
         logger.debug(f'Update sites ({i0}, {i1}). CBE expand={expand}')
         # Construct the theta matrix
-        C = self.psi.get_theta(i0, n=2, formL=0.)  # the two B without the S on the left
+        C = self.psi.get_theta(i0, n=2, formL=0.0)  # the two B without the S on the left
         C = npc.tensordot(U_bond, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))  # apply U
         C.itranspose(['vL', 'p0', 'p1', 'vR'])
         theta = C.scale_axis(self.psi.get_SL(i0), 'vL')
@@ -923,20 +958,41 @@ class QRBasedTEBDEngine(TEBDEngine):
         old_B_L = self.psi.get_B(i0, 'B')
         old_B_R = self.psi.get_B(i1, 'B')
 
+        compute_err = self.options.get('compute_err', True, bool)
         _, S, B_R, form, trunc_err, renormalize = decompose_theta_qr_based(
-            old_qtotal_L=old_B_L.qtotal, old_qtotal_R=old_B_R.qtotal, old_bond_leg=old_B_R.get_leg('vL'),
-            theta=theta, move_right=False,
-            expand=expand, min_block_increase=self.options.get('cbe_min_block_increase', 1, int),
+            old_qtotal_L=old_B_L.qtotal,
+            old_qtotal_R=old_B_R.qtotal,
+            old_bond_leg=old_B_R.get_leg('vL'),
+            theta=theta,
+            move_right=False,
+            expand=expand,
+            min_block_increase=self.options.get('cbe_min_block_increase', 1, int),
             use_eig_based_svd=self.options.get('use_eig_based_svd', False, bool),
             trunc_params=self.trunc_params,
-            compute_err=self.options.get('compute_err', True, bool),
+            compute_err=compute_err,
             return_both_T=False,
         )
+        if compute_err:
+            chi_max = self.trunc_params.get('chi_max', None)
+            chi_current = len(S)
+            if trunc_err.eps > 1e-16 and chi_max is not None and chi_current < chi_max:
+                msg = (
+                    'QRBased decomposition resulted in large truncation error even though the bond '
+                    'dimension is not maxed out yet. Try increasing the expansion rate, e.g. '
+                    'via the `cbe_expand_0` and `cbe_min_block_increase` options for the engine. '
+                    'You probably should compare to a "regular" (non QR-based) engine and see how '
+                    'fast the bond dimension needs to grow for your scenario. '
+                    'See https://github.com/tenpy/tenpy/pull/513 .'
+                )
+                warnings.warn(msg, stacklevel=2)
         assert form[1] == 'B'
 
-        B_L = npc.tensordot(C.combine_legs(('p1', 'vR'), pipes=theta.legs[1]),
-                            B_R.conj(),
-                            axes=[['(p1.vR)'], ['(p*.vR*)']]) / renormalize
+        B_L = (
+            npc.tensordot(
+                C.combine_legs(('p1', 'vR'), pipes=theta.legs[1]), B_R.conj(), axes=[['(p1.vR)'], ['(p*.vR*)']]
+            )
+            / renormalize
+        )
         B_L.ireplace_labels(['p0', 'vL*'], ['p', 'vR'])
         B_R = B_R.split_legs(1)
         self.psi.norm *= renormalize
@@ -965,15 +1021,19 @@ class QRBasedTEBDEngine(TEBDEngine):
             raise NotImplementedError('update_bond_imag does not (yet) support eig based SVD')
 
         A_L, S, B_R, form, trunc_err, renormalize = decompose_theta_qr_based(
-            old_qtotal_L=old_B_L.qtotal, old_qtotal_R=old_B_R.qtotal, old_bond_leg=old_B_R.get_leg('vL'),
-            theta=theta, move_right=False,
-            expand = expand, min_block_increase=self.options.get('cbe_min_block_increase', 1, int),
+            old_qtotal_L=old_B_L.qtotal,
+            old_qtotal_R=old_B_R.qtotal,
+            old_bond_leg=old_B_R.get_leg('vL'),
+            theta=theta,
+            move_right=False,
+            expand=expand,
+            min_block_increase=self.options.get('cbe_min_block_increase', 1, int),
             use_eig_based_svd=self.options.get('use_eig_based_svd', False, bool),
             trunc_params=self.trunc_params,
             compute_err=self.options.get('compute_err', True, bool),
             return_both_T=True,
         )
-        assert form == ['A','B']
+        assert form == ['A', 'B']
 
         A_L = A_L.split_legs(0)
         B_R = B_R.split_legs(1)
@@ -1021,10 +1081,12 @@ class RandomUnitaryEvolution(TEBDEngine):
         >>> from tenpy.networks.mps import MPS
         >>> L = 8
         >>> spin_half = tenpy.networks.site.SpinHalfSite(conserve='Sz')
-        >>> psi = MPS.from_product_state([spin_half]*L, ["up", "down"]*(L//2), bc='finite')  # Neel
+        >>> psi = MPS.from_product_state(
+        ...     [spin_half] * L, ['up', 'down'] * (L // 2), bc='finite', unit_cell_width=L
+        ... )  # Neel
         >>> print(psi.chi)
         [1, 1, 1, 1, 1, 1, 1]
-        >>> options = dict(N_steps=2, trunc_params={'chi_max':10})
+        >>> options = dict(N_steps=2, trunc_params={'chi_max': 10})
         >>> eng = RandomUnitaryEvolution(psi, options)
         >>> eng.run()
         >>> print(psi.chi)
@@ -1036,13 +1098,14 @@ class RandomUnitaryEvolution(TEBDEngine):
 
     .. doctest :: RandomUnitaryEvolution
 
-        >>> psi2 = MPS.from_product_state([spin_half]*L, ["up"]*L, bc='finite')  # all spins up
+        >>> psi2 = MPS.from_product_state([spin_half] * L, ['up'] * L, bc='finite', unit_cell_width=L)  # all spins up
         >>> print(psi2.chi)
         [1, 1, 1, 1, 1, 1, 1]
         >>> eng2 = RandomUnitaryEvolution(psi2, options)
         >>> eng2.run()  # random unitaries respect Sz conservation -> we stay in all-up sector
         >>> print(psi2.chi)  # still a product state, not really random!!!
         [1, 1, 1, 1, 1, 1, 1]
+
     """
 
     def __init__(self, psi, options, **kwargs):
@@ -1052,12 +1115,11 @@ class RandomUnitaryEvolution(TEBDEngine):
         """Time evolution with TEBD and random two-site unitaries (possibly conserving charges)."""
         dt = self.options.get('dt', 1, 'real')
         if dt != 1:
-            warnings.warn(f"dt={dt!s} != 1 for RandomUnitaryEvolution "
-                          "is only used as unit for evolved_time")
+            warnings.warn(f'dt={dt!s} != 1 for RandomUnitaryEvolution is only used as unit for evolved_time')
         super().run()
 
     def prepare_evolve(self, dt):
-        "Do nothing, as we call :meth:`calc_U` directly in :meth:`update`."
+        """Do nothing, as we call :meth:`calc_U` directly in :meth:`update`."""
         pass
 
     def calc_U(self):
@@ -1074,10 +1136,10 @@ class RandomUnitaryEvolution(TEBDEngine):
             distribution_func_kwargs : dict
                 Extra keyword arguments for `distribution_func`.
         """
-        func = self.options.get('distribution_func', "CUE", [str, typing.Callable])
+        func = self.options.get('distribution_func', 'CUE', [str, typing.Callable])
         if isinstance(func, str):
-            if func not in ["CUE", "CRE", "COE", "O_close_1", "U_close_1"]:
-                raise ValueError("distribution_func should generate unitaries")
+            if func not in ['CUE', 'CRE', 'COE', 'O_close_1', 'U_close_1']:
+                raise ValueError('distribution_func should generate unitaries')
             func = getattr(random_matrix, func, None)
             assert func is not None
         func_kwargs = self.options.get('distribution_func_kwargs', {}, dict)
@@ -1112,6 +1174,7 @@ class RandomUnitaryEvolution(TEBDEngine):
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error of the represented state which is introduced due to the truncation during
             this sequence of update steps.
+
         """
         trunc_err = TruncationError()
         for _ in range(N_steps):
@@ -1124,10 +1187,11 @@ class RandomUnitaryEvolution(TEBDEngine):
         return trunc_err
 
 
-class TimeDependentTEBD(TimeDependentHAlgorithm,TEBDEngine):
+class TimeDependentTEBD(TimeDependentHAlgorithm, TEBDEngine):
     """Variant of :class:`TEBDEngine` that can handle time-dependent Hamiltonians.
 
     See details in :class:`~tenpy.algorithms.algorithm.TimeDependentHAlgorithm` as well.
     """
+
     # uses run_evolution from TimeDependentHAlgorithm
     # so nothing to redefine here

@@ -19,25 +19,21 @@ The idea is that you just import the `svd` from this module and use it as replac
 ``np.linalg.svd`` or ``scipy.linalg.svd``:
 
 >>> from tenpy.linalg.svd_robust import svd
->>> U, S, VT = svd([[1., 1.], [0., 1.]])
+>>> U, S, VT = svd([[1.0, 1.0], [0.0, 1.0]])
+
 """
 # Copyright (C) TeNPy Developers, Apache license
+
+import warnings
 
 import numpy as np
 import scipy
 import scipy.linalg
-import warnings
 
 __all__ = ['svd']
 
 
-def svd(a,
-        full_matrices=True,
-        compute_uv=True,
-        overwrite_a=False,
-        check_finite=True,
-        lapack_driver='gesdd',
-        warn=True):
+def svd(a, full_matrices=True, compute_uv=True, overwrite_a=False, check_finite=True, lapack_driver='gesdd', warn=True):
     """Wrapper around :func:`scipy.linalg.svd` with `gesvd` backup plan.
 
     Tries to avoid raising an LinAlgError by using the lapack_driver `gesvd`,
@@ -64,6 +60,7 @@ def svd(a,
     -------
     U, S, Vh : ndarray
         As described in doc-string of :func:`scipy.linalg.svd`.
+
     """
     if lapack_driver == 'gesdd':
         try:
@@ -71,9 +68,8 @@ def svd(a,
         except np.linalg.LinAlgError:
             # 'gesdd' failed to converge, so we continue with the backup plan
             if warn:
-                warnings.warn("SVD with lapack_driver 'gesdd' failed. Use backup 'gesvd'",
-                              stacklevel=2)
+                warnings.warn("SVD with lapack_driver 'gesdd' failed. Use backup 'gesvd'", stacklevel=2)
             pass
     if lapack_driver not in ['gesdd', 'gesvd']:
-        raise ValueError("invalid `lapack_driver`: " + str(lapack_driver))
+        raise ValueError('invalid `lapack_driver`: ' + str(lapack_driver))
     return scipy.linalg.svd(a, full_matrices, compute_uv, overwrite_a, check_finite, 'gesvd')

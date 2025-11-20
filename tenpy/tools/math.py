@@ -4,16 +4,26 @@
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-import numpy as np
 import warnings
-from . import misc
 
+import numpy as np
 import scipy.linalg
 import scipy.sparse.linalg
 
+from . import misc
+
 __all__ = [
-    'LeviCivita3', 'matvec_to_array', 'entropy', 'gcd', 'gcd_array', 'lcm', 'speigs', 'speigsh',
-    'perm_sign', 'qr_li', 'rq_li'
+    'LeviCivita3',
+    'matvec_to_array',
+    'entropy',
+    'gcd',
+    'gcd_array',
+    'lcm',
+    'speigs',
+    'speigsh',
+    'perm_sign',
+    'qr_li',
+    'rq_li',
 ]
 
 #: 3-dim identity matrix of type int
@@ -24,7 +34,7 @@ LeviCivita3 = np.array([[np.cross(b, a) for a in _eye_I3] for b in _eye_I3])
 
 
 def matvec_to_array(H):
-    """transform an linear operator with a `matvec` method into a dense numpy array.
+    """Transform an linear operator with a `matvec` method into a dense numpy array.
 
     Parameters
     ----------
@@ -35,9 +45,10 @@ def matvec_to_array(H):
     -------
     H_dense : ndarray, shape ``(H.dim, H.dim)``
         a dense array version of `H`.
+
     """
     dim, dim2 = H.shape
-    assert (dim == dim2)
+    assert dim == dim2
     X = np.zeros((dim, dim), H.dtype)
     v = np.zeros((dim), H.dtype)
     for i in range(dim):
@@ -70,14 +81,15 @@ def entropy(p, n=1):
         Shannon-entropy :math:`-\sum_i p_i \log(p_i)` (n=1) or
         Renyi-entropy :math:`\frac{1}{1-n} \log(\sum_i p_i^n)` (n != 1)
         of the distribution `p`.
+
     """
-    p = p[p > 1.e-30]  # just for stability reasons / to avoid NaN in log
+    p = p[p > 1.0e-30]  # just for stability reasons / to avoid NaN in log
     if n == 1:
         return -np.inner(np.log(p), p)
     elif n == np.inf:
         return -np.log(np.max(p))
     else:  # general n != 1, inf
-        return np.log(np.sum(p**n)) / (1. - n)
+        return np.log(np.sum(p**n)) / (1.0 - n)
 
 
 def gcd(a, b):
@@ -133,15 +145,16 @@ def speigs(A, k, *args, **kwargs):
     v : ndarray
         array of min(`k`, A.shape[0]) eigenvectors, ``v[:, i]`` is the `i`-th eigenvector.
         Only returned if ``kwargs['return_eigenvectors'] == True``.
+
     """
     d = A.shape[0]
     if A.shape != (d, d):
-        raise ValueError("A.shape not a square matrix: " + str(A.shape))
+        raise ValueError('A.shape not a square matrix: ' + str(A.shape))
     if k < d - 1:
         return scipy.sparse.linalg.eigs(A, k, *args, **kwargs)
     else:
         if k > d:
-            warnings.warn("trimming speigs k to smaller matrix dimension d", stacklevel=2)
+            warnings.warn('trimming speigs k to smaller matrix dimension d', stacklevel=2)
             k = d
         if isinstance(A, np.ndarray):
             Amat = A
@@ -180,15 +193,16 @@ def speigsh(A, k, *args, **kwargs):
     v : ndarray
         Array of min(`k`, A.shape[0]) eigenvectors, ``v[:, i]`` is the `i`-th eigenvector.
         Only returned if ``kwargs['return_eigenvectors'] == True``.
+
     """
     d = A.shape[0]
     if A.shape != (d, d):
-        raise ValueError("A.shape not a square matrix: " + str(A.shape))
+        raise ValueError('A.shape not a square matrix: ' + str(A.shape))
     if k < d - 1:
         return scipy.sparse.linalg.eigsh(A, k, *args, **kwargs)
     else:
         if k > d:
-            warnings.warn("trimming speigsh k to smaller matrix dimension d", stacklevel=2)
+            warnings.warn('trimming speigsh k to smaller matrix dimension d', stacklevel=2)
             k = d
         if isinstance(A, np.ndarray):
             Amat = A
@@ -215,13 +229,14 @@ def perm_sign(p):
     --------
     >>> import itertools
     >>> for p in itertools.permutations(range(3)):
-    ...      print('{p!s}: {sign!s}'.format(p=p, sign=tenpy.tools.math.perm_sign(p)))
+    ...     print('{p!s}: {sign!s}'.format(p=p, sign=tenpy.tools.math.perm_sign(p)))
     (0, 1, 2): 1
     (0, 2, 1): -1
     (1, 0, 2): -1
     (1, 2, 0): 1
     (2, 0, 1): 1
     (2, 1, 0): -1
+
     """
     rp = np.argsort(p)
     p = np.argsort(rp)
@@ -237,7 +252,7 @@ def perm_sign(p):
     return s
 
 
-def qr_li(A, cutoff=1.e-15):
+def qr_li(A, cutoff=1.0e-15):
     """QR decomposition with cutoff to discard nearly linear dependent columns in `Q`.
 
     Perform a QR decomposition with pivoting, discard columns where ``R[i,i] < cutoff``,
@@ -254,6 +269,7 @@ def qr_li(A, cutoff=1.e-15):
     Q, R : :class:`numpy.ndarray`
         Decomposition of `A` into isometry `Q^d Q = 1` and upper right `R` with diagonal entries
         larger than `cutoff`.
+
     """
     Q, R, P = scipy.linalg.qr(A, mode='economic', pivoting=True)
     keep = np.abs(np.diag(R)) > cutoff
@@ -269,7 +285,7 @@ def qr_li(A, cutoff=1.e-15):
     return np.dot(Q, q), R
 
 
-def rq_li(A, cutoff=1.e-15):
+def rq_li(A, cutoff=1.0e-15):
     """RQ decomposition with cutoff to discard nearly linear dependent columns in `Q`.
 
     Uses :func:`qr_li` on transpose of `A`.
@@ -287,6 +303,7 @@ def rq_li(A, cutoff=1.e-15):
         Decomposition of `A` into isometry `Q Q^d = 1` and upper right `R` with diagonal entries
         larger than `cutoff`. If ``M, N = A.shape``, then ``R.shape = M, K`` and ``Q.shape = K, N``
         with ``K <= min(M, N)``.
+
     """
     q, r = qr_li(A.T[:, ::-1], cutoff)
     return r.T[::-1, ::-1], q.T[::-1, :]

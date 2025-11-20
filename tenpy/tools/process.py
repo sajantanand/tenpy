@@ -15,14 +15,18 @@ you might also try the equivalent :func:`mkl_get_nthreads` and :func:`mkl_set_nt
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-import warnings
 import ctypes
-from ctypes.util import find_library
 import sys
+import warnings
+from ctypes.util import find_library
 
 __all__ = [
-    'memory_usage', 'load_omp_library', 'omp_get_nthreads', 'omp_set_nthreads', 'mkl_get_nthreads',
-    'mkl_set_nthreads'
+    'memory_usage',
+    'load_omp_library',
+    'omp_get_nthreads',
+    'omp_set_nthreads',
+    'mkl_get_nthreads',
+    'mkl_set_nthreads',
 ]
 
 _omp_lib = None
@@ -37,9 +41,11 @@ def memory_usage():
     -------
     mem : float
         Currently used memory in megabytes. ``-1.`` if no way to read out.
+
     """
     try:
         import resource  # linux-only
+
         unit_to_MB = 1024**2 if sys.platform == 'darwin' else 1024  # linux uses kB, but MacOS byte
         # see also issue #262
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / unit_to_MB
@@ -47,18 +53,16 @@ def memory_usage():
         pass
     try:
         import psutil
+
         proc = psutil.Process()
         return proc.memory_info().rss / 1024**2
     except ImportError:
         pass
-    warnings.warn("No tool to determine memory_usage")
-    return -1.
+    warnings.warn('No tool to determine memory_usage')
+    return -1.0
 
 
-def load_omp_library(libs=["libiomp5.so",
-                           find_library("libiomp5md"),
-                           find_library("gomp")],
-                     verbose=True):
+def load_omp_library(libs=['libiomp5.so', find_library('libiomp5md'), find_library('gomp')], verbose=True):
     """Tries to load openMP library.
 
     Parameters
@@ -73,6 +77,7 @@ def load_omp_library(libs=["libiomp5.so",
     omp : CDLL | None
         OpenMP shared library if found, otherwise None.
         Once it was successfully imported, no re-imports are tried.
+
     """
     global _omp_lib
     if _omp_lib is None:
@@ -82,7 +87,7 @@ def load_omp_library(libs=["libiomp5.so",
             try:
                 _omp_lib = ctypes.CDLL(l)
                 if verbose:
-                    print("loaded " + l + " for omp")
+                    print('loaded ' + l + ' for omp')
                 break
             except OSError:
                 pass
@@ -92,13 +97,14 @@ def load_omp_library(libs=["libiomp5.so",
 
 
 def omp_get_nthreads():
-    """wrapper around OpenMP ``get_max_threads``.
+    """Wrapper around OpenMP ``get_max_threads``.
 
     Returns
     -------
     max_threads : int
         The maximum number of threads used by OpenMP (and thus MKL).
         ``-1`` if unable to read out.
+
     """
     omp = load_omp_library()
     if omp is not None:
@@ -107,7 +113,7 @@ def omp_get_nthreads():
 
 
 def omp_set_nthreads(n):
-    """wrapper around OpenMP ``set_nthreads``.
+    """Wrapper around OpenMP ``set_nthreads``.
 
     Parameters
     ----------
@@ -118,6 +124,7 @@ def omp_set_nthreads(n):
     -------
     success : bool
         whether the shared library was found and set.
+
     """
     omp = load_omp_library()
     if omp is not None:
@@ -127,15 +134,17 @@ def omp_set_nthreads(n):
 
 
 def mkl_get_nthreads():
-    """wrapper around MKL ``get_max_threads``.
+    """Wrapper around MKL ``get_max_threads``.
 
     Returns
     -------
     max_threads : int
         The maximum number of threads used by MKL. ``-1`` if unable to read out.
+
     """
     try:
         import mkl  # available in conda MKL
+
         return mkl.get_max_threads()
     except ImportError:
         try:
@@ -147,7 +156,7 @@ def mkl_get_nthreads():
 
 
 def mkl_set_nthreads(n):
-    """wrapper around MKL ``set_num_threads``.
+    """Wrapper around MKL ``set_num_threads``.
 
     Parameters
     ----------
@@ -158,9 +167,11 @@ def mkl_set_nthreads(n):
     -------
     success : bool
         whether the shared library was found and set.
+
     """
     try:
         import mkl  # available in conda MKL
+
         mkl.set_num_threads(n)
         return True
     except ImportError:

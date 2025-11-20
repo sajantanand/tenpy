@@ -9,22 +9,24 @@ this is easiest done through a ``with`` statement, see the example in :class:`Di
 
 # Copyright (C) TeNPy Developers, Apache license
 
-import pickle
-import numpy as np
-import shutil
-import tempfile
 import collections
+import logging
 import os
 import pathlib
+import pickle
+import shutil
+import tempfile
 import warnings
-import logging
-logger = logging.getLogger(__name__)
 
+import numpy as np
+
+from .hdf5_io import load_from_hdf5, save_to_hdf5
 from .misc import find_subclass
 from .thread import Worker
-from .hdf5_io import load_from_hdf5, save_to_hdf5
 
-__all__ = ["DictCache", "CacheFile", "Storage", "PickleStorage", "Hdf5Storage", "ThreadedStorage"]
+logger = logging.getLogger(__name__)
+
+__all__ = ['DictCache', 'CacheFile', 'Storage', 'PickleStorage', 'Hdf5Storage', 'ThreadedStorage']
 
 
 class DictCache(collections.abc.MutableMapping):
@@ -80,12 +82,14 @@ class DictCache(collections.abc.MutableMapping):
         >>> cache['b'] = 2
         >>> assert cache['a'] == 1
         >>> assert cache.get('b') == 2
-        >>> "b" in cache
+        >>> 'b' in cache
         True
-        >>> "c" in cache
+        >>> 'c' in cache
         False
         >>> assert cache.get('c', default=None) is None
+
     """
+
     def __init__(self, storage):
         self.long_term_storage = storage
         self.long_term_keys = set()
@@ -116,6 +120,7 @@ class DictCache(collections.abc.MutableMapping):
         -------
         cache : :class:`DictCache`
             Another class instance of the same type as `self`.
+
         """
         return DictCache(self.long_term_storage.subcontainer(name))
 
@@ -129,8 +134,8 @@ class DictCache(collections.abc.MutableMapping):
         if key in self.short_term_cache:
             return self.short_term_cache[key]
         if key not in self.long_term_keys:
-            raise KeyError(f"{key!r} not existent in cache")
-        logger.debug("Cache.long_term_storage.load(%r)", key)
+            raise KeyError(f'{key!r} not existent in cache')
+        logger.debug('Cache.long_term_storage.load(%r)', key)
         data = self.long_term_storage.load(key)
         if key in self.short_term_keys:
             self.short_term_cache[key] = data
@@ -138,7 +143,7 @@ class DictCache(collections.abc.MutableMapping):
 
     def __setitem__(self, key, val):
         self.long_term_keys.add(key)
-        logger.debug("Cache.long_term_storage.save(%r)", key)
+        logger.debug('Cache.long_term_storage.save(%r)', key)
         self.long_term_storage.save(key, val)
         if key in self.short_term_keys:
             self.short_term_cache[key] = val
@@ -174,6 +179,7 @@ class DictCache(collections.abc.MutableMapping):
         ----------
         *keys : str
             The keys for which data should be kept in RAM for quick short-term lookup.
+
         """
         self.short_term_keys = keys = set(keys)
         sc = self.short_term_cache
@@ -190,13 +196,14 @@ class DictCache(collections.abc.MutableMapping):
             The keys which should be pre-loaded. Are added to the :attr:`short_term_keys`.
         raise_missing : bool
             Whether to raise a KeyError if a given key does not exist in `self`.
+
         """
         for key in keys:
             self.short_term_keys.add(key)
         for key in keys:
             if key not in self.long_term_keys:
                 if raise_missing:
-                    raise KeyError("trying to preload missing entry " + repr(key))
+                    raise KeyError('trying to preload missing entry ' + repr(key))
             else:
                 self.long_term_storage.preload(key)
 
@@ -208,13 +215,9 @@ class CacheFile(DictCache):
     and make sure that you call :meth:`close` after usage.
     The easiest way to ensure this is to use a ``with`` statement, see :meth:`open`.
     """
+
     @classmethod
-    def open(cls,
-             storage_class="Storage",
-             use_threading=False,
-             delete=True,
-             max_queue_size=2,
-             **storage_kwargs):
+    def open(cls, storage_class='Storage', use_threading=False, delete=True, max_queue_size=2, **storage_kwargs):
         """Interface for opening a :class:`Storage` and creating a :class:`DictCache` from it.
 
         Default parameters just give a dummy cache that keeps everything in memory.
@@ -260,12 +263,13 @@ class CacheFile(DictCache):
         **storage_kwargs :
             Further keyword arguments given to the :meth:`Storage.open` method of the
             `storage_class`.
+
         """
         StorageClass = find_subclass(Storage, storage_class)
         if StorageClass == Storage:
-            logger.info("use trivial cache (keeps everything in RAM)")
+            logger.info('use trivial cache (keeps everything in RAM)')
         else:
-            logger.info("new non-trivial cache with storage %s", StorageClass.__name__)
+            logger.info('new non-trivial cache with storage %s', StorageClass.__name__)
         storage = StorageClass.open(delete=delete, **storage_kwargs)
         if use_threading:
             storage = ThreadedStorage.open(storage, max_queue_size=max_queue_size)
@@ -292,6 +296,7 @@ class Storage:
     The vanilla :class:`Storage` class is "trivial" in the sense that it actually doesn't save
     the data to disk, but keeps explicit references in RAM.
     """
+
     #: Whether the storage is actually kept in memory, instead of saving to disk.
     trivial = True
 
@@ -315,7 +320,7 @@ class Storage:
 
     def _common_close(self):
         if not self._opened:
-            raise ValueError("storage was already closed")
+            raise ValueError('storage was already closed')
         self._opened = False
         for storage in self._subcontainers:
             storage.close()
@@ -332,7 +337,7 @@ class Storage:
         `subcontainer()` was called) is closed.
         """
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         res = Storage.open()
         self._subcontainers.append(res)
         return res
@@ -340,19 +345,19 @@ class Storage:
     def load(self, key):
         """Interface for loading data from disk in subclasses."""
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         return self.data[key]
 
     def save(self, key, val):
         """Interface for saving data to disk in subclasses."""
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         self.data[key] = val
 
     def delete(self, key):
         """Interface for cleaning up a previously saved data from disk in subclasses."""
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         del self.data[key]
 
     def preload(self, key):
@@ -362,7 +367,7 @@ class Storage:
         in other cases it does nothing.
         """
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         pass
 
     def __enter__(self):
@@ -372,8 +377,8 @@ class Storage:
         self.close()
 
     def __repr__(self):
-        closed = "" if self._opened else ", closed"
-        return f"<{self.__class__.__name__} in RAM{closed}>"
+        closed = '' if self._opened else ', closed'
+        return f'<{self.__class__.__name__} in RAM{closed}>'
 
 
 class PickleStorage(Storage):
@@ -383,7 +388,9 @@ class PickleStorage(Storage):
     ----------
     directory : path-like
         An existing directory within which pickle files will be saved for each `key`.
+
     """
+
     trivial = False
 
     #: filename extension
@@ -409,6 +416,7 @@ class PickleStorage(Storage):
             i.e., a temporary directory is created within this path.
         delete : bool
             Whether to automatically remove the directory in :meth:`close`.
+
         """
         if directory is None:
             directory = tempfile.mkdtemp(prefix='tenpy_cache_' + cls.__name__, dir=tmpdir)
@@ -416,7 +424,7 @@ class PickleStorage(Storage):
         else:
             exist_ok = False
         directory = pathlib.Path(directory)
-        logger.info("%s: create directory %s", cls.__name__, directory)
+        logger.info('%s: create directory %s', cls.__name__, directory)
         directory.mkdir(exist_ok=exist_ok)
         res = cls(directory)
         res._owns_resources = True
@@ -429,15 +437,15 @@ class PickleStorage(Storage):
         if self._owns_resources:
             delete_dir = self._delete_directory
             if delete_dir is not None:
-                logger.info("%s: cleanup/remove directory %s", self.__class__.__name__, delete_dir)
+                logger.info('%s: cleanup/remove directory %s', self.__class__.__name__, delete_dir)
                 shutil.rmtree(delete_dir)
 
     def subcontainer(self, name):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         subdir = self.directory / name
         if subdir.exists():
-            raise ValueError("Subcontainer with that name already exists")
+            raise ValueError('Subcontainer with that name already exists')
         subdir.mkdir(exist_ok=False)
         res = self.__class__(subdir)
         self._subcontainers.append(res)
@@ -445,27 +453,27 @@ class PickleStorage(Storage):
 
     def load(self, key):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         with open(self.directory / (key + self.extension), 'rb') as f:
             data = pickle.load(f)
         return data
 
     def save(self, key, value):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         with open(self.directory / (key + self.extension), 'wb') as f:
             pickle.dump(value, f)
 
     def delete(self, key):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         fn = self.directory / (key + self.extension)
         if fn.exists():
             fn.unlink()
 
     def __repr__(self):
-        closed = "" if self._opened else ", closed"
-        return f"<{self.__class__.__name__} at {self.directory!s}{closed}>"
+        closed = '' if self._opened else ', closed'
+        return f'<{self.__class__.__name__} at {self.directory!s}{closed}>'
 
 
 class _NumpyStorage(PickleStorage):
@@ -477,17 +485,19 @@ class _NumpyStorage(PickleStorage):
     ----------
     directory : path-like
         An existing directory within which numpy files will be saved for each `key`.
+
     """
+
     extension = '.npy'
 
     def load(self, key):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         return np.load(self.directory / (key + self.extension))
 
     def save(self, key, value):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         np.save(self.directory / (key + self.extension), value)
 
 
@@ -502,6 +512,7 @@ class _NpcArrayStorage(PickleStorage):
     ----------
     directory : path-like
         An existing directory within which numpy files will be saved for each `key`.
+
     """
 
     extension = '.npy'
@@ -512,7 +523,7 @@ class _NpcArrayStorage(PickleStorage):
 
     def load(self, key):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         value = self._array_except_data[key].copy(deep=False)
         N = value._data
         data = value._data = []
@@ -524,10 +535,10 @@ class _NpcArrayStorage(PickleStorage):
 
     def save(self, key, value):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         value = value.copy(deep=False)
         data = value._data
-        N = value._data = len(data)  # replace _data attribute with just the length
+        value._data = len(data)  # replace _data attribute with just the length
         with open(self.directory / (key + self.extension), 'wb') as f:
             np.save(f, value._qdata)
             for T in data:
@@ -554,7 +565,9 @@ class Hdf5Storage(Storage):
     h5group : :class:`Group`
         The hdf5 group in which data will be saved using
         :func:`~tenpy.tools.hdf5_io.save_to_hdf5` under the specified keys.
+
     """
+
     trivial = False
 
     def __init__(self, h5group):
@@ -564,7 +577,7 @@ class Hdf5Storage(Storage):
         self._delete_file = None
 
     @classmethod
-    def open(cls, filename=None, subgroup=None, mode="w-", delete=True, tmpdir=None):
+    def open(cls, filename=None, subgroup=None, mode='w-', delete=True, tmpdir=None):
         """Create an hdf5 file and use it to initialize an :class:`Hdf5Cache`.
 
         Parameters
@@ -579,19 +592,21 @@ class Hdf5Storage(Storage):
             Filemode for opening the Hdf5 file.
         delete : bool
             Whether to automatically remove the corresponding file when closing the cache.
+
         """
-        warnings.warn("Benchmarks suggest that PickleStorage is faster than Hdf5Storage")
+        warnings.warn('Benchmarks suggest that PickleStorage is faster than Hdf5Storage')
         import h5py
+
         if filename is None:
             # h5py supports file-like objects, but this gives a python overhead for I/O.
             # hence h5py doc recommends using a temporary directory
             # and creating an hdf5 file inside that
             directory = tempfile.mkdtemp(prefix='tenpy_Hdf5Cache', dir=tmpdir)
-            logger.info("create temporary cache directory %s", directory)
-            filename = os.path.join(directory, "cache.h5")
+            logger.info('create temporary cache directory %s', directory)
+            filename = os.path.join(directory, 'cache.h5')
         else:
             directory = None
-            logger.info("create temporary cache file %s", filename)
+            logger.info('create temporary cache file %s', filename)
         f = h5py.File(filename, mode=mode)
         if subgroup is not None:
             if subgroup in f:
@@ -617,42 +632,42 @@ class Hdf5Storage(Storage):
             f.close()
         delete_file = self._delete_file
         if delete_file is not None:
-            logger.info("cleanup/remove cache file %s", delete_file)
+            logger.info('cleanup/remove cache file %s', delete_file)
             os.remove(delete_file)
         delete_dir = self._delete_directory
         if delete_dir is not None:
-            logger.info("cleanup/remove cache directory %s", delete_dir)
+            logger.info('cleanup/remove cache directory %s', delete_dir)
             shutil.rmtree(delete_dir)
 
     def subcontainer(self, name):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         if name in self.h5gr:
-            raise ValueError("Subcontainer with that name already exists")
+            raise ValueError('Subcontainer with that name already exists')
         res = Hdf5Storage(self.h5gr.create_group(name))
         return res
 
     def load(self, key):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         return load_from_hdf5(self.h5gr, key)
 
     def save(self, key, value):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         save_to_hdf5(self.h5gr, value, key)
 
     def delete(self, key):
         if not self._opened:
-            raise ValueError("Trying to access closed storage")
+            raise ValueError('Trying to access closed storage')
         if key in self.h5gr:
             del self.h5gr[key]
 
     def __repr__(self):
         if self._opened:
-            return f"<Hdf5Storage in {self.h5gr.file.filename!s}[{self.h5gr.name!r}]>"
+            return f'<Hdf5Storage in {self.h5gr.file.filename!s}[{self.h5gr.name!r}]>'
         else:
-            return "<Hdf5Storage, closed>"
+            return '<Hdf5Storage, closed>'
 
 
 class ThreadedStorage(Storage):
@@ -673,7 +688,9 @@ class ThreadedStorage(Storage):
         :func:`~tenpy.tools.hdf5_io.save_to_hdf5` under the specified keys.
     disk_storage : :class:`Storage`
         Instance of one of the other storage classes to wrap around.
+
     """
+
     def __init__(self, worker, disk_storage):
         if disk_storage.trivial:
             raise ValueError("ThreadedStorage with trivial `disk_storage` doesn't make sense")
@@ -692,6 +709,7 @@ class ThreadedStorage(Storage):
         ----------
         disk_storage : :class:`Storage`
             Instance with methods for the actual disk I/O handling.
+
         """
         worker = Worker(max_queue_size=max_queue_size)
         worker = worker.__enter__()
@@ -727,14 +745,11 @@ class ThreadedStorage(Storage):
 
     def load(self, key):
         if key not in self._loaded and key not in self._waiting_for_load:
-            logger.debug("ThreadedStorage.load %s", key)
+            logger.debug('ThreadedStorage.load %s', key)
             self._waiting_for_load.add(key)
-            self.worker.put_task(self.disk_storage.load,
-                                 key,
-                                 return_dict=self._loaded,
-                                 return_key=key)
+            self.worker.put_task(self.disk_storage.load, key, return_dict=self._loaded, return_key=key)
         else:
-            logger.debug("ThreadedStorage.load %s (have pre-loaded)", key)
+            logger.debug('ThreadedStorage.load %s (have pre-loaded)', key)
         assert key in self._waiting_for_load
         if key not in self._loaded:
             self.worker.join_tasks()  # wait for the tasks to finish loading
@@ -745,14 +760,14 @@ class ThreadedStorage(Storage):
         return val
 
     def preload(self, key):
-        logger.debug("ThreadedStorage.preload %s", key)
+        logger.debug('ThreadedStorage.preload %s', key)
         if key in self._waiting_for_load or key in self._loaded:
             return
         self._waiting_for_load.add(key)
         self.worker.put_task(self.disk_storage.load, key, return_dict=self._loaded, return_key=key)
 
     def save(self, key, value):
-        logger.debug("ThreadedStorage.save %s", key)
+        logger.debug('ThreadedStorage.save %s', key)
         if key in self._waiting_for_load:
             # overwriting a preloaded but not yet returned value
             # need to wait for the preload to finish to avoid that the preload overrides results

@@ -1,11 +1,17 @@
 """Tools for handling strings."""
 # Copyright (C) TeNPy Developers, Apache license
 
-from typing import Sequence
+from collections.abc import Sequence
+
 import numpy as np
 
-__all__ = ['is_non_string_iterable', 'vert_join', 'to_mathematica_lists', 'format_like_list',
-           'join_as_many_as_possible']
+__all__ = [
+    'is_non_string_iterable',
+    'vert_join',
+    'to_mathematica_lists',
+    'format_like_list',
+    'join_as_many_as_possible',
+]
 
 
 def is_non_string_iterable(x):
@@ -41,12 +47,14 @@ def vert_join(strlist, valign='t', halign='l', delim=' '):
     Examples
     --------
     >>> from tenpy.tools.string import vert_join
-    >>> print(vert_join(['a\nsample\nmultiline\nstring', str(np.arange(9).reshape(3, 3))],
-    ...                 delim=' | '))  # doctest: +NORMALIZE_WHITESPACE
+    >>> print(
+    ...     vert_join(['a\nsample\nmultiline\nstring', str(np.arange(9).reshape(3, 3))], delim=' | ')
+    ... )  # doctest: +NORMALIZE_WHITESPACE
     a         | [[0 1 2]
     sample    |  [3 4 5]
     multiline |  [6 7 8]]
     string    |
+
     """
     # expand tabs, split to newlines
     strlist = [str(s).expandtabs().split('\n') for s in strlist]
@@ -82,8 +90,9 @@ def vert_join(strlist, valign='t', halign='l', delim=' '):
     return res
 
 
-def join_as_many_as_possible(msgs: Sequence[str], separator: str, priorities: Sequence[int] = None,
-                             max_len: int = None, fill: str = '...') -> str:
+def join_as_many_as_possible(
+    msgs: Sequence[str], separator: str, priorities: Sequence[int] = None, max_len: int = None, fill: str = '...'
+) -> str:
     """Like ``separator.join(msgs)`` but truncated if the result is too long.
 
     We append the ``fill`` value to indicate that entries were omitted.
@@ -112,12 +121,12 @@ def join_as_many_as_possible(msgs: Sequence[str], separator: str, priorities: Se
 
 
 def to_mathematica_lists(a):
-    """convert nested `a` to string readable by mathematica using curly brackets '{...}'."""
+    """Convert nested `a` to string readable by mathematica using curly brackets '{...}'."""
     if isinstance(a, str):
         return '"' + str(a) + '"'
     try:
         iter(a)
-        s = "{" + ", ".join([to_mathematica_lists(suba) for suba in a]) + "}"
+        s = '{' + ', '.join([to_mathematica_lists(suba) for suba in a]) + '}'
         return s
     except TypeError:
         if isinstance(a, float) or isinstance(a, complex):
@@ -128,5 +137,6 @@ def to_mathematica_lists(a):
 def format_like_list(it) -> str:
     """Format elements of an iterable as if it were a plain list.
 
-    This means surrounding them with brackets and separating them by `', '`."""
+    This means surrounding them with brackets and separating them by `', '`.
+    """
     return f'[{", ".join(map(str, it))}]'

@@ -22,9 +22,11 @@ always orthogonal to the initial uniform MPS. `X` parametrizes the excited state
 
 # Copyright (C) TeNPy Developers, Apache license
 
-import numpy as np
 import logging
 import warnings
+
+import numpy as np
+
 from ..tools.misc import BetaWarning
 
 logger = logging.getLogger(__name__)
@@ -58,21 +60,27 @@ class MomentumMPS:
         The momentum of the state.
     n_sites : int
         Number of sites for each excitation.
+
     """
 
     def __init__(self, Xs, uMPS, p, n_sites=1):
-        warnings.warn('MomentumMPS is a new feature and not as well-tested as the '
-                      'rest of the library', BetaWarning, stacklevel=2)
-        assert len(Xs) == uMPS.L, "Need as many excitations as sites in unit cell."
+        warnings.warn(
+            'MomentumMPS is a new feature and not as well-tested as the rest of the library', BetaWarning, stacklevel=2
+        )
+        assert len(Xs) == uMPS.L, 'Need as many excitations as sites in unit cell.'
         self.dtype = dtype = np.find_common_type([X.dtype for X in Xs], [])
         self._X = [X.astype(dtype, copy=True) for X in Xs]
         self.uMPS_GS = uMPS
+
+        if not uMPS.chinfo.trivial_shift:
+            # should maybe inherit from MPSGeometry?
+            raise NotImplementedError('Shift symmetry not supported yet')
+
         self.p = p
         self.n_sites = n_sites  # Number of sites of single excitation tensor.
 
     def copy(self):
-        """Returns a copy of `self`.
-        """
+        """Returns a copy of `self`."""
         # __init__ makes deep copies of B, S
         cp = self.__class__(self._X, self.uMPS_GS, self.p, self.n_sites)
         return cp
@@ -96,11 +104,12 @@ class MomentumMPS:
             HDF5 group which is supposed to represent `self`.
         subpath : str
             The `name` of `h5gr` with a ``'/'`` in the end.
+
         """
-        hdf5_saver.save(self._X, subpath + "tensors")
-        hdf5_saver.save(self.uMPS_GS, subpath + "GS_uMPS")
-        hdf5_saver.save(self.p, subpath + "momentum")
-        h5gr.attrs["n_sites"] = self.n_sites
+        hdf5_saver.save(self._X, subpath + 'tensors')
+        hdf5_saver.save(self.uMPS_GS, subpath + 'GS_uMPS')
+        hdf5_saver.save(self.p, subpath + 'momentum')
+        h5gr.attrs['n_sites'] = self.n_sites
 
     @classmethod
     def from_hdf5(cls, hdf5_loader, h5gr, subpath):
@@ -121,14 +130,15 @@ class MomentumMPS:
         -------
         obj : cls
             Newly generated class instance containing the required data.
+
         """
         obj = cls.__new__(cls)  # create class instance, no __init__() call
         hdf5_loader.memorize_load(h5gr, obj)
 
-        obj._X = hdf5_loader.load(subpath + "tensors")
-        obj.uMPS_GS = hdf5_loader.load(subpath + "GS_uMPS")
-        obj.p = hdf5_loader.load(subpath + "momentum")
-        obj.n_sites = hdf5_loader.get_attr(h5gr, "n_sites")
+        obj._X = hdf5_loader.load(subpath + 'tensors')
+        obj.uMPS_GS = hdf5_loader.load(subpath + 'GS_uMPS')
+        obj.p = hdf5_loader.load(subpath + 'momentum')
+        obj.n_sites = hdf5_loader.get_attr(h5gr, 'n_sites')
         obj.uMPS_GS.test_sanity()
         return obj
 

@@ -11,28 +11,27 @@ the simulation class in a post-processing step. They follow the syntax
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-
+import logging
 import os
 import warnings
 from pathlib import Path
-import numpy as np
-import logging
 
-from ..tools.spectral_function_tools import spectral_function, plot_correlations_on_lattice
-from ..tools import hdf5_io
-from ..tools.misc import to_iterable, get_recursive, set_recursive, find_subclass
-from ..tools.params import Config
+import numpy as np
+
 from ..models import Model
+from ..tools import hdf5_io
+from ..tools.misc import find_subclass, get_recursive, set_recursive, to_iterable
+from ..tools.params import Config
+from ..tools.spectral_function_tools import plot_correlations_on_lattice, spectral_function
 
 try:
     import h5py
+
     h5py_version = h5py.version.version_tuple
 except ImportError:
     h5py_version = (0, 0)
 
-__all__ = [
-    'DataLoader', 'DataFiles', 'pp_spectral_function', 'pp_plot_correlations_on_lattice'
-]
+__all__ = ['DataLoader', 'DataFiles', 'pp_spectral_function', 'pp_plot_correlations_on_lattice']
 
 
 class DataLoader:
@@ -57,28 +56,31 @@ class DataLoader:
 
     .. todo ::
         Include an Option for saving data into a ``.hdf5`` file without overwriting any results.
+
     """
-    logger = logging.getLogger(__name__ + ".DataLoader")
+
+    logger = logging.getLogger(__name__ + '.DataLoader')
 
     def __init__(self, filename=None, simulation=None, data=None):
-        self.logger.info("Initializing\n%s\n%s\n%s", "=" * 80, self.__class__.__name__, "=" * 80)
+        self.logger.info('Initializing\n%s\n%s\n%s', '=' * 80, self.__class__.__name__, '=' * 80)
 
         self._measurements = None
         self.sim_params = None
 
         if filename is not None:
             self.filename = Path(filename)
-            self.logger.info(f"Loading data from {self.filename!s}")
+            self.logger.info(f'Loading data from {self.filename!s}')
             if self.filename.suffix == '.h5' or self.filename.suffix == '.hdf5':
                 # create a h5group (which is open)
                 self.logger.info(
                     f'Open file {self.filename.name}, when no context manager is used, it might be useful to '
-                    f'call self.close()')
+                    f'call self.close()'
+                )
 
                 h5group = h5py.File(self.filename, 'r')
                 self._Hdf5Loader = hdf5_io.Hdf5Loader(h5group)
             else:
-                self.logger.info(f"Not using hdf5 data-format.\nLoading data can be slow")
+                self.logger.info(f'Not using hdf5 data-format.\nLoading data can be slow')
                 # all data is loaded as other filenames
                 self._all_data = hdf5_io.load(self.filename)
 
@@ -86,7 +88,7 @@ class DataLoader:
 
         elif simulation is not None:
             self.sim = simulation
-            self.logger.info(f"Initializing from {self.sim.__class__.__name__}")
+            self.logger.info(f'Initializing from {self.sim.__class__.__name__}')
             self.sim_params = self.sim.options.as_dict()
             self._all_data = self.sim.results
 
@@ -95,7 +97,7 @@ class DataLoader:
                 self._psi = self.sim.psi
 
         elif data is not None:
-            self.logger.info(f"Initializing data loader from passed results")
+            self.logger.info(f'Initializing data loader from passed results')
             # all data is loaded as other filenames
             self._all_data = data
             self.sim_params = self._load('simulation_parameters')
@@ -109,14 +111,14 @@ class DataLoader:
     def close(self):
         if hasattr(self, '_Hdf5Loader'):
             self._Hdf5Loader.h5group.close()
-            self.logger.info(f"Closed {self.filename}")
+            self.logger.info(f'Closed {self.filename}')
 
     def __repr__(self):
         if self.filename is not None:
-            return f"DataLoader(filename={self.filename!r})"
+            return f'DataLoader(filename={self.filename!r})'
         if hasattr(self, 'sim'):
-            return f"DataLoader(simulation={self.sim!r})"
-        return "Dataloader(data=...)"
+            return f'DataLoader(simulation={self.sim!r})'
+        return 'Dataloader(data=...)'
 
     @property
     def measurements(self):
@@ -138,6 +140,7 @@ class DataLoader:
         -------
         dict
             data loaded from paths as dictionary
+
         """
         paths = to_iterable(paths)
         res = dict()
@@ -165,6 +168,7 @@ class DataLoader:
         -------
         res :
             data corresponding to path
+
         """
         key = prefix + path
         try:
@@ -180,7 +184,7 @@ class DataLoader:
                 value = self.convert_list_to_ndarray(value, key=key)
             return value
         except KeyError:
-            warnings.warn(f"{key} does not exist!")
+            warnings.warn(f'{key} does not exist!')
 
     def get_data_m(self, key, prefix='measurements/', convert_to_numpy=True):
         return self._load(key, prefix=prefix, convert_to_numpy=convert_to_numpy)
@@ -192,8 +196,7 @@ class DataLoader:
         if isinstance(value, list):
             converted_value = np.array(value)
             if converted_value.dtype == np.dtype(object):
-                self.logger.info("Can't convert %s to numpy array, proceed without conversion",
-                                 key)
+                self.logger.info("Can't convert %s to numpy array, proceed without conversion", key)
             else:
                 value = converted_value
         return value
@@ -206,8 +209,7 @@ class DataLoader:
 
     def get_model(self):
         """Deprecated in favor of the simpler property access via :attr:`DataLoader.model`."""
-        warnings.warn("Use ``DataLoader.model`` instead of ``DataLoader.get_model()``",
-                      FutureWarning, 2)
+        warnings.warn('Use ``DataLoader.model`` instead of ``DataLoader.get_model()``', FutureWarning, 2)
         return self.model
 
     def _get_model(self):
@@ -255,15 +257,16 @@ class DataFiles:
     .. doctest ::
         :skipif: True
 
-        >>> data_files = DataFiles(['results/output_1.h5',
-        ...                         'results_other/output_3.h5'])
+        >>> data_files = DataFiles(['results/output_1.h5', 'results_other/output_3.h5'])
         >>> data_files['results/output_1.h5']
         DataLoader(filename='results/output_1.h5')
         >>> data_files['results/output_2.h5']
         loading results/output_2.h5 ... successful
+
     """
+
     def __init__(self, files=None, folder=None):
-        self._open_files = {} # filename -> DataLoader
+        self._open_files = {}  # filename -> DataLoader
         self._resolve_filenames = {}
         self._keys = []
         if files:
@@ -291,7 +294,7 @@ class DataFiles:
             try:
                 data = DataLoader(filename)
             except OSError as e:
-                print(f"Erorr: failed to open {filename}")
+                print(f'Erorr: failed to open {filename}')
                 raise e from None
             self._keys.append(filename)
             self._open_files[normalized] = data
@@ -337,19 +340,19 @@ class DataFiles:
 
     def __repr__(self):
         if self._open_files:
-            return "<DataFiles() with files\n    " + '\n    '.join(self.keys()) + ">"
+            return '<DataFiles() with files\n    ' + '\n    '.join(self.keys()) + '>'
 
-    def load_from_folder(self, folder, glob="*.h5"):
+    def load_from_folder(self, folder, glob='*.h5'):
         """Load all data files from a given folder."""
         files = Path(folder).glob(glob)
         for file in files:
-            print(f"loading {file!s}", end=' ')
+            print(f'loading {file!s}', end=' ')
             try:
                 _ = self[file]
-            except OSError as e:
-                print("... FAILED! Ignoring.")
+            except OSError:
+                print('... FAILED! Ignoring.')
             else:
-                print("... successful")
+                print('... successful')
         # done
 
     # TODO: tests for this
@@ -358,11 +361,7 @@ class DataFiles:
     # TODO get pandas.DataFrame from changing keys
 
 
-def pp_spectral_function(DL: DataLoader,
-                         *,
-                         correlation_key,
-                         conjugate_correlation=False,
-                         **kwargs):
+def pp_spectral_function(DL: DataLoader, *, correlation_key, conjugate_correlation=False, **kwargs):
     r"""Given a time dependent correlation function C(t, r), calculate its Spectral Function.
 
     After a run of :class:`~tenpy.simulations.time_evolution.TimeDependentCorrelation`, a :class:`DataLoader` instance
@@ -372,11 +371,15 @@ def pp_spectral_function(DL: DataLoader,
 
     Parameters
     ----------
-    DL : DataLoader
+    DL : :class:`DataLoader`
+        The data loader to read from
     correlation_key : str
+        key for correlation function
     conjugate_correlation : bool | False
+        If the correlation function should be complex conjugated
     **kwargs
         keyword arguments to :func:`~tenpy.tools.spectral_function_tools.spectral_function`
+
     """
     dt: float = DL.sim_params['algorithm_params']['dt']
     N_steps = DL.sim_params['algorithm_params'].get('N_steps', None)
@@ -391,21 +394,24 @@ def pp_spectral_function(DL: DataLoader,
     return spectral_function(time_dep_corr, DL.lat, dt, **kwargs)
 
 
-def pp_plot_correlations_on_lattice(DL: DataLoader,
-                                    *,
-                                    data_key,
-                                    t_step=0,
-                                    keys='nearest_neighbors',
-                                    default_dir: str = 'plots',
-                                    save_as: str = 'Correlations.pdf',
-                                    markers='D',
-                                    figsize=(8, 8),
-                                    **kwargs):
+def pp_plot_correlations_on_lattice(
+    DL: DataLoader,
+    *,
+    data_key,
+    t_step=0,
+    keys='nearest_neighbors',
+    default_dir: str = 'plots',
+    save_as: str = 'Correlations.pdf',
+    markers='D',
+    figsize=(8, 8),
+    **kwargs,
+):
     """Save a plot during post-processing to plot correlations on a lattice.
 
     Parameters
     ----------
     DL : :class:`DataLoader`
+        The data loader to read from
     data_key: str
         key for correlation function
     t_step: int
@@ -414,16 +420,19 @@ def pp_plot_correlations_on_lattice(DL: DataLoader,
         Valid keys are the ones defined in the corresponding lattice :attr:`~tenpy.models.lattice.Lattice.pairs`,
         e.g. `'nearest_neighbors'`
     markers : str or list
-          a str for a single or a list of symbols for different sites within a unit cell given to plot sites
+        A str for a single or a list of symbols for different sites within a unit cell given to plot sites
     figsize : tuple
+        The size of the figure.
     save_as : str
         string under which to save the plot (and extension)
     default_dir : str
         default (sub-) directory under which to save the plot
     kwargs :
         kwargs to :func:`~tenpy.tools.spectral_function_tools.plot_correlations_on_lattice`
+
     """
     import matplotlib.pyplot as plt
+
     if not os.path.exists(default_dir):
         os.mkdir(default_dir)
 

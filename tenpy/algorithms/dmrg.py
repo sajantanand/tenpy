@@ -23,29 +23,32 @@ computationally expensive to run and has occasionally displayed some convergence
 Which one is preferred in the end is not obvious a priori and might depend on the used model.
 Just try both of them.
 
-A :class:`~tenpy.algorithms.mps_common.Mixer` should be used initially to avoid that the algorithm gets stuck in local energy
-minima, and then slowly turned off in the end. For :class:`SingleSiteDMRGEngine`, using a mixer is
-crucial, as the one-site algorithm cannot increase the MPS bond dimension by itself.
+A :class:`~tenpy.algorithms.mps_common.Mixer` should be used initially to avoid that the algorithm
+gets stuck in local energy minima, and then slowly turned off in the end.
+For :class:`SingleSiteDMRGEngine`, using a mixer is crucial, as the one-site algorithm cannot
+increase the MPS bond dimension by itself.
 
 A generic protocol for approaching a physics question using DMRG is given in
 :doc:`/intro/dmrg-protocol`.
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-import numpy as np
+import logging
 import time
 import warnings
-import logging
-logger = logging.getLogger(__name__)
+
+import numpy as np
 
 from ..linalg import np_conserved as npc
-from ..linalg.krylov_based import lanczos_arpack, LanczosGroundState
+from ..linalg.krylov_based import LanczosGroundState, lanczos_arpack
 from ..linalg.truncation import svd_theta
-from ..tools.params import asConfig
 from ..tools.math import entropy
+from ..tools.params import asConfig
 from ..tools.process import memory_usage
-from .mps_common import IterativeSweeps, OneSiteH, TwoSiteH
 from . import mps_common
+from .mps_common import IterativeSweeps, OneSiteH, TwoSiteH
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     'run',
@@ -96,13 +99,13 @@ def run(psi, model, options, **kwargs):
     elif active_sites == 2:
         engine = TwoSiteDMRGEngine(psi, model, options, **kwargs)
     else:
-        raise ValueError("For DMRG, can only use 1 or 2 active sites, not {}".format(active_sites))
+        raise ValueError(f'For DMRG, can only use 1 or 2 active sites, not {active_sites}')
     E, _ = engine.run()
     return {
         'E': E,
         'shelve': engine.shelve,
         'bond_statistics': engine.update_stats,
-        'sweep_statistics': engine.sweep_stats
+        'sweep_statistics': engine.sweep_stats,
     }
 
 
@@ -184,7 +187,9 @@ class DMRGEngine(IterativeSweeps):
         While the mixer is on, the `S` stored in the MPS is a non-diagonal 2D array.
         To check convergence, we use the approximate singular values based on which we truncated
         instead to calculate the entanglement entropy and store it inside this list.
+
     """
+
     EffectiveH = None
 
     def __init__(self, psi, model, options, **kwargs):
@@ -198,10 +203,10 @@ class DMRGEngine(IterativeSweeps):
             default_min_sweeps = max(max(self.chi_list.keys()), default_min_sweeps)
         self.options.setdefault('min_sweeps', default_min_sweeps)
         mixer_params = self.options.subconfig('mixer_params')
-        mixer_params.setdefault('amplitude', 1.e-5)
+        mixer_params.setdefault('amplitude', 1.0e-5)
         disable_finite = 15
         disable_infinite = 50
-        decay_finite = 2.
+        decay_finite = 2.0
         decay_infinite = decay_finite ** (disable_finite / disable_infinite)
         mixer_params.setdefault('decay', decay_finite if self.finite else decay_infinite)
         mixer_params.setdefault('disable_after', disable_finite if self.finite else disable_infinite)
@@ -260,22 +265,23 @@ class DMRGEngine(IterativeSweeps):
             The energy of the current ground state approximation.
         psi : :class:`~tenpy.networks.mps.MPS`
             The current ground state approximation, i.e. just a reference to :attr:`psi`.
+
         """
         options = self.options
         # parameters for lanczos
         p_tol_to_trunc = options.get('P_tol_to_trunc', 0.05, 'real')
         if p_tol_to_trunc is not None:
-            svd_min = self.trunc_params.silent_get('svd_min', 0.)
-            svd_min = 0. if svd_min is None else svd_min
-            trunc_cut = self.trunc_params.silent_get('trunc_cut', 0.)
-            trunc_cut = 0. if trunc_cut is None else trunc_cut
-            p_tol_min = max(1.e-30, svd_min**2 * p_tol_to_trunc, trunc_cut**2 * p_tol_to_trunc)
+            svd_min = self.trunc_params.silent_get('svd_min', 0.0)
+            svd_min = 0.0 if svd_min is None else svd_min
+            trunc_cut = self.trunc_params.silent_get('trunc_cut', 0.0)
+            trunc_cut = 0.0 if trunc_cut is None else trunc_cut
+            p_tol_min = max(1.0e-30, svd_min**2 * p_tol_to_trunc, trunc_cut**2 * p_tol_to_trunc)
             p_tol_min = options.get('P_tol_min', p_tol_min, 'real')
-            p_tol_max = options.get('P_tol_max', 1.e-4, 'real')
+            p_tol_max = options.get('P_tol_max', 1.0e-4, 'real')
         e_tol_to_trunc = options.get('E_tol_to_trunc', None, 'real')
         if e_tol_to_trunc is not None:
-            e_tol_min = options.get('E_tol_min', 5.e-16, 'real')
-            e_tol_max = options.get('E_tol_max', 1.e-4, 'real')
+            e_tol_min = options.get('E_tol_min', 5.0e-16, 'real')
+            e_tol_max = options.get('E_tol_max', 1.0e-4, 'real')
 
         # energy and entropy before the iteration:
         if len(self.sweep_stats['E']) < 1:  # first iteration
@@ -320,7 +326,7 @@ class DMRGEngine(IterativeSweeps):
             Es = self.update_stats['E_total']
             age = self.update_stats['age']
             delta = min(1 + 2 * self.env.L, len(age))
-            growth = (age[-1] - age[-delta])
+            growth = age[-1] - age[-delta]
             E = (Es[-1] - Es[-delta]) / growth
         else:
             E = self.update_stats['E_total'][-1]
@@ -343,13 +349,14 @@ class DMRGEngine(IterativeSweeps):
 
     def status_update(self, iteration_start_time: float):
         logger.info(
-            "checkpoint after sweep %(sweeps)d\n"
-            "energy=%(E).16f, max S=%(max_S).16f, age=%(age)d, norm_err=%(norm_err).1e\n"
-            "Current memory usage %(mem).1fMB, wall time: %(wall_time).1fs\n"
-            "Delta E = %(dE).4e, Delta S = %(dS).4e (per sweep)\n"
-            "max trunc_err = %(trunc_err).4e, max E_trunc = %(E_trunc).4e\n"
-            "chi: %(chi)s\n"
-            "%(sep)s", {
+            'checkpoint after sweep %(sweeps)d\n'
+            'energy=%(E).16f, max S=%(max_S).16f, age=%(age)d, norm_err=%(norm_err).1e\n'
+            'Current memory usage %(mem).1fMB, wall time: %(wall_time).1fs\n'
+            'Delta E = %(dE).4e, Delta S = %(dS).4e (per sweep)\n'
+            'max trunc_err = %(trunc_err).4e, max E_trunc = %(E_trunc).4e\n'
+            'chi: %(chi)s\n'
+            '%(sep)s',
+            {
                 'sweeps': self.sweeps,
                 'E': self.sweep_stats['E'][-1],
                 'max_S': self.sweep_stats['max_S'][-1],
@@ -362,8 +369,9 @@ class DMRGEngine(IterativeSweeps):
                 'trunc_err': self.sweep_stats['max_trunc_err'][-1],
                 'E_trunc': self.sweep_stats['max_E_trunc'][-1],
                 'chi': self.psi.chi if self.psi.L < 40 else max(self.psi.chi),
-                'sep': "=" * 80,
-            })
+                'sep': '=' * 80,
+            },
+        )
 
     def is_converged(self):
         """Determines if the algorithm is converged.
@@ -384,12 +392,12 @@ class DMRGEngine(IterativeSweeps):
                 Convergence if the relative change of the entropy in each step
                 satisfies ``|Delta S|/S < max_S_err``
         """
-        max_E_err = self.options.get('max_E_err', 1.e-8, 'real')
-        max_S_err = self.options.get('max_S_err', 1.e-5, 'real')
+        max_E_err = self.options.get('max_E_err', 1.0e-8, 'real')
+        max_S_err = self.options.get('max_S_err', 1.0e-5, 'real')
         E = self.sweep_stats['E'][-1]
         Delta_E = self.sweep_stats['Delta_E'][-1]
         Delta_S = self.sweep_stats['Delta_S'][-1]
-        return abs(Delta_E / max(E, 1.)) < max_E_err and abs(Delta_S) < max_S_err
+        return abs(Delta_E / max(E, 1.0)) < max_E_err and abs(Delta_S) < max_S_err
 
     def post_run_cleanup(self):
         """Perform any final steps or clean up after the main loop has terminated.
@@ -415,14 +423,15 @@ class DMRGEngine(IterativeSweeps):
         """
         super().post_run_cleanup()
         self._canonicalize(True)
-        logger.info(f'{self.__class__.__name__} finished after {self.sweeps} sweeps, '
-                    f'max chi={max(self.psi.chi)}')
+        logger.info(f'{self.__class__.__name__} finished after {self.sweeps} sweeps, max chi={max(self.psi.chi)}')
         if (len(self.ortho_to_envs) > 0) and (self.sweep_stats['E'][-1] > -1e-8):
-            msg = (f'{self.__class__.__name__} with orthogonal_to, i.e. searching for excited '
-                   f'states, terminated with an energy consistent with zero. '
-                   f'Orthogonality can not be guaranteed. Consider adding a negative constant to '
-                   f'the Hamiltonian such that the target state has negative energy. '
-                   f'See https://github.com/tenpy/tenpy/issues/329 for more information.')
+            msg = (
+                f'{self.__class__.__name__} with orthogonal_to, i.e. searching for excited '
+                f'states, terminated with an energy consistent with zero. '
+                f'Orthogonality can not be guaranteed. Consider adding a negative constant to '
+                f'the Hamiltonian such that the target state has negative energy. '
+                f'See https://github.com/tenpy/tenpy/issues/329 for more information.'
+            )
             # stacklevel: (1) this
             #             (2) DMRGEngine.run()
             #             (3) IterativeSweeps.run()
@@ -439,17 +448,18 @@ class DMRGEngine(IterativeSweeps):
         psi : :class:`~tenpy.networks.mps.MPS`
             The MPS representing the ground state after the simulation,
             i.e. just a reference to :attr:`psi`.
+
         """
         return super().run()
 
     def _canonicalize(self, warn=False):
-        #Update environment until norm_tol is reached. If norm_tol_final
-        #is not reached, call canonical_form.
+        # Update environment until norm_tol is reached. If norm_tol_final
+        # is not reached, call canonical_form.
         if self.mixer is not None:
             return
         norm_err = np.linalg.norm(self.psi.norm_test())
-        norm_tol = self.options.get('norm_tol', 1.e-5, 'real')
-        norm_tol_final = self.options.get('norm_tol_final', 1.e-10, 'real')
+        norm_tol = self.options.get('norm_tol', 1.0e-5, 'real')
+        norm_tol_final = self.options.get('norm_tol_final', 1.0e-10, 'real')
         if not self.finite:
             update_env = self.options['update_env']
             norm_tol_iter = self.options.get('norm_tol_iter', 5, int)
@@ -457,8 +467,8 @@ class DMRGEngine(IterativeSweeps):
             return
         if warn and norm_err > norm_tol:
             logger.warning(
-                "final DMRG state not in canonical form up to "
-                "norm_tol=%.2e: norm_err=%.2e", norm_tol, norm_err)
+                'final DMRG state not in canonical form up to norm_tol=%.2e: norm_err=%.2e', norm_tol, norm_err
+            )
         if norm_err > norm_tol and not self.finite:
             for _ in range(norm_tol_iter):
                 self.environment_sweeps(update_env)
@@ -466,15 +476,17 @@ class DMRGEngine(IterativeSweeps):
                 if norm_err <= norm_tol:
                     break
             else:
-                logger.warning(
-                    "norm_err=%.2e still too high after environment_sweeps", norm_err)
+                logger.warning('norm_err=%.2e still too high after environment_sweeps', norm_err)
         if norm_err > norm_tol_final:
             self._resume_psi = self.psi.copy()
             if warn and not self.finite:
                 logger.warning(
-                "final DMRG state not in canonical form up to "
-                "norm_tol_final=%.2e: norm_err=%.2e, "
-                "calling psi.canonical_form()", norm_tol_final, norm_err)
+                    'final DMRG state not in canonical form up to '
+                    'norm_tol_final=%.2e: norm_err=%.2e, '
+                    'calling psi.canonical_form()',
+                    norm_tol_final,
+                    norm_err,
+                )
             self.psi.canonical_form()
 
     def reset_stats(self, resume_data=None):
@@ -488,7 +500,7 @@ class DMRGEngine(IterativeSweeps):
             'time': [],
             'err': [],
             'E_trunc': [],
-            'ov_change': []
+            'ov_change': [],
         }
         self.sweep_stats = {
             'sweep': [],
@@ -502,7 +514,7 @@ class DMRGEngine(IterativeSweeps):
             'max_trunc_err': [],
             'max_E_trunc': [],
             'max_chi': [],
-            'norm_err': []
+            'norm_err': [],
         }
 
     def sweep(self, optimize=True, meas_E_trunc=False):
@@ -544,6 +556,7 @@ class DMRGEngine(IterativeSweeps):
             ov_change: float
                 Change in the wave function ``1. - abs(<theta_guess|theta>)``
                 induced by :meth:`diag`, *not* including the truncation!
+
         """
         i0 = self.i0
         n_opt = self.n_optimize
@@ -551,20 +564,12 @@ class DMRGEngine(IterativeSweeps):
         if optimize:
             E0, theta, N, ov_change = self.diag(theta)
         else:
-            E0, N, ov_change = None, 0, 0.
+            E0, N, ov_change = None, 0, 0.0
         theta = self.prepare_svd(theta)
         U, S, VH, err, S_approx = self.mixed_svd(theta)
         self._entropy_approx[(i0 + n_opt - 1) % self.psi.L] = entropy(S_approx**2)
         self.set_B(U, S, VH)
-        update_data = {
-            'E0': E0,
-            'err': err,
-            'N': N,
-            'age': age,
-            'U': U,
-            'VH': VH,
-            'ov_change': ov_change
-        }
+        update_data = {'E0': E0, 'err': err, 'N': N, 'age': age, 'U': U, 'VH': VH, 'ov_change': ov_change}
         return update_data
 
     def post_update_local(self, E0, age, N, ov_change, err, **update_data):
@@ -576,6 +581,7 @@ class DMRGEngine(IterativeSweeps):
         ----------
         **update_data : dict
             What was returned by :meth:`update_local`.
+
         """
         E0 = E0
         i0 = self.i0
@@ -614,18 +620,21 @@ class DMRGEngine(IterativeSweeps):
             j = 0
             A = psi.get_B(j, form='A')
             th = psi.get_B(j, form='Th')
-            U, S, V = npc.svd(th.combine_legs(psi._p_label + ['vR'], qconj=-1),
-                              cutoff=0,
-                              qtotal_LR=[None, th.qtotal],
-                              inner_labels=['vR', 'vL'])
+            U, S, V = npc.svd(
+                th.combine_legs(psi._p_label + ['vR'], qconj=-1),
+                cutoff=0,
+                qtotal_LR=[None, th.qtotal],
+                inner_labels=['vR', 'vL'],
+            )
             S = S / np.linalg.norm(S)
             psi.set_SL(j, S)
             A_new = npc.tensordot(U.conj().replace_label('vR*', 'vL'), A, ['vL*', 'vL'])
             psi.set_B(j, A_new, form='A')
 
             old_UL, old_VR = psi.segment_boundaries
-            new_UL = npc.tensordot(old_UL, U, axes=['vR', 'vL'])
-            psi.segment_boundaries = (new_UL, old_VR)
+            if old_UL is not None:
+                new_UL = npc.tensordot(old_UL, U, axes=['vR', 'vL'])
+                psi.segment_boundaries = (new_UL, old_VR)
 
             for env in self._all_envs:
                 update_ket = env.ket is psi
@@ -638,18 +647,21 @@ class DMRGEngine(IterativeSweeps):
             j = psi.L - 1
             B = psi.get_B(j, form='B')
             th = psi.get_B(j, form='Th')
-            U, S, V = npc.svd(th.combine_legs(['vL'] + psi._p_label, qconj=+1),
-                              cutoff=0,
-                              qtotal_LR=[th.qtotal, None],
-                              inner_labels=['vR', 'vL'])
+            U, S, V = npc.svd(
+                th.combine_legs(['vL'] + psi._p_label, qconj=+1),
+                cutoff=0,
+                qtotal_LR=[th.qtotal, None],
+                inner_labels=['vR', 'vL'],
+            )
             S = S / np.linalg.norm(S)
             psi.set_SR(j, S)
             B_new = npc.tensordot(B, V.conj().replace_label('vL*', 'vR'), ['vR', 'vR*'])
             psi.set_B(j, B_new, form='B')
 
             old_UL, old_VR = psi.segment_boundaries
-            new_VR = npc.tensordot(V, old_VR, axes=['vR', 'vL'])
-            psi.segment_boundaries = (old_UL, new_VR)
+            if old_VR is not None:
+                new_VR = npc.tensordot(V, old_VR, axes=['vR', 'vL'])
+                psi.segment_boundaries = (old_UL, new_VR)
 
             for env in self._all_envs:
                 update_ket = env.ket is psi
@@ -715,6 +727,7 @@ class DMRGEngine(IterativeSweeps):
             Number of Lanczos iterations used. ``-1`` if unknown.
         ov_change : float
             Change in the wave function ``1. - abs(<theta_guess|theta_diag>)``
+
         """
         N = -1  # (unknown)
 
@@ -734,8 +747,8 @@ class DMRGEngine(IterativeSweeps):
         elif self.diag_method == 'ED_all':
             E, theta = full_diag_effH(self.eff_H, theta_guess, keep_sector=False)
         else:
-            raise ValueError("Unknown diagonalization method: " + repr(self.diag_method))
-        ov_change = 1. - abs(npc.inner(theta_guess, theta, 'labels', do_conj=True))
+            raise ValueError('Unknown diagonalization method: ' + repr(self.diag_method))
+        ov_change = 1.0 - abs(npc.inner(theta_guess, theta, 'labels', do_conj=True))
         return E, theta, N, ov_change
 
     def plot_update_stats(self, axes, xaxis='time', yaxis='E', y_exact=None, **kwargs):
@@ -757,12 +770,13 @@ class DMRGEngine(IterativeSweeps):
             If given, plot ``abs((y-y_exact)/y_exact)`` on a log-scale yaxis.
         **kwargs :
             Further keyword arguments given to ``axes.plot(...)``.
+
         """
         if axes is None:
             import matplotlib.pyplot as plt
+
             axes = plt.gca()
         stats = self.update_stats
-        L = self.psi.L
         kwargs.setdefault('marker', 'x')
         kwargs.setdefault('linestyle', '-')
 
@@ -809,12 +823,13 @@ class DMRGEngine(IterativeSweeps):
             If given, plot ``abs((y-y_exact)/y_exact)`` on a log-scale yaxis.
         **kwargs :
             Further keyword arguments given to ``axes.plot(...)``.
+
         """
         if axes is None:
             import matplotlib.pyplot as plt
+
             axes = plt.gca()
         stats = self.sweep_stats
-        L = self.psi.L
         kwargs.setdefault('marker', 'x')
         kwargs.setdefault('linestyle', '-')
 
@@ -846,6 +861,7 @@ class TwoSiteDMRGEngine(DMRGEngine):
         :include: DMRGEngine
 
     """
+
     EffectiveH = TwoSiteH
     DefaultMixer = mps_common.DensityMatrixMixer
     use_mixer_by_default = False
@@ -855,9 +871,7 @@ class TwoSiteDMRGEngine(DMRGEngine):
         if self.combine:
             return theta  # Theta is already combined.
         else:
-            return theta.combine_legs([['vL', 'p0'], ['p1', 'vR']],
-                                      new_axes=[0, 1],
-                                      qconj=[+1, -1])
+            return theta.combine_legs([['vL', 'p0'], ['p1', 'vR']], new_axes=[0, 1], qconj=[+1, -1])
 
     def mixed_svd(self, theta):
         """Get (truncated) `B` from the new theta (as returned by diag).
@@ -893,6 +907,7 @@ class TwoSiteDMRGEngine(DMRGEngine):
         S_approx : ndarray
             Just the `S` if a 1D ndarray, or an approximation of the correct S (which was used for
             truncation) in case `S` is 2D Array.
+
         """
         i0 = self.i0
         update_LP, update_RP = self.update_LP_RP
@@ -904,11 +919,13 @@ class TwoSiteDMRGEngine(DMRGEngine):
             )
             S_a = S
         else:
-            qtotal_LR = [self.psi.get_B(i0, form=None).qtotal,
-                         self.psi.get_B(i0 + 1, form=None).qtotal]
+            # choose qtotal_LR to be "the same as before", if possible
+            # note that for diag_method='ED_all', the qtotal of theta may change.
+            # we absorb that change into the right tensor (arbitrary choice).
+            old_BL_qtotal = self.psi.get_B(i0, form=None).qtotal
+            qtotal_LR = [old_BL_qtotal, theta.qtotal - old_BL_qtotal]
             U, S, VH, err, S_a = mixer.mix_and_decompose_2site(
-                engine=self, theta=theta, i0=self.i0, mix_left=update_LP, mix_right=update_RP,
-                qtotal_LR=qtotal_LR
+                engine=self, theta=theta, i0=self.i0, mix_left=update_LP, mix_right=update_RP, qtotal_LR=qtotal_LR
             )
         U.ireplace_label('(vL.p0)', '(vL.p)')
         VH.ireplace_label('(p1.vR)', '(p.vR)')
@@ -924,6 +941,7 @@ class TwoSiteDMRGEngine(DMRGEngine):
         S : 1D array | 2D :class:`~tenpy.linalg.np_conserved.Array`
             The middle part returned by the SVD, ``theta = U S VH``.
             Without a mixer just the singular values, with enabled `mixer` a 2D array.
+
         """
         B0 = U.split_legs(['(vL.p)'])
         B1 = VH.split_legs(['(p.vR)'])
@@ -952,6 +970,7 @@ class SingleSiteDMRGEngine(DMRGEngine):
         :include: DMRGEngine
 
     """
+
     EffectiveH = OneSiteH
     DefaultMixer = mps_common.SubspaceExpansion
     use_mixer_by_default = True
@@ -1017,6 +1036,7 @@ class SingleSiteDMRGEngine(DMRGEngine):
         S_approx : ndarray
             Just the `S` if a 1D ndarray, or an approximation of the correct S (which was used for
             truncation) in case `S` is 2D Array.
+
         """
         mixer = self.mixer
         move_right = self.move_right
@@ -1026,20 +1046,17 @@ class SingleSiteDMRGEngine(DMRGEngine):
             next_B = next_B.combine_legs(['p', 'vR'], qconj=-1, new_axes=1)
             if update_RP:
                 # make sure that `next_B` is in right-canonical form
-                assert self.psi.form[(self.i0 + 1) % self.psi.L] == (0., 1.)
+                assert self.psi.form[(self.i0 + 1) % self.psi.L] == (0.0, 1.0)
         else:
             next_A = self.psi.get_B(self.i0 - 1, form='A')
             next_A = next_A.combine_legs(['vL', 'p'], qconj=1, new_axes=0)
             if update_LP:
                 # make sure that `next_A` is in left-canonical form
-                assert self.psi.form[(self.i0 - 1) % self.psi.L] == (1., 0.)
+                assert self.psi.form[(self.i0 - 1) % self.psi.L] == (1.0, 0.0)
 
         if mixer is None:
             qtotal = [theta.qtotal, None] if move_right else [None, theta.qtotal]
-            U, S, VH, err, _ = svd_theta(theta,
-                                         self.trunc_params,
-                                         qtotal_LR=qtotal,
-                                         inner_labels=['vR', 'vL'])
+            U, S, VH, err, _ = svd_theta(theta, self.trunc_params, qtotal_LR=qtotal, inner_labels=['vR', 'vL'])
             S_a = S
             # absorb VH/U into next_B/next_A for right/left move
             if move_right:
@@ -1053,9 +1070,7 @@ class SingleSiteDMRGEngine(DMRGEngine):
                 U = npc.tensordot(next_A, U, ['vR', 'vL'])
                 VH.ireplace_label('(p0.vR)', '(p.vR)')
         elif mixer.can_decompose_1site:
-            U, S, VH, err = mixer.mix_and_decompose_1site(
-                engine=self, theta=theta, i0=self.i0, move_right=move_right
-            )
+            U, S, VH, err = mixer.mix_and_decompose_1site(engine=self, theta=theta, i0=self.i0, move_right=move_right)
             S_a = S
             # absorb VH/U into S
             if move_right:
@@ -1086,11 +1101,9 @@ class SingleSiteDMRGEngine(DMRGEngine):
                 theta.ireplace_label('(p0.vR)', '(p1.vR)')
                 theta = npc.tensordot(next_A, theta, axes=['vR', 'vL'])
                 i0 = self.i0 - 1
-            qtotal_LR = [self.psi.get_B(i0, form=None).qtotal,
-                         self.psi.get_B(i0 + 1, form=None).qtotal]
+            qtotal_LR = [self.psi.get_B(i0, form=None).qtotal, self.psi.get_B(i0 + 1, form=None).qtotal]
             U, S, VH, err, S_a = mixer.mixed_svd_2site(
-                engine=self, theta=theta, i0=i0, mix_left=update_LP, mix_right=update_RP,
-                qtotal_LR=qtotal_LR
+                engine=self, theta=theta, i0=i0, mix_left=update_LP, mix_right=update_RP, qtotal_LR=qtotal_LR
             )
             U.ireplace_label('(vL.p0)', '(vL.p)')
             VH.ireplace_label('(p1.vR)', '(p.vR)')
@@ -1106,6 +1119,7 @@ class SingleSiteDMRGEngine(DMRGEngine):
         S : 1D array | 2D :class:`~tenpy.linalg.np_conserved.Array`
             The middle part returned by the SVD, ``theta = U S VH``.
             Without a mixer just the singular values, with enabled `mixer` a 2D array.
+
         """
         i_L, i_R = self._update_env_inds()  # left and right updated sites
         A0 = U.split_legs(['(vL.p)'])
@@ -1117,9 +1131,11 @@ class SingleSiteDMRGEngine(DMRGEngine):
 
     def mixer_activate(self):
         super().mixer_activate()
-        if not self.mixer.can_decompose_1site:
-            msg = (f'Using {self.mixer.__class__.__name__} with single-site DMRG is inefficient. '
-                   f'The resulting algorithm has two-site costs!')
+        if self.mixer is not None and not self.mixer.can_decompose_1site:
+            msg = (
+                f'Using {self.mixer.__class__.__name__} with single-site DMRG is inefficient. '
+                f'The resulting algorithm has two-site costs!'
+            )
             warnings.warn(msg)
 
 
@@ -1143,6 +1159,7 @@ def chi_list(chi_max, dchi=20, nsweeps=20):
     chi_list : dict
         To be used as `chi_list` parameter for DMRG, see :func:`run`.
         Keys increase by `nsweeps`, values by `dchi`, until a maximum of `chi_max` is reached.
+
     """
     chi_max = int(chi_max)
     nsweeps = int(nsweeps)
@@ -1168,6 +1185,7 @@ def full_diag_effH(effH, theta_guess, keep_sector=True):
         The effective Hamiltonian.
     theta_guess : :class:`~tenpy.linalg.np_conserved.Array`
         Current guess to select the charge sector. Labels as specified by ``effH.acts_on``.
+
     """
     theta_guess = theta_guess.combine_legs(effH.acts_on, qconj=+1)
     fullH = effH.to_matrix()
@@ -1177,8 +1195,9 @@ def full_diag_effH(effH, theta_guess, keep_sector=True):
         qi = leg.get_qindex_of_charges(theta_guess.qtotal)
         block = fullH.get_block(np.array([qi, qi], np.intp))
         if block is None:
-            warnings.warn("H is zero in the given block, nothing to diagonalize."
-                          "We just return the initial state again.")
+            warnings.warn(
+                'H is zero in the given block, nothing to diagonalize.We just return the initial state again.'
+            )
             E0 = 0
             theta = theta_guess
         else:

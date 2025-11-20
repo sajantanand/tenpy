@@ -6,14 +6,14 @@ Examples are given in the class doc-string.
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-from collections import namedtuple
 import warnings
+from collections import namedtuple
 
 from .hdf5_io import find_global
 
 __all__ = ['Listener', 'EventHandler']
 
-Listener = namedtuple('Listener', "listener_id, callback, priority, extra_kwargs")
+Listener = namedtuple('Listener', 'listener_id, callback, priority, extra_kwargs')
 
 
 class EventHandler:
@@ -50,11 +50,12 @@ class EventHandler:
 
         >>> class MyAlgorithm:
         ...     def __init__(self):
-        ...         self.checkpoint = EventHandler("algorithm, iteration")
+        ...         self.checkpoint = EventHandler('algorithm, iteration')
         ...         self.data = 0
+        ...
         ...     def run(self):
         ...         for i in range(4):
-        ...             self.data += i # do some complicated stuff
+        ...             self.data += i  # do some complicated stuff
         ...             self.checkpoint.emit(self, i)
 
     Other code with access to the event can then connect a `listener` to the event, i.e.,
@@ -64,7 +65,7 @@ class EventHandler:
 
         >>> my_alg = MyAlgorithm()
         >>> def my_listener(algorithm, iteration):
-        ...     print("my_listener called: iteration", iteration, "with data", algorithm.data)
+        ...     print('my_listener called: iteration', iteration, 'with data', algorithm.data)
         >>> my_alg.checkpoint.connect(my_listener)  # doctest: +ELLIPSIS
         <function my_listener at 0x...>
         >>> my_alg.run()
@@ -85,10 +86,10 @@ class EventHandler:
 
         >>> @my_alg.checkpoint.connect
         ... def another_one(algorithm, iteration):
-        ...     print("another_one called: iteration", iteration)
+        ...     print('another_one called: iteration', iteration)
         >>> @my_alg.checkpoint.connect(priority=5)
         ... def high_priority(algorithm, iteration):
-        ...     print("high_priority call: iteration", iteration)
+        ...     print('high_priority call: iteration', iteration)
         >>> my_alg.run()
         high_priority call: iteration 0
         my_listener called: iteration 0 with data 6
@@ -102,7 +103,9 @@ class EventHandler:
         high_priority call: iteration 3
         my_listener called: iteration 3 with data 12
         another_one called: iteration 3
+
     """
+
     def __init__(self, arg_descr=None):
         self.arg_descr = arg_descr
         self.listeners = []
@@ -145,6 +148,7 @@ class EventHandler:
         -------
         callback : callable
             The callback function exactly as given.
+
         """
         if callback is None:
             # handle the case that we got called as property like this::
@@ -178,6 +182,7 @@ class EventHandler:
         priority : int
             Higher priority indicates that the callback function should be called before other
             possibly registered callback functions.
+
         """
         func = find_global(module_name, func_name)
         self.connect(func, priority, extra_kwargs)
@@ -190,12 +195,13 @@ class EventHandler:
         listener_id : int
             The id of the listener, as given by :attr:`id_of_last_connected`
             right after calling :meth:`connect`.
+
         """
         for i, listener in enumerate(self.listeners):
             if listener.listener_id == 0:
                 del self.listeners[i]
                 return
-        warnings.warn("No listener with listener_id {id_:d} found".format(id_=listener_id))
+        warnings.warn(f'No listener with listener_id {listener_id:d} found')
 
     def emit(self, *args, **kwargs):
         """Call the `callback` functions of all listeners.
@@ -210,6 +216,7 @@ class EventHandler:
         -------
         results : list
             List of results returned by the individual callback functions.
+
         """
         self._prepare_emit()
         results = []

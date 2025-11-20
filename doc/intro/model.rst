@@ -135,7 +135,7 @@ argument of the site.
 
     If you don't know about :doc:`/intro/npc` yet, but want to get started with models right away,
     you can set ``conserve=None`` in the existing sites as above and skip the rest of this
-    section. If you need a custom site, you can use 
+    section. If you need a custom site, you can use
     ``leg = tenpy.linalg.np_conserved.LegCharge.from_trivial(d)`` for an implementation of your
     site, where `d` is the dimension of the local Hilbert space.
 
@@ -239,7 +239,7 @@ which make this easy. Let us summarize them here:
 .. note ::
     A single call to each of these methods adds an extensive number of terms to your Hamiltonian,
     as it includes a sum over all sites in the definition.
-    This means that a Hamiltonian like :math:`H = -3 \sum_i S_i^z` is realized as a **single** call to 
+    This means that a Hamiltonian like :math:`H = -3 \sum_i S_i^z` is realized as a **single** call to
     :meth:`~tenpy.models.model.CouplingModel.add_onsite`, **without**  an explicit loop over `i`.
 
 .. note ::
@@ -260,6 +260,12 @@ which make this easy. Let us summarize them here:
     lattice positions.
 
 See also :meth:`~tenpy.models.model.CouplingModel.add_exponentially_decaying_coupling`
+
+.. note ::
+    Instead of a single operator name like ``'Sx'``, you can put multiple operator names
+    separated by whitespace to represent the product of these operators.
+    For example, ``self.add_onsite(-2.j * (-hz), u, 'Sx Sy')`` is equivalent to (but worse than)
+    to ``self.add_onsite(-hz, u, 'Sz')``.
 
 For our example, we define the Hamiltonian by implementing::
 
@@ -288,10 +294,10 @@ For our example, we define the Hamiltonian by implementing::
 
 .. note ::
     If we did not care about charge conservation, we could have also done
-    ``add_coupling(Jx, u1, 'Sx', u2, 'Sx', dx)`` and 
+    ``add_coupling(Jx, u1, 'Sx', u2, 'Sx', dx)`` and
     ``add_coupling(Jx, u1, 'Sy', u2, 'Sy', dx)``.
     This only works if we set ``conserve='None'`` or ``conserve='parity'``,
-    as otherwise the site does not even define ``'Sx'``. 
+    as otherwise the site does not even define ``'Sx'``.
 
     Also, note that that the on-site operators ``Sp=``:math:`S^+_i` and ``Sm=``:math:`S^-_i`
     do not conserve the total :math:`S^z`, but you can still use them to define the combined
@@ -364,7 +370,7 @@ To visualize the site order of the lattice, you may run the following snippet::
     from tenpy import SpinHalfSite
     from tenpy.models import CouplingMPOModel
     import matplotlib.pyplot as plt
-    
+
     class MyModel(CouplingMPOModel):
         def init_sites(self, model_params):
             return SpinHalfSite()
@@ -392,6 +398,12 @@ Try playing around with different boundary conditions, e.g.
 or
 ``MyModel({'lattice': 'Square', 'Lx': 2, 'Ly': 3, 'Jx': 0, 'bc_x': 'periodic'})``.
 See :doc:`/intro/lattices` regarding boundary conditions.
+
+You can also use :func:`~tenpy.algorithms.exact_diag.get_numpy_Hamiltonian` to see if the Hamiltonian
+is what you expect it to be.
+You will need to choose a relatively small system for the full Hamiltonian to fit into RAM.
+This is strongly recommended if you defined your own operators, as e.g. the
+:class:`~tenpy.models.pxp.PXPChain` does.
 
 
 Contribute your model?

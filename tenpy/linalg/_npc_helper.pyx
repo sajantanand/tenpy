@@ -759,8 +759,8 @@ cpdef void _sliced_copy(np.ndarray dest, intp_t[::1] dest_beg, np.ndarray src, i
 
     Equivalent to ::
 
-        dst_sl = tuple([slice(i, i+d) for (i, d) in zip(dest_beg, slice_shape)])
-        src_sl = tuple([slice(i, i+d) for (i, d) in zip(src_beg, slice_shape)])
+        dst_sl = tuple([slice(i, i + d) for (i, d) in zip(dest_beg, slice_shape)])
+        src_sl = tuple([slice(i, i + d) for (i, d) in zip(src_beg, slice_shape)])
         dest[dst_sl] = src[src_sl]
 
     For example ``dest[0:4, 2:5] = src[1:5, 0:3]`` is equivalent to
@@ -780,6 +780,7 @@ cpdef void _sliced_copy(np.ndarray dest, intp_t[::1] dest_beg, np.ndarray src, i
         Entries are start of the slices used for `src`
     slice_shape : intp[ndim]
         The length of the slices.
+
     """
     cdef char *dest_data = np.PyArray_BYTES(dest)
     cdef char *src_data = np.PyArray_BYTES(src)
@@ -1547,11 +1548,12 @@ def _tensordot_worker(a, b, int axes):
     Second, if the ``i`` and ``j`` are not compatible with the new total charge,
     we know that ``C_{i,j}`` will be zero.
     Third, given ``i`` and ``j``, the sum over ``k`` runs only over
-    ``k1`` with nonzero :math:`A_{i,k1}`, and ``k2` with nonzero :math:`B_{k2,j}`.
+    ``k1`` with nonzero :math:`A_{i,k1}`, and ``k2`` with nonzero :math:`B_{k2,j}`.
 
     How many multiplications :math:`A_{i,k} B_{k,j}` we actually have to perform
     depends on the sparseness. In the ideal case, if ``k`` (i.e. a LegPipe of the legs summed over)
     is completely blocked by charge, the 'sum' over ``k`` will contain at most one term!
+
     """
     cdef QTYPE_t[::1] chinfo_mod = a.chinfo._mod
     cdef intp_t cut_a = a.rank - axes

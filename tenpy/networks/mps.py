@@ -14,9 +14,10 @@ We use the following label convention for the `B` (where arrows indicate `qconj`
 
 We store one 3-leg tensor `_B[i]` with labels ``'vL', 'vR', 'p'`` for each of the `L` sites
 ``0 <= i < L``.
-Additionally, we store ``L+1`` singular value arrays `_S[ib]` on each bond ``0 <= ib <= L``,
-independent of the boundary conditions.
-``_S[ib]`` gives the singular values on the bond ``i-1, i``.
+Additionally, we store singular value arrays `_S[ib]` on each bond ``0 <= ib < L + int(finite)``,
+i.e. ``L + 1`` arrays for finite systems and ``L`` arrays for infinite systems.
+Note that for infinite systems, the bond ``ib == L`` to the right of the unit cell is equivalent
+to the bond ``ib == 0``. ``_S[ib]`` gives the singular values on the bond ``ib-1, ib``.
 However, be aware that e.g. :attr:`~tenpy.networks.mps.MPS.chi` returns only the dimensions of the
 :attr:`~tenpy.networks.mps.MPS.nontrivial_bonds` depending on the boundary conditions.
 
@@ -145,34 +146,308 @@ MPS.
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-from abc import ABCMeta, abstractmethod
-import numpy as np
-import warnings
-import random
 import copy
-from collections.abc import Iterable
 import logging
+import random
+import warnings
+from abc import ABCMeta, abstractmethod
+from collections.abc import Iterable
 
-logger = logging.getLogger(__name__)
+import numpy as np
 
 from ..linalg import np_conserved as npc
 from ..linalg import sparse
-from ..linalg.charges import LegPipe
+from ..linalg.charges import DipolarChargeInfo
 from ..linalg.krylov_based import Arnoldi
-from ..linalg.truncation import TruncationError, svd_theta, eigh_rho, _machine_prec_trunc_par
 from ..linalg.random_matrix import GOE, GUE
-from .site import GroupedSite, group_sites, DoubledSite
-from ..tools.misc import argsort, to_iterable, to_array, get_recursive, inverse_permutation
-from ..tools.math import lcm, entropy
-from ..tools.params import asConfig
-from ..tools.cache import DictCache
+from ..linalg.truncation import TruncationError, _machine_prec_trunc_par, eigh_rho, svd_theta
 from ..tools import hdf5_io
+from ..tools.cache import DictCache
+from ..tools.math import entropy, lcm
+from ..tools.misc import BetaWarning, argsort, get_recursive, inverse_permutation, to_array, to_iterable
+from ..tools.params import asConfig
+from .site import group_sites, DoubledSite
 
-__all__ = ['BaseMPSExpectationValue', 'MPS', 'BaseEnvironment', 'MPSEnvironment', 'NonTrivialMPSEnvironment', 'TransferMatrix',
-           'InitialStateBuilder', 'build_initial_state']
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    'MPSGeometry',
+    'BaseMPSExpectationValue',
+    'MPS',
+    'BaseEnvironment',
+    'MPSEnvironment',
+    'NonTrivialMPSEnvironment',
+    'TransferMatrix',
+    'InitialStateBuilder',
+    'build_initial_state',
+]
 
 
-class BaseMPSExpectationValue(metaclass=ABCMeta):
+class MPSGeometry:
+    r"""Base class providing methods regarding the 1D geometry of MPS-like tensornetworks.
+
+    Parameters
+    ----------
+    sites : list of :class:`~tenpy.models.lattice.Site`
+        Defines the local Hilbert space for each site.
+    bc : ``'finite' | 'segment' | 'infinite'``
+        Boundary conditions as described in the table of the module doc-string.
+    unit_cell_width : int
+        See :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
+
+    Attributes
+    ----------
+    chinfo : :class:`~tenpy.linalg.np_conserved.ChargeInfo`
+        The nature of the charge.
+    sites : list of :class:`~tenpy.models.lattice.Site`
+        Defines the local Hilbert space for each site.
+    bc : ``'finite' | 'segment' | 'infinite'``
+        Boundary conditions as described in the table of the module doc-string.
+    unit_cell_width : int
+        The width (i.e. length along the first dimension) of an MPS unit cell, in units of the
+        lattice spacing. It is given by :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
+        For a :class:`~tenpy.models.lattice.Chain`, this is just the length of the chain.
+        Is used for :ref:`shift_symmetry` or :meth:`MPS.correlation_length2`.
+
+    """
+
+    _valid_bc = ('finite', 'segment', 'infinite')  # valid boundary conditions. Dont overwrite this!
+
+    def __init__(self, sites, bc, unit_cell_width=None):
+        self.sites = list(sites)
+        self.chinfo = self.sites[0].leg.chinfo
+        self.bc = bc
+        if unit_cell_width is None:
+            msg = (
+                'unit_cell_width is a new argument for MPS and similar classes. '
+                'It is optional for now, but will become mandatory in a future release. '
+                'The default value (unit_cell_width=len(sites)) is correct, iff the '
+                'lattice is a Chain. For other lattices, it is incorrect. '
+                'It is used for dipolar charges and correlation_function2.'
+            )
+            warnings.warn(msg, stacklevel=2)
+            unit_cell_width = len(sites)
+        self.unit_cell_width = unit_cell_width
+
+    def test_sanity(self):
+        if self.bc not in self._valid_bc:
+            raise ValueError('invalid boundary condition: ' + repr(self.bc))
+        if not (isinstance(self.unit_cell_width, int) and self.unit_cell_width > 0):
+            raise ValueError(f'invalid unit_cell_width: {self.unit_cell_width}')
+        for i, site in enumerate(self.sites):
+            if site.leg.chinfo != self.chinfo:
+                raise ValueError(f'Invalid ChargeInfo for site {i}.')
+
+    @property
+    def L(self):
+        """Number of physical sites; for an iMPS the len of the MPS unit cell."""
+        return len(self.sites)
+
+    @property
+    def dim(self):
+        """List of local physical dimensions."""
+        return [site.dim for site in self.sites]
+
+    @property
+    def finite(self):
+        """Distinguish MPS vs iMPS.
+
+        True for an MPS (``bc='finite', 'segment'``), False for an iMPS (``bc='infinite'``).
+        """
+        assert self.bc in self._valid_bc
+        return self.bc != 'infinite'
+
+    @property
+    def nontrivial_bonds(self):
+        """Slice of the non-trivial bond indices, depending on ``self.bc``."""
+        if self.bc == 'finite':
+            return slice(1, self.L)
+        elif self.bc == 'segment':
+            return slice(0, self.L + 1)
+        elif self.bc == 'infinite':
+            return slice(0, self.L)
+
+    @property
+    def N_sites_per_hor_spacing(self):
+        """Number of sites per horizontal lattice spacing.
+
+        This is the number of MPS sites one has to traverse to travel one lattice spacing in the
+        first dimension, such that ``self.unit_cell_width * N_sites_per_hor_spacing == self.L``.
+        """
+        # Note: self.L % self.unit_cell_width == 0 guaranteed by test_sanity
+        return self.L // self.unit_cell_width
+
+    def _to_valid_site_index(self, i, return_num_unit_cells=False):
+        """Make sure `i` is a valid index of a site.
+
+        For finite MPS, we just check if ``i`` is within bounds ``0 <= i < L``.
+        For infinite MPS, we return a site index *within* the MPS unit cell that is equivalent
+        ``i``, by adding a suitable multiple of ``self.L``
+
+        Parameters
+        ----------
+        i : int
+            Input site index.
+        return_num_unit_cells : bool
+            If `num_unit_cells` should be returned.
+
+        Returns
+        -------
+        i_in_unit_cell : int
+            Index of a site within the unit cell that is equal or equivalent to `i`.
+        num_unit_cells : int, optional
+            The index of the unit cell that `i` lies in.
+            This is always ``0`` for finite MPS and is ``i // L`` for infinite MPS.
+
+        """
+        num_unit_cells, i_in_unit_cell = divmod(i, self.L)
+        if self.finite and num_unit_cells == -1:
+            msg = (
+                'Negative site indices for open boundary conditions are deprecated and will '
+                'raise a ValueError in the future'
+            )
+            warnings.warn(msg, category=FutureWarning, stacklevel=3)
+            num_unit_cells = 0
+        if self.finite and num_unit_cells != 0:
+            raise ValueError(f'i = {i:d} out of bounds for finite MPS')
+        if return_num_unit_cells:
+            return i_in_unit_cell, num_unit_cells
+        return i_in_unit_cell
+
+    def _to_valid_bond_index(self, i_site, is_left, return_num_unit_cells=False):
+        """Make sure `i` is a valid index of a bond.
+
+        For finite MPS, we just check if ``i`` is within bounds ``0 <= i < L + 1``.
+        For infinite MPS, we return a bond index  ``0 <= i_in_unit_cell < L`` *within* the MPS unit
+        cell that is equivalent to ``i``, by adding a suitable multiple of ``self.L``.
+
+        Parameters
+        ----------
+        i_site : int
+            Index of a site. Needs to be in bounds ``0 <= i < L`` for finite MPS.
+        is_left : bool
+            Select the bond to the left or right of `i_site`.
+        return_num_unit_cells : bool
+            If `num_unit_cells` should be returned.
+
+        Returns
+        -------
+        i_in_unit_cell : int
+            Index within the unit cell that is equal or equivalent to `i`.
+        num_unit_cells : int, optional
+            The index of the unit cell that `i` lies in.
+            This is always ``0`` for finite MPS and is ``i // L`` for infinite MPS.
+
+        """
+        if self.finite:
+            # for finite systems, there may be a bond to the right of i, but no site right of i.
+            #  -> add one *after* parsing the site index
+            i_site = self._to_valid_site_index(i_site)
+            i_site = i_site + int(not is_left)
+            if return_num_unit_cells:
+                # checks in self._to_valid_site_index guarantee num_unit_cells == 0
+                return i_site, 0
+            return i_site
+        # for infinite systems, the bond to the right may be outside of the unit cell,
+        # even if i is within the unit cell -> add one *before* parsing the site index
+        return self._to_valid_site_index(i_site + int(not is_left), return_num_unit_cells)
+
+    def shift_charges_unit_cells(self, charges, num_unit_cells):
+        """Shift charges by an integer multiple of unit cells.
+
+        See the notes on :ref:`shift_symmetry`.
+
+        A unit cell has length :attr:`~tenpy.networks.mps.MPSGeometry.L` and a shift by one
+        unit cell is purely horizontal and shifts by :attr:`~tenpy.networks.mps.MPSGeometry.unit_cell_width`
+        lattice spacings.
+
+        Essentially, this is a convenience wrapper around
+        :math:`tenpy.linalg.charges.ChargeInfo.shift_charges_horizontal`.
+
+        Parameters
+        ----------
+        charges : 2D ndarray of dtype QTYPE
+            The charges to shift.
+        num_unit_cells : int
+            The number of unit cells.
+
+        Returns
+        -------
+        2D ndarray of dtype QTYPE
+            The shifted charges.
+
+        """
+        dx_0 = num_unit_cells * self.unit_cell_width
+        return self.chinfo.shift_charges_horizontal(charges, dx_0)
+
+    def shift_Site_unit_cells(self, site, num_unit_cells):
+        """Shift a `site` by an integer multiple of unit cells.
+
+        See the notes on :ref:`shift_symmetry`.
+
+        A unit cell has length :attr:`~tenpy.networks.mps.MPSGeometry.L` and a shift by one
+        unit cell is purely horizontal and shifts by :attr:`~tenpy.networks.mps.MPSGeometry.unit_cell_width`
+        lattice spacings.
+
+        Parameters
+        ----------
+        site : :class:`~tenpy.networks.site.Site`
+            The site to shift.
+        num_unit_cells : int
+            The number of unit cells.
+
+        Returns
+        -------
+        :class:`~tenpy.networks.site.Site`
+            A new site with shifted charges, or the unmodified input `site` if the shift is trivial.
+
+        """
+        if num_unit_cells == 0 or site.leg.chinfo.trivial_shift:
+            return site
+        leg = site.leg.apply_charge_mapping(
+            site.leg.chinfo.shift_charges_horizontal, func_kwargs=dict(dx_0=num_unit_cells * self.unit_cell_width)
+        )
+        return copy.copy(site).change_charge(leg)  # shallow copy
+
+    def shift_Array_unit_cells(self, arr, num_unit_cells, inplace: bool = False):
+        """Shift an Array by an integer multiple of unit cells.
+
+        See the notes on :ref:`shift_symmetry`.
+
+        A unit cell has length :attr:`~tenpy.networks.mps.MPSGeometry.L` and a shift by one
+        unit cell is purely horizontal and shifts by :attr:`~tenpy.networks.mps.MPSGeometry.unit_cell_width`
+        lattice spacings.
+
+        Parameters
+        ----------
+        arr : :class:`~tenpy.linalg.np_conserved.Array`
+            The site to shift.
+        num_unit_cells : int
+            The number of unit cells.
+        inplace : bool
+            If the array (its legs, qtotal) can be modified in-place.
+            Otherwise (default) we make a shallow copy.
+
+        Returns
+        -------
+        :class:`~tenpy.linalg.np_conserved.Array`
+            The shifted array.
+
+        """
+        dx_0 = num_unit_cells * self.unit_cell_width
+        return arr.shift_charges_horizontal(dx_0, inplace=inplace)
+
+    def get_site(self, i):
+        """Get the `i`-th site.
+
+        This is ``self.sites[i]`` if `i` is in the unit cell and takes care of shifting the
+        charges otherwise.
+        """
+        i_in_unit_cell, num_unit_cells = self._to_valid_site_index(i, return_num_unit_cells=True)
+        return self.shift_Site_unit_cells(self.sites[i_in_unit_cell], num_unit_cells)
+
+
+class BaseMPSExpectationValue(MPSGeometry, metaclass=ABCMeta):
     r"""Base class providing unified expectation value framework for MPS and MPSEnvironment.
 
     For general expectation values of operators 'ops' between different states
@@ -243,8 +518,8 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         .. doctest :: MPS.expectation_value
 
             >>> spin_half = tenpy.networks.site.SpinHalfSite(conserve=None)
-            >>> p_state = ['up', [np.sqrt(0.5), -np.sqrt(0.5)]]*3
-            >>> psi = tenpy.networks.mps.MPS.from_product_state([spin_half]*6, p_state)
+            >>> p_state = ['up', [np.sqrt(0.5), -np.sqrt(0.5)]] * 3
+            >>> psi = tenpy.networks.mps.MPS.from_product_state([spin_half] * 6, p_state, unit_cell_width=6)
 
         One site examples (n=1):
 
@@ -265,8 +540,10 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
 
         .. doctest :: MPS.expectation_value
 
-            >>> SzSx = npc.outer(psi.sites[0].Sz.replace_labels(['p', 'p*'], ['p0', 'p0*']),
-            ...                  psi.sites[1].Sx.replace_labels(['p', 'p*'], ['p1', 'p1*']))
+            >>> SzSx = npc.outer(
+            ...     psi.sites[0].Sz.replace_labels(['p', 'p*'], ['p0', 'p0*']),
+            ...     psi.sites[1].Sx.replace_labels(['p', 'p*'], ['p1', 'p1*']),
+            ... )
             >>> print(psi.expectation_value(SzSx))  # note: len L-1 for finite bc, or L for infinite
             [-0.25  0.   -0.25  0.   -0.25]
 
@@ -274,10 +551,14 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
 
         .. doctest :: MPS.expectation_value
 
-            >>> SzSx_list = [npc.outer(psi.sites[i].Sz.replace_labels(['p', 'p*'], ['p0', 'p0*']),
-            ...                        psi.sites[i+1].Sx.replace_labels(['p', 'p*'], ['p1', 'p1*']))
-            ...              for i in range(0, psi.L-1, 2)]
-            >>> print(psi.expectation_value(SzSx_list, range(0, psi.L-1, 2)))
+            >>> SzSx_list = [
+            ...     npc.outer(
+            ...         psi.sites[i].Sz.replace_labels(['p', 'p*'], ['p0', 'p0*']),
+            ...         psi.sites[i + 1].Sx.replace_labels(['p', 'p*'], ['p1', 'p1*']),
+            ...     )
+            ...     for i in range(0, psi.L - 1, 2)
+            ... ]
+            >>> print(psi.expectation_value(SzSx_list, range(0, psi.L - 1, 2)))
             [-0.25 -0.25 -0.25]
 
         Expectation value with different bra and ket in an MPSEnvironment:
@@ -285,8 +566,8 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         .. doctest :: MPS.expectation_value
 
             >>> spin_half = tenpy.networks.site.SpinHalfSite(conserve=None)
-            >>> p2_state = [[np.sqrt(0.5), -np.sqrt(0.5)], 'up']*3
-            >>> phi = tenpy.networks.mps.MPS.from_product_state([spin_half]*6, p2_state)
+            >>> p2_state = [[np.sqrt(0.5), -np.sqrt(0.5)], 'up'] * 3
+            >>> phi = tenpy.networks.mps.MPS.from_product_state([spin_half] * 6, p2_state, unit_cell_width=6)
             >>> env = tenpy.networks.mps.MPSEnvironment(phi, psi)
             >>> Sz = env.expectation_value('Sz')
             >>> print(Sz)
@@ -338,11 +619,12 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             Index of the virtual leg on the left of which we want to apply the JW string.
         i : int
             Site index of `theta`.
+
         """
         # theta can be any form A / B / theta
         leg = theta.get_leg(virt_leg_index)
-        charges = leg.to_qflat() #  note: sign doesn't matter since -x % 2 == x % 2
-        JW_signs = self.sites[self._to_valid_index(i)].charge_to_JW_signs(charges)
+        charges = leg.to_qflat()  #  note: sign doesn't matter since -x % 2 == x % 2
+        JW_signs = self.get_site(i).charge_to_JW_signs(charges)
         theta.iscale_axis(JW_signs, virt_leg_index)
 
     def expectation_value_multi_sites(self, operators, i0):
@@ -389,23 +671,20 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
 
                 In contrast, the :class:`MPS` variant of this method *ignores* the `norm`,
                 i.e. returns the expectation value for the normalized state.
+
         """
         C = self._corr_ops_LP(operators, i0)
         C = self._contract_with_RP(C, i0 + len(operators) - 1)
         exp_val = npc.trace(C, 'vR*', 'vL*')
         return self._normalize_exp_val(exp_val)
 
-    def correlation_function(self,
-                             ops1,
-                             ops2,
-                             sites1=None,
-                             sites2=None,
-                             opstr=None,
-                             str_on_first=True,
-                             hermitian=False,
-                             autoJW=True):
-        r"""Correlation function  ``<bra|op1_i op2_j|ket>`` of single site operators,
-        sandwiched between bra and ket.
+    def correlation_function(
+        self, ops1, ops2, sites1=None, sites2=None, opstr=None, str_on_first=True, hermitian=False, autoJW=True
+    ):
+        r"""Correlation function of single-site operators.
+
+        We evaluate ``<bra|op1_i op2_j|ket>``.
+
         For examples the contraction for a two-site operator on site `i` would look like::
 
             |          .--S--B[i]--B[i+1]--...--B[j]---.
@@ -509,8 +788,8 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         .. doctest :: MPS.correlation_function
 
             >>> spin_half = tenpy.networks.site.SpinHalfSite(conserve=None)
-            >>> p_state = ['up', [np.sqrt(0.5), -np.sqrt(0.5)]]*3
-            >>> psi = tenpy.networks.mps.MPS.from_product_state([spin_half]*6, p_state, "infinite")
+            >>> p_state = ['up', [np.sqrt(0.5), -np.sqrt(0.5)]] * 3
+            >>> psi = tenpy.networks.mps.MPS.from_product_state([spin_half] * 6, p_state, 'infinite', unit_cell_width=6)
 
         Default arguments calculate correlations for all `i` and `j` within the MPS unit cell.
         To evaluate the correlation function for a single `i`, you can use ``sites1=[i]``.
@@ -519,18 +798,18 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
 
         .. doctest :: MPS.correlation_function
 
-            >>> psi.correlation_function("Sz", "Sx")  # doctest: +SKIP
+            >>> psi.correlation_function('Sz', 'Sx')  # doctest: +SKIP
             array([[ 0.  , -0.25,  0.  , -0.25,  0.  , -0.25],
                    [ 0.  ,  0.  ,  0.  ,  0.  ,  0.  ,  0.  ],
                    [ 0.  , -0.25,  0.  , -0.25,  0.  , -0.25],
                    [ 0.  ,  0.  ,  0.  ,  0.  ,  0.  ,  0.  ],
                    [ 0.  , -0.25,  0.  , -0.25,  0.  , -0.25],
                    [ 0.  ,  0.  ,  0.  ,  0.  ,  0.  ,  0.  ]])
-            >>> psi.correlation_function("Sz", "Sx", [0])
+            >>> psi.correlation_function('Sz', 'Sx', [0])
             array([[ 0.  , -0.25,  0.  , -0.25,  0.  , -0.25]])
-            >>> corr1 = psi.correlation_function("Sz", "Sx", [0], range(1, 10))
-            >>> corr2 = psi.term_correlation_function_right([("Sz", 0)], [("Sx", 0)], 0, range(1, 10))
-            >>> assert np.all(np.abs(corr2 - corr1) < 1.e-12)
+            >>> corr1 = psi.correlation_function('Sz', 'Sx', [0], range(1, 10))
+            >>> corr2 = psi.term_correlation_function_right([('Sz', 0)], [('Sx', 0)], 0, range(1, 10))
+            >>> assert np.all(np.abs(corr2 - corr1) < 1.0e-12)
 
         For fermions, it auto-determines that/whether a Jordan Wigner string is needed:
 
@@ -538,29 +817,31 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
 
             >>> fermion = tenpy.networks.site.FermionSite(conserve='N')
             >>> p_state = ['empty', 'full'] * 3
-            >>> psi = tenpy.networks.mps.MPS.from_product_state([fermion]*6, p_state, "finite")
-            >>> CdC = psi.correlation_function("Cd", "C")  # optionally: use `hermitian=True`
-            >>> bool(psi.correlation_function("C", "Cd")[1, 2] == -CdC[2, 1])
+            >>> psi = tenpy.networks.mps.MPS.from_product_state([fermion] * 6, p_state, 'finite', unit_cell_width=6)
+            >>> CdC = psi.correlation_function('Cd', 'C')  # optionally: use `hermitian=True`
+            >>> bool(psi.correlation_function('C', 'Cd')[1, 2] == -CdC[2, 1])
             True
-            >>> bool(np.all(np.diag(CdC) == psi.expectation_value("Cd C")))  # "Cd C" is equivalent to "N"
+            >>> bool(np.all(np.diag(CdC) == psi.expectation_value('Cd C')))  # "Cd C" is equivalent to "N"
             True
 
-        See also
+        See Also
         --------
         expectation_value_term : for a single combination of `i` and `j` of ``A_i B_j```.
         term_correlation_function_right : for correlations between multi-site terms, fix left term.
         term_correlation_function_left : for correlations between multi-site terms, fix right term.
+
         """
         if opstr is not None:
             autoJW = False
-        ops1, ops2, sites1, sites2, opstr = self._correlation_function_args(
-            ops1, ops2, sites1, sites2, opstr)
-        if ((len(sites1) > 2 * len(sites2) and min(sites2) > max(sites1) - len(sites2))
-                or (len(sites2) > 2 * len(sites1) and min(sites1) > max(sites2) - len(sites1))):
+        ops1, ops2, sites1, sites2, opstr = self._correlation_function_args(ops1, ops2, sites1, sites2, opstr)
+        if (len(sites1) > 2 * len(sites2) and min(sites2) > max(sites1) - len(sites2)) or (
+            len(sites2) > 2 * len(sites1) and min(sites1) > max(sites2) - len(sites1)
+        ):
             warnings.warn(
-                "Inefficient evaluation of MPS.correlation_function(), "
+                'Inefficient evaluation of MPS.correlation_function(), '
                 "it's probably faster to use MPS.term_correlation_function_left()",
-                stacklevel=2)
+                stacklevel=2,
+            )
         if autoJW and not all([isinstance(op1, str) for op1 in ops1]):
             warnings.warn("Non-string operator: can't auto-determine Jordan-Wigner!", stacklevel=2)
             autoJW = False
@@ -574,7 +855,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
                 if not all(need_JW):
                     raise ValueError("Some, but not any operators need 'JW' string!")
                 if not str_on_first:
-                    raise ValueError("Need Jordan Wigner string, but `str_on_first`=False`")
+                    raise ValueError('Need Jordan Wigner string, but `str_on_first`=False`')
                 opstr = ['JW']
         if hermitian and np.any(sites1 != sites2):
             warnings.warn("MPS correlation function can't use the hermitian flag", stacklevel=2)
@@ -587,7 +868,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
                 C_gtr = self._corr_up_diag(ops1, ops2, i, j_gtr, opstr, str_on_first, True)
                 C[x, (sites2 > i)] = C_gtr
                 if hermitian:
-                    C[x + 1:, x] = np.conj(C_gtr)
+                    C[x + 1 :, x] = np.conj(C_gtr)
             # j == i
             j_eq = sites2[sites2 == i]
             if len(j_eq) > 0:
@@ -601,8 +882,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             for y, j in enumerate(sites2):
                 i_gtr = sites1[sites1 > j]
                 if len(i_gtr) > 0:
-                    C[(sites1 > j), y] = self._corr_up_diag(ops2, ops1, j, i_gtr, opstr,
-                                                            str_on_first, False)
+                    C[(sites1 > j), y] = self._corr_up_diag(ops2, ops1, j, i_gtr, opstr, str_on_first, False)
                     # exchange ops1 and ops2 : they commute on different sites,
                     # but we apply opstr after op1 (using the last argument = False)
         return self._normalize_exp_val(C)
@@ -650,7 +930,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
                 In contrast, the :class:`MPS` variant of this method *ignores* the `norm`,
                 i.e. returns the expectation value for the normalized state.
 
-        See also
+        See Also
         --------
         correlation_function : efficient way to evaluate many correlation functions.
 
@@ -660,7 +940,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         .. testsetup :: MPS.expectation_value_term
 
             spin_half = tenpy.networks.site.SpinHalfSite(conserve=None)
-            psi = tenpy.networks.mps.MPS.from_product_state([spin_half]*8, ['up']*8)
+            psi = tenpy.networks.mps.MPS.from_product_state([spin_half]*8, ['up']*8, unit_cell_width=8)
 
         .. doctest :: MPS.expectation_value_term
 
@@ -668,69 +948,15 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             >>> b = psi.expectation_value_term([('Sz', 4), ('Sx', 2)])
             >>> c = psi.expectation_value_multi_sites(['Sx', 'Id', 'Sz'], i0=2)
             >>> assert a == b == c
+
         """
         # strategy: translate term into a list "ops" to be used for `expectation_value_multi_sites`
         ops, i_min, has_extra_JW = self._term_to_ops_list(term, autoJW)
         if has_extra_JW:
-            raise ValueError("Odd number of operators which need a Jordan Wigner string")
+            raise ValueError('Odd number of operators which need a Jordan Wigner string')
         return self.expectation_value_multi_sites(ops, i_min)
 
-    def expectation_value_terms_sum(self, term_list):
-        """Calculate expectation values for a bunch of terms and sum them up.
-
-        This is equivalent to the following expression::
-
-            sum([self.expectation_value_term(term)*strength for term, strength in term_list])
-
-        However, for efficiency, the term_list is converted to an MPO and the expectation value
-        of the MPO is evaluated.
-
-         .. warning ::
-
-             This function works only for finite bra and ket and does not include normalization factors.
-
-        Parameters
-        ----------
-        term_list : :class:`~tenpy.networks.terms.TermList`
-            The terms and prefactors (`strength`) to be summed up.
-
-        Returns
-        -------
-        terms_sum : (complex) float
-            Equivalent to the expression
-            ``sum([self.expectation_value_term(term)*strength for term, strength in term_list])``.
-        _mpo :
-            Intermediate results: the generated MPO.
-            For a finite MPS, ``terms_sum = _mpo.expectation_value(self)``, for an infinite MPS
-            ``terms_sum = _mpo.expectation_value(self) * self.L``
-
-        See also
-        --------
-        expectation_value_term : evaluates a single `term`.
-        tenpy.networks.mpo.MPO.expectation_value : expectation value density of an MPO.
-        """
-        # this implementation assumes that bra and ket are different. the implementation in MPS
-        # overrides this.
-        from . import mpo
-        if not self.finite:
-            raise ValueError("MPO expectation values only works for a finite MPSEnvironment")
-        # conversion
-        ot, ct = term_list.to_OnsiteTerms_CouplingTerms(self.sites)
-        bc = 'finite' if self.finite else 'infinite'
-        mpo_graph = mpo.MPOGraph.from_terms((ot, ct), self.sites, bc)
-        mpo_ = mpo_graph.build_MPO()
-
-        env = mpo.MPOEnvironment(self.bra, mpo_, self.ket)
-        terms_sum = env.full_contraction(0)  # handles explicit_plus_hc
-        return np.real_if_close(terms_sum), mpo_
-
-    def term_correlation_function_right(self,
-                                        term_L,
-                                        term_R,
-                                        i_L=0,
-                                        j_R=None,
-                                        autoJW=True,
-                                        opstr=None):
+    def term_correlation_function_right(self, term_L, term_R, i_L=0, j_R=None, autoJW=True, opstr=None):
         """Correlation function between (multi-site) terms, moving the right term, fix left term.
 
         For ``term_L = [('A', 0), ('B', 1)]`` and ``term_R = [('C', 0), ('D', 1)]``,
@@ -779,10 +1005,11 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
                 In contrast, the :class:`MPS` variant of this method *ignores* the `norm`,
                 i.e. returns the expectation value for the normalized state.
 
-        See also
+        See Also
         --------
         correlation_function : varying both `i` and `j` at once.
         term_list_correlation_function_right : generalization to sums of terms on the left/right.
+
         """
         assert opstr is None or not autoJW
         if j_R is None:
@@ -799,11 +1026,11 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             opstr = 'JW' if has_extra_JW else None
         ops_L, i_min, has_extra_JW = self._term_to_ops_list(term_L, autoJW, i_L, has_extra_JW)
         if autoJW and has_extra_JW:
-            raise ValueError("Odd total number of operators which need a Jordan Wigner string")
+            raise ValueError('Odd total number of operators which need a Jordan Wigner string')
         CL = self._corr_ops_LP(ops_L, i_min)
         i = i_min + len(ops_L)  # CL is contraction strictly left of site `i`
         if i > j_R[0] + j_min:
-            raise ValueError("i_L/j_R not such that term_L is left of term_R")
+            raise ValueError('i_L/j_R not such that term_L is left of term_R')
         bra, ket = self._get_bra_ket()
         axes_contr = [['vL*'] + ket._get_p_label('*'), ['vR*'] + ket._p_label]
         result = []
@@ -816,7 +1043,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
                 B_ket = ket.get_B(k, form='B')
                 CL = npc.tensordot(CL, B_ket, axes=['vR', 'vL'])
                 if opstr is not None:
-                    opstr_k = self.sites[self._to_valid_index(k)].get_op(opstr)
+                    opstr_k = self.get_site(k).get_op(opstr)
                     CL = npc.tensordot(opstr_k, CL, axes=['p*', 'p'])
                 B_bra = bra.get_B(k, form='B')
                 CL = npc.tensordot(B_bra.conj(), CL, axes=axes_contr)
@@ -827,13 +1054,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             result.append(npc.inner(CL, CR, axes=[['vR', 'vR*'], ['vL', 'vL*']]))
         return self._normalize_exp_val(result)
 
-    def term_correlation_function_left(self,
-                                       term_L,
-                                       term_R,
-                                       i_L=None,
-                                       j_R=0,
-                                       autoJW=True,
-                                       opstr=None):
+    def term_correlation_function_left(self, term_L, term_R, i_L=None, j_R=0, autoJW=True, opstr=None):
         """Correlation function between (multi-site) terms, moving the left term, fix right term.
 
         Same as :meth:`term_correlation_function_right`, but vary index `i` of the left term
@@ -842,7 +1063,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         assert opstr is None or not autoJW
         if i_L is None:
             if self.finite:
-                raise ValueError("No default set for finite MPS")
+                raise ValueError('No default set for finite MPS')
             else:
                 i_L = range(-self.L, -11 * self.L, -self.L)
         else:
@@ -853,11 +1074,11 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         ops_L, i_min, has_extra_JW = self._term_to_ops_list(term_L, autoJW, i_L[0], has_extra_JW)
         i_min = i_min - i_L[0]
         if autoJW and has_extra_JW:
-            raise ValueError("Odd total number of operators which need a Jordan Wigner string")
+            raise ValueError('Odd total number of operators which need a Jordan Wigner string')
         CR = self._corr_ops_RP(ops_R, j_min)
         j = j_min  # CR is contraction including site `j`
         if i_L[0] + i_min + len(ops_L) - 1 > j:
-            raise ValueError("i_L/j_R not such that term_L is left of term_R")
+            raise ValueError('i_L/j_R not such that term_L is left of term_R')
         result = []
         bra, ket = self._get_bra_ket()
         axes_contr = [ket._p_label + ['vL*'], bra._get_p_label('*') + ['vR*']]
@@ -869,7 +1090,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
                 B_ket = ket.get_B(k, form='B')
                 CR = npc.tensordot(B_ket, CR, axes=['vR', 'vL'])
                 if opstr is not None:
-                    opstr_k = self.sites[self._to_valid_index(k)].get_op(opstr)
+                    opstr_k = self.get_site(k).get_op(opstr)
                     CR = npc.tensordot(opstr_k, CR, axes=['p*', 'p'])
                 B_bra = bra.get_B(k, form='B')
                 CR = npc.tensordot(CR, B_bra.conj(), axes_contr)
@@ -880,13 +1101,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             result.append(npc.inner(CL, CR, axes=[['vR', 'vR*'], ['vL', 'vL*']]))
         return self._normalize_exp_val(result)
 
-    def term_list_correlation_function_right(self,
-                                             term_list_L,
-                                             term_list_R,
-                                             i_L=0,
-                                             j_R=None,
-                                             autoJW=True,
-                                             opstr=None):
+    def term_list_correlation_function_right(self, term_list_L, term_list_R, i_L=0, j_R=None, autoJW=True, opstr=None):
         """Correlation function between sums of multi-site terms, moving the right sum of term.
 
         Generalization of :meth:`term_correlation_function_right` to the case where
@@ -931,9 +1146,10 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
                 In contrast, the :class:`MPS` variant of this method *ignores* the `norm`,
                 i.e. returns the expectation value for the normalized state.
 
-        See also
+        See Also
         --------
         term_correlation_function_right : version for a single term in both `term_list_L/R`.
+
         """
         assert opstr is None or not autoJW
         min_L, max_L = term_list_L.limits()
@@ -948,7 +1164,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             j_R = np.sort(j_R)
         j0 = j_R[0]
         if i_L + max_L >= j0 + min_R:
-            raise ValueError("i_L/i_R not such that term_list_L is left of term_list_R")
+            raise ValueError('i_L/i_R not such that term_list_L is left of term_list_R')
         if autoJW:
             opstr_fill = {True: 'JW', False: 'Id'}  # key: whether JW is needed
         else:
@@ -972,7 +1188,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             if i_min + len(ops_L) < i:
                 ops_L = ops_L + [opstr_fill[need_JW]] * (i - (i_min + len(ops_L)))
             CL = self._corr_ops_LP(ops_L, i_min)
-            key = (need_JW, ) + tuple(CL.qtotal)
+            key = (need_JW,) + tuple(CL.qtotal)
             if key not in CLs:
                 CLs[key] = strength * CL
             else:
@@ -992,14 +1208,20 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
                     need_JW = key[0]
                     CL = npc.tensordot(CL, B_ket, axes=['vR', 'vL'])
                     if opstr_fill[need_JW] != 'Id':
-                        opstr_k = self.sites[self._to_valid_index(k)].get_op(opstr_fill[need_JW])
+                        opstr_k = self.get_site(k).get_op(opstr_fill[need_JW])
                         CL = npc.tensordot(opstr_k, CL, axes=['p*', 'p'])
                     CLs[key] = npc.tensordot(B_bra.conj(), CL, axes=axes_contr)
                 i = k + 1
-            res = 0.
-            for ops_R, need_JW, strength in zip(all_ops_R, need_JW_R, term_list_R.strength):
+            res = 0.0
+            for ops_R, need_JW, term_R, strength in zip(all_ops_R, need_JW_R, term_list_R.terms, term_list_R.strength):
+                chinfo = self.sites[0].leg.chinfo
+                if not chinfo.trivial_shift:
+                    # recalculate operators
+                    ops_R, j_min, need_JW = self._term_to_ops_list(term_R, autoJW, j)  # <- note the j
+                    if j_min > j + min_R:
+                        ops_R = [opstr_fill[need_JW]] * (j_min - (j + min_R)) + ops_R
                 CR = self._corr_ops_RP(ops_R, j)
-                key = (need_JW, ) + tuple(self.sites[0].leg.chinfo.make_valid(-CR.qtotal))
+                key = (need_JW,) + tuple(chinfo.make_valid(-CR.qtotal))
                 CL = CLs.get(key, None)
                 if CL is None:
                     continue  # nothing to pair up with
@@ -1038,22 +1260,23 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             True if there is an odd number of terms which require a Jordan-Wigner string,
             i.e., if there is a JW string coming out to the left.
             If `JW_from_right` was initially `None`, it is the value chosen for `JW_from_right`.
+
         """
         assert not (JW_from_right and not autoJW)
         term = list(term)
         i_min = min([t[1] for t in term])
         i_max = max([t[1] for t in term])
-        ops = [[] for i in range((i_max - i_min + 1))]
+        ops = [[] for i in range(i_max - i_min + 1)]
         count_JW = 0
         for op, i in term:
             j = i - i_min  # index in ops
             ops[j].append(op)
-            if autoJW and self.sites[self._to_valid_index(i + i_offset)].op_needs_JW(op):
+            if autoJW and self.sites[self._to_valid_site_index(i + i_offset)].op_needs_JW(op):
                 count_JW += 1
                 for k in range(j):
                     ops[k].append('JW')
         if JW_from_right is None:
-            JW_from_right = (count_JW % 2 == 1)
+            JW_from_right = count_JW % 2 == 1
             if JW_from_right:
                 count_JW -= 1  # still return True for `has_extra_JW`
         if JW_from_right:
@@ -1061,13 +1284,11 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             for op_i in ops:
                 op_i.append('JW')
         for j in range(len(ops)):
-            site = self.sites[self._to_valid_index(j + i_min + i_offset)]
-            i = j + i_min + i_offset
-            ops[j] = site.multiply_operators(ops[j])
+            ops[j] = self.get_site(j + i_min + i_offset).multiply_operators(ops[j])
         return ops, i_min + i_offset, (count_JW % 2 == 1)
 
     def _corr_up_diag(self, ops1, ops2, i, j_gtr, opstr, str_on_first, apply_opstr_first):
-        """correlation function above the diagonal: for fixed i and all j in j_gtr, j > i."""
+        """Correlation function above the diagonal: for fixed i and all j in j_gtr, j > i."""
         op1, _ = self.get_op(ops1, i)
         opstr1, _ = self.get_op(opstr, i)
         if opstr1 is not None and str_on_first:
@@ -1109,8 +1330,8 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         with labels ``'vR*', 'vR'``.
         """
         op = operators[0]
-        if (isinstance(op, str)):
-            op = self.sites[self._to_valid_index(i0)].get_op(op)
+        if isinstance(op, str):
+            op = self.get_site(i0).get_op(op)
         bra, ket = self._get_bra_ket()
         theta_ket = ket.get_B(i0, form='Th')
         theta_bra = bra.get_B(i0, form='Th')
@@ -1126,7 +1347,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             C = npc.tensordot(C, B_ket, axes=['vR', 'vL'])
             if not (is_str and op == 'Id'):
                 if is_str:
-                    op = self.sites[self._to_valid_index(i)].get_op(op)
+                    op = self.get_site(i).get_op(op)
                 C = npc.tensordot(op, C, axes=['p*', 'p'])
             B_bra = bra.get_B(i, form='B')
             C = npc.tensordot(B_bra.conj(), C, axes=axes_contr)
@@ -1138,7 +1359,6 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         Same as :meth:`expectation_value_multi_sites`, but with the left-most part open
         and **excluding** the singular values `S`, with legs ``'vL', 'vL*'``.
         """
-        op = operators[-1]
         imax = i0 + len(operators) - 1
         bra, ket = self._get_bra_ket()
         C = npc.eye_like(ket.get_B(imax, 'B'), 'vR', ['vR', 'vL'])
@@ -1152,14 +1372,14 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             C = npc.tensordot(B_ket, C, axes=['vR', 'vL'])
             if not (is_str and op == 'Id'):
                 if is_str:
-                    op = self.sites[self._to_valid_index(i)].get_op(op)
+                    op = self.get_site(i).get_op(op)
                 C = npc.tensordot(op, C, axes=['p*', 'p'])
             B_bra = bra.get_B(i, form='B')
             C = npc.tensordot(B_bra.conj(), C, axes=axes_contr)
         return C
 
     def _expectation_value_args(self, ops, sites, axes):
-        """parse the arguments of self.expectation_value()"""
+        """Parse the arguments of self.expectation_value()"""
         ops = npc.to_iterable_arrays(ops)
         if any(isinstance(op, str) for op in ops):
             n = 1
@@ -1181,11 +1401,11 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         # check number of axes
         ax_p, ax_pstar = axes
         if len(ax_p) != n or len(ax_pstar) != n:
-            raise ValueError("Len of axes does not match to n-site operator with n=" + str(n))
+            raise ValueError('Len of axes does not match to n-site operator with n=' + str(n))
         return ops, sites, n, axes
 
     def _correlation_function_args(self, ops1, ops2, sites1, sites2, opstr):
-        """get default arguments of self.correlation_function()"""
+        """Get default arguments of self.correlation_function()"""
         if sites1 is None:
             sites1 = range(0, self.L)
         elif isinstance(sites1, int):
@@ -1212,7 +1432,7 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         #  return A.replace_labels(self._p_label, self._get_p_label(s))
 
     def _get_p_label(self, s):
-        """return  self._p_label with additional string `s`."""
+        """Return  self._p_label with additional string `s`."""
         return ['p' + s]
         #  return [lbl + s for lbl in self._p_label]
 
@@ -1226,14 +1446,20 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
             #  return [lbl + str(k) for k in range(ks) for lbl in self._p_label]
 
     def _to_valid_index(self, i):
-        """Make sure `i` is a valid index (depending on `finite`)."""
-        if not self.finite:
-            return i % self.L
-        if i < 0:
-            i += self.L
-        if i >= self.L or i < 0:
-            raise KeyError("i = {0:d} out of bounds for finite MPS".format(i))
-        return i
+        """Make sure `i` is a valid index of a site.
+
+        .. deprecated :: 1.2.0
+            Use :meth:`~tenpy.networks.mps.MPSGeometry._to_valid_site_index`
+            or :meth:`~tenpy.networks.mps.MPSGeometry._to_valid_bond_index` instead.
+            Note that they have an additional return value.
+
+        For finite MPS, we just check if ``i`` is within bounds.
+        For infinite MPS, we return the index *within* the MPS unit cell that is equivalent to
+        ``i``, by adding a suitable multiple of ``self.L``.
+        """
+        msg = '_to_valid_index methods have been deprecated. Use _to_valid_site_index or _to_valid_bond_index instead.'
+        warnings.warn(msg, category=FutureWarning, stacklevel=2)
+        return self._to_valid_site_index(i)
 
     def get_op(self, op_list, i):
         """Given a list of operators, select the one corresponding to site `i`.
@@ -1254,18 +1480,30 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
         needs_JW : bool
             If the operator needs a JW string. Always ``False`` if the entry of ``op_list`` is
             an array.
+
         """
-        if self.finite and (i > self.L or i < 0):
-            raise ValueError("i = {0:d} out of bounds for finite MPS".format(i))
-        op = op_list[i % len(op_list)]
-        if (isinstance(op, str)):
-            site = self.sites[i % self.L]
+        i_in_unit_cell, num_unit_cells = self._to_valid_site_index(i, return_num_unit_cells=True)
+        num_op_lists, i_in_op_list = divmod(i_in_unit_cell, len(op_list))
+        op = op_list[i_in_op_list]
+        if isinstance(op, str):
+            site = self.get_site(i)
             needs_JW = site.op_needs_JW(op)
             op = site.get_op(op)
+        elif isinstance(op, npc.Array) and (not op.chinfo.trivial_shift):
+            N_rings_per_op_list, remainder = divmod(len(op_list), self.N_sites_per_hor_spacing)
+            if remainder != 0:
+                msg = (
+                    f'For a symmetry with non-trivial shift, need to specify operators for a '
+                    f'whole number of rings. That is len(op_list) needs to be a multiple '
+                    f'of {self.N_sites_per_hor_spacing}.'
+                )
+                raise ValueError(msg)
+            dx_0 = num_unit_cells * self.unit_cell_width + num_op_lists * N_rings_per_op_list
+            op = op.shift_charges_horizontal(dx_0=dx_0)
+            needs_JW = False
         else:
             needs_JW = False
         return op, needs_JW
-
 
     @abstractmethod
     def _normalize_exp_val(self, value):
@@ -1274,16 +1512,18 @@ class BaseMPSExpectationValue(metaclass=ABCMeta):
 
     @abstractmethod
     def _contract_with_LP(self, C, i):
-        """contract `theta` with `self.get_LP(i)`.
+        """Contract `theta` with `self.get_LP(i)`.
 
-        If `bra` = `ket`, this is a trivial relabeling of legs `vL` -> `vR*`."""
+        If `bra` = `ket`, this is a trivial relabeling of legs `vL` -> `vR*`.
+        """
         ...
 
     @abstractmethod
     def _contract_with_RP(self, C, i):
-        """contract `C` with `self.get_RP(i)`.
+        """Contract `C` with `self.get_RP(i)`.
 
-        If `bra` = `ket`, this is a trivial relabeling of legs `vR` -> `vL*`."""
+        If `bra` = `ket`, this is a trivial relabeling of legs `vR` -> `vL*`.
+        """
         ...
 
     @abstractmethod
@@ -1307,25 +1547,17 @@ class MPS(BaseMPSExpectationValue):
     SVs : list of 1D array
         The singular values on *each* bond. Should always have length `L+1`.
         Entries out of :attr:`nontrivial_bonds` are ignored.
-    bc : ``'finite' | 'segment' | 'infinite'``
-        Boundary conditions as described in the table of the module doc-string.
     form : (list of) {``'B' | 'A' | 'C' | 'G' | 'Th' | None`` | tuple(float, float)}
         The form of the stored 'matrices', see table in module doc-string.
         A single choice holds for all of the entries.
 
     Attributes
     ----------
-    sites : list of :class:`~tenpy.networks.site.Site`
-        Defines the local Hilbert space for each site.
-    bc : {'finite', 'segment', 'infinite'}
-        Boundary conditions as described in above table.
     form : list of {``None``, tuple(float, float)}
         Describes the canonical form on each site.
         ``None`` means non-canonical form.
         For ``form = (nuL, nuR)``, the stored ``_B[i]`` are
         ``s**form[0] -- Gamma -- s**form[1]`` (in Vidal's notation).
-    chinfo : :class:`~tenpy.linalg.np_conserved.ChargeInfo`
-        The nature of the charge.
     dtype : type
         The data type of the ``_B``.
     norm : float
@@ -1365,59 +1597,80 @@ class MPS(BaseMPSExpectationValue):
         the necessity of re-implementations for derived classes like the
         :class:`~tenpy.networks.purification_mps.Purification_MPS` if just the number of physical
         legs changed.
+
     """
+
     # Canonical form conventions: the saved B = s**nu[0]--Gamma--s**nu[1].
     # For the canonical forms, ``nu[0] + nu[1] = 1``
     _valid_forms = {
-        'A': (1., 0.),
+        'A': (1.0, 0.0),
         'C': (0.5, 0.5),
-        'B': (0., 1.),
-        'G': (0., 0.),  # like Vidal's `Gamma`.
-        'Th': (1., 1.),
+        'B': (0.0, 1.0),
+        'G': (0.0, 0.0),  # like Vidal's `Gamma`.
+        'Th': (1.0, 1.0),
         None: None,  # means 'not in any canonical form'
     }
 
-    # valid boundary conditions. Don't overwrite this!
-    _valid_bc = ('finite', 'segment', 'infinite')
     # the "physical" labels for each B
     _p_label = ['p']
     # All labels of each tensor in _B (order is used!)
     _B_labels = ['vL', 'p', 'vR']
 
-    def __init__(self, sites, Bs, SVs, bc='finite', form='B', norm=1.):
-        self.sites = list(sites)
-        assert len(self.sites) > 0, "MPS need at least one site"
-        self.chinfo = self.sites[0].leg.chinfo
+    def __init__(
+        self,
+        sites,
+        Bs,
+        SVs,
+        bc='finite',
+        form='B',
+        norm=1.0,
+        unit_cell_width=None,
+        understood_shift_symmetry: bool = False,
+    ):
+        super().__init__(sites, bc, unit_cell_width)
+
+        if not self.chinfo.trivial_shift and bc == 'infinite' and not understood_shift_symmetry:
+            msg = (
+                'Shift-symmetry is a new experimental feature and the interplay with infinite '
+                'boundary conditions is not yet extensively tested. '
+                'Proceed with care, and compare to simulations without that symmetry enforced. '
+            )
+            if isinstance(self.chinfo, DipolarChargeInfo):
+                msg += (
+                    'Note also that dipole symmetries tend to fragment the Hilbert space and '
+                    'it is vital to select an initial state in the correct charge sector. '
+                )
+            msg += 'To suppress this warning, set `understood_shift_symmetry=True`'
+            warnings.warn(msg, BetaWarning, stacklevel=2)
+
+        assert len(self.sites) > 0, 'MPS need at least one site'
         self.dtype = dtype = np.result_type(*[B.dtype for B in Bs])
         self.form = self._parse_form(form)
-        self.bc = bc  # one of ``self._valid_bc = ('finite', 'periodic', 'segment')``
         self.norm = norm
         self.grouped = 1
         self.segment_boundaries = (None, None)
 
         # make copies of Bs and SVs
         self._B = [B.astype(dtype, copy=True).itranspose(self._B_labels) for B in Bs]
-        self._S = [None] * (self.L + 1)
+        num_S = self.L + 1 if self.finite else self.L
+        self._S = [None] * (num_S)
         for i in range(self.L + 1)[self.nontrivial_bonds]:
             if isinstance(SVs[i], npc.Array):
                 self._S[i] = SVs[i].copy()
             else:
                 self._S[i] = np.array(SVs[i], dtype=np.float64)
-        if self.bc == 'infinite':
-            self._S[-1] = self._S[0]
-        elif self.bc == 'finite':
+        if self.bc == 'finite':
             self._S[0] = self._S[-1] = np.ones([1], dtype=np.float64)
         self._transfermatrix_keep = 1
         self.test_sanity()
 
     def test_sanity(self):
         """Sanity check, raises ValueErrors, if something is wrong."""
-        if self.bc not in self._valid_bc:
-            raise ValueError("invalid boundary condition: " + repr(self.bc))
+        super().test_sanity()
         if len(self._B) != self.L:
-            raise ValueError("wrong len of self._B")
-        if len(self._S) != self.L + 1:
-            raise ValueError("wrong len of self._S")
+            raise ValueError('wrong len of self._B')
+        if len(self._S) != (self.L + 1 if self.finite else self.L):
+            raise ValueError('wrong len of self._S')
         assert len(self.form) == self.L
         for f in self.form:
             if f is not None:
@@ -1425,20 +1678,16 @@ class MPS(BaseMPSExpectationValue):
                 assert len(f) == 2
         for i, B in enumerate(self._B):
             if B.get_leg_labels() != self._B_labels:    # DOES NOT HANDLE TRANSPOSED LEGS
-                raise ValueError("B has wrong labels {0!r}, expected {1!r}".format(
-                    B.get_leg_labels(), self._B_labels))
-            if len(self._S[i + 1].shape) == 1:
-                if self._S[i].shape[-1] != B.get_leg('vL').ind_len or \
-                        self._S[i+1].shape[0] != B.get_leg('vR').ind_len:
-                    print(i)
-                    print(self._S[i].shape, self._S[i+1].shape)
-                    print(B.get_leg('vL').ind_len, B.get_leg('vR').ind_len)
-                    raise ValueError("shape of B incompatible with len of singular values")
+                raise ValueError(f'B has wrong labels {B.get_leg_labels()!r}, expected {self._B_labels!r}')
+            i2 = (i + 1) if self.finite else (i + 1) % self.L
+            if len(self._S[i2].shape) == 1:
+                if self._S[i].shape[-1] != B.get_leg('vL').ind_len or self._S[i2].shape[0] != B.get_leg('vR').ind_len:
+                    raise ValueError('shape of B incompatible with len of singular values')
                 if not self.finite or i + 1 < self.L:
-                    B2 = self._B[(i + 1) % self.L]
+                    B2 = self.get_B(i + 1, form=None)
                     B.get_leg('vR').test_contractible(B2.get_leg('vL'))
             else:
-                assert len(self._S[i + 1].shape) == 2  # special case during DMRG with mixer,
+                assert len(self._S[i2].shape) == 2  # special case during DMRG with mixer,
                 # important for simulation resume while mixer is on
                 # we should have a well-defined form everywhere
                 B = self.get_B(i, form='Th')
@@ -1449,10 +1698,7 @@ class MPS(BaseMPSExpectationValue):
             assert self.form[i] in self._valid_forms.values()
         if self.bc == 'finite':
             if len(self._S[0]) != 1 or len(self._S[-1]) != 1:
-                raise ValueError("non-trivial outer bonds for finite MPS")
-        elif self.bc == 'infinite':
-            if np.any(self._S[self.L] != self._S[0]):
-                raise ValueError("iMPS with S[0] != S[L]")
+                raise ValueError('non-trivial outer bonds for finite MPS')
 
     def copy(self):
         """Returns a copy of `self`.
@@ -1461,10 +1707,19 @@ class MPS(BaseMPSExpectationValue):
         B and S are deeply copied.
         """
         # __init__ makes deep copies of B, S
-        cp = self.__class__(self.sites, self._B, self._S, self.bc, self.form, self.norm)
+        cp = self.__class__(
+            self.sites,
+            self._B,
+            self._S,
+            self.bc,
+            self.form,
+            self.norm,
+            self.unit_cell_width,
+            understood_shift_symmetry=True,
+        )
         cp.grouped = self.grouped
         cp._transfermatrix_keep = self._transfermatrix_keep
-        cp.segment_boundaries = getattr(self, "segment_boundaries", (None, None))
+        cp.segment_boundaries = getattr(self, 'segment_boundaries', (None, None))
         return cp
 
     def save_hdf5(self, hdf5_saver, h5gr, subpath):
@@ -1474,11 +1729,12 @@ class MPS(BaseMPSExpectationValue):
 
         Specifically, it saves
         :attr:`sites`,
-        :attr:`chinfo` (under these names),
+        :attr:`chinfo`,
+        :attr:`unit_cell_width` (under these names),
         :attr:`_B` as ``"tensors"``,
         :attr:`_S` as ``"singular_values"``,
-        :attr:`bc` as ``"boundary_condition"``, and
-        :attr:`form` converted to a single array of shape (L, 2) as ``"canonical_form"``,
+        :attr:`bc` as ``"boundary_condition"``,
+        :attr:`form` converted to a single array of shape (L, 2) as ``"canonical_form"``.
         Moreover, it saves :attr:`norm`, :attr:`L`, :attr:`grouped` and
         :attr:`_transfermatrix_keep` (as "transfermatrix_keep") as HDF5 attributes, as well as
         the maximum of :attr:`chi` under the name "max_bond_dimension".
@@ -1491,20 +1747,21 @@ class MPS(BaseMPSExpectationValue):
             HDF5 group which is supposed to represent `self`.
         subpath : str
             The `name` of `h5gr` with a ``'/'`` in the end.
+
         """
-        hdf5_saver.save(self.sites, subpath + "sites")
-        hdf5_saver.save(self._B, subpath + "tensors")
-        hdf5_saver.save(self._S, subpath + "singular_values")
-        hdf5_saver.save(self.bc, subpath + "boundary_condition")
-        hdf5_saver.save(np.array(self.form), subpath + "canonical_form")
-        hdf5_saver.save(self.chinfo, subpath + "chinfo")
-        segment_boundaries = getattr(self, "segment_boundaries", (None, None))
-        hdf5_saver.save(self.segment_boundaries, subpath + "segment_boundaries")
-        h5gr.attrs["norm"] = self.norm
-        h5gr.attrs["grouped"] = self.grouped
-        h5gr.attrs["transfermatrix_keep"] = self._transfermatrix_keep
-        h5gr.attrs["L"] = self.L  # not needed for loading, but still useful metadata
-        h5gr.attrs["max_bond_dimension"] = np.max(self.chi)  # same
+        hdf5_saver.save(self.sites, subpath + 'sites')
+        hdf5_saver.save(self._B, subpath + 'tensors')
+        hdf5_saver.save(self._S, subpath + 'singular_values')
+        hdf5_saver.save(self.bc, subpath + 'boundary_condition')
+        hdf5_saver.save(np.array(self.form), subpath + 'canonical_form')
+        hdf5_saver.save(self.chinfo, subpath + 'chinfo')
+        hdf5_saver.save(self.unit_cell_width, subpath + 'unit_cell_width')
+        hdf5_saver.save(self.segment_boundaries, subpath + 'segment_boundaries')
+        h5gr.attrs['norm'] = self.norm
+        h5gr.attrs['grouped'] = self.grouped
+        h5gr.attrs['transfermatrix_keep'] = self._transfermatrix_keep
+        h5gr.attrs['L'] = self.L  # not needed for loading, but still useful metadata
+        h5gr.attrs['max_bond_dimension'] = np.max(self.chi)  # same
 
     @classmethod
     def from_hdf5(cls, hdf5_loader, h5gr, subpath):
@@ -1525,24 +1782,26 @@ class MPS(BaseMPSExpectationValue):
         -------
         obj : cls
             Newly generated class instance containing the required data.
+
         """
         obj = cls.__new__(cls)  # create class instance, no __init__() call
         hdf5_loader.memorize_load(h5gr, obj)
 
-        obj.sites = hdf5_loader.load(subpath + "sites")
-        obj._B = hdf5_loader.load(subpath + "tensors")
-        obj._S = hdf5_loader.load(subpath + "singular_values")
-        obj.bc = hdf5_loader.load(subpath + "boundary_condition")
-        form = hdf5_loader.load(subpath + "canonical_form")
+        obj.sites = hdf5_loader.load(subpath + 'sites')
+        obj._B = hdf5_loader.load(subpath + 'tensors')
+        obj._S = hdf5_loader.load(subpath + 'singular_values')
+        obj.bc = hdf5_loader.load(subpath + 'boundary_condition')
+        form = hdf5_loader.load(subpath + 'canonical_form')
         obj.form = [tuple(f) for f in form]
-        obj.norm = hdf5_loader.get_attr(h5gr, "norm")
+        obj.norm = hdf5_loader.get_attr(h5gr, 'norm')
 
-        obj.grouped = hdf5_loader.get_attr(h5gr, "grouped")
-        obj._transfermatrix_keep = hdf5_loader.get_attr(h5gr, "transfermatrix_keep")
-        obj.chinfo = hdf5_loader.load(subpath + "chinfo")
+        obj.grouped = hdf5_loader.get_attr(h5gr, 'grouped')
+        obj._transfermatrix_keep = hdf5_loader.get_attr(h5gr, 'transfermatrix_keep')
+        obj.chinfo = hdf5_loader.load(subpath + 'chinfo')
+        obj.unit_cell_width = hdf5_loader.load(subpath + 'unit_cell_width')
         obj.dtype = np.result_type(*[B.dtype for B in obj._B])
-        if "segment_boundaries" in h5gr:
-            obj.segment_boundaries = hdf5_loader.load(subpath + "segment_boundaries")
+        if 'segment_boundaries' in h5gr:
+            obj.segment_boundaries = hdf5_loader.load(subpath + 'segment_boundaries')
         else:
             obj.segment_boundaries = (None, None)
         obj.test_sanity()
@@ -1590,13 +1849,13 @@ class MPS(BaseMPSExpectationValue):
 
             >>> spin_half = tenpy.networks.site.SpinHalfSite()
             >>> fermion = tenpy.networks.site.FermionSite()
-            >>> ladder_i = tenpy.models.lattice.Ladder(2, [spin_half, fermion], bc_MPS="infinite")
+            >>> ladder_i = tenpy.models.lattice.Ladder(2, [spin_half, fermion], bc_MPS='infinite')
 
         To initialize a state of up-spins on the spin sites and half-filled fermions, you can use:
 
         .. doctest : MPS.from_lat_product_state
 
-            >>> p_state = [["up", "empty"], ["up", "full"]]
+            >>> p_state = [['up', 'empty'], ['up', 'full']]
             >>> psi = tenpy.networks.MPS.from_lat_product_state(ladder_i, p_state)
 
         Note that the same `p_state` works for a finite lattice of even length, say ``L=10``, as
@@ -1604,7 +1863,7 @@ class MPS(BaseMPSExpectationValue):
 
         .. doctest : MPS.from_lat_product_state
 
-            >>> ladder_f = tenpy.models.lattice.Ladder(10, [spin_half, fermion], bc_MPS="finite")
+            >>> ladder_f = tenpy.models.lattice.Ladder(10, [spin_half, fermion], bc_MPS='finite')
             >>> psi = tenpy.networks.MPS.from_lat_product_state(ladder_f, p_state)
 
         You can also easily half-fill a :class:`~tenpy.models.lattice.Honeycomb`, for example
@@ -1614,53 +1873,60 @@ class MPS(BaseMPSExpectationValue):
 
         .. doctest : MPS.from_lat_product_state
 
-            >>> honeycomb = tenpy.models.lattice.Honeycomb([4, 4], [fermion, fermion], bc_MPS="finite")
-            >>> p_state_only_A = [[["empty", "full"]]]
+            >>> honeycomb = tenpy.models.lattice.Honeycomb([4, 4], [fermion, fermion], bc_MPS='finite')
+            >>> p_state_only_A = [[['empty', 'full']]]
             >>> psi_only_A = tenpy.networks.MPS.from_lat_product_state(honeycomb, p_state_only_A)
-            >>> p_state_stripe_x = [[["empty", "empty"],
-            ...                      ["full", "full"]]]
+            >>> p_state_stripe_x = [[['empty', 'empty'], ['full', 'full']]]
             >>> psi_stripe_x = tenpy.networks.MPS.from_lat_product_state(honeycomb, p_state_stripe_x)
-            >>> p_state_stripe_y = [[["empty", "empty"]],
-            ...                      [["full", "full"]]]
+            >>> p_state_stripe_y = [[['empty', 'empty']], [['full', 'full']]]
             >>> psi_stripe_y = tenpy.networks.MPS.from_lat_product_state(honeycomb, p_state_stripe_y)
+
         """
-        kwargs.setdefault("bc", lat.bc_MPS)
+        kwargs.setdefault('bc', lat.bc_MPS)
         p_state = np.array(p_state, dtype=object)
         if p_state.ndim == len(lat.shape):  # == lat.dim + 1
-            p_state = to_array(p_state, shape=lat.shape, allow_incommensurate=allow_incommensurate)  # tile to lattice shape
+            # tile to lattice shape
+            p_state = to_array(p_state, shape=lat.shape, allow_incommensurate=allow_incommensurate)
             p_state_flat = p_state[tuple(lat.order.T)]  # "advanced" numpy indexing
         elif p_state.ndim == len(lat.shape) + 1:
             # extra dimension could be from purely 1D array entries
             # make sure this is the case by converting to float
-            p_state = np.array(p_state, kwargs.get("dtype", np.float64))
+            p_state = np.array(p_state, kwargs.get('dtype', np.float64))
             # tile to lattice shape, ignore last dimension
-            p_state = to_array(p_state, shape=lat.shape + (None, ), allow_incommensurate=allow_incommensurate)
-            inds = tuple(lat.order.T) + (slice(None), )
+            p_state = to_array(p_state, shape=lat.shape + (None,), allow_incommensurate=allow_incommensurate)
+            inds = tuple(lat.order.T) + (slice(None),)
             p_state_flat = p_state[inds]  # "advanced" numpy indexing
         else:
-            raise ValueError("wrong dimension of `p_state`. Expected {d:d}-dimensional array of "
-                             "(string, int, or 1D array)".format(d=lat.dim + 1))
+            raise ValueError(
+                f'wrong dimension of `p_state`. Expected {lat.dim + 1:d}-dimensional array of '
+                '(string, int, or 1D array)'
+            )
         from ..models.lattice import HelicalLattice
+
         if isinstance(lat, HelicalLattice):
             order = lat.regular_lattice.order
             for start in range(0, lat.regular_lattice.N_sites, lat.N_sites):
-                shifted_inds = tuple(order[start:start + lat.N_sites, :].T)
+                shifted_inds = tuple(order[start : start + lat.N_sites, :].T)
                 if p_state.ndim == len(lat.shape) + 1:
-                    shifted_inds = shifted_inds + (slice(None), )
+                    shifted_inds = shifted_inds + (slice(None),)
                 shifted_p_state_flat = p_state[shifted_inds]
                 if not np.all(p_state_flat == shifted_p_state_flat):
-                    raise ValueError("`p_state` not translation invariant w.r.t. HelicalLattice")
-        return cls.from_product_state(lat.mps_sites(), p_state_flat, **kwargs)
+                    raise ValueError('`p_state` not translation invariant w.r.t. HelicalLattice')
+        return cls.from_product_state(lat.mps_sites(), p_state_flat, **kwargs, unit_cell_width=lat.mps_unit_cell_width)
 
     @classmethod
-    def from_product_state(cls,
-                           sites,
-                           p_state,
-                           bc='finite',
-                           dtype=np.float64,
-                           permute=True,
-                           form='B',
-                           chargeL=None):
+    def from_product_state(
+        cls,
+        sites,
+        p_state,
+        bc='finite',
+        dtype=np.float64,
+        permute=True,
+        form='B',
+        chargeL=None,
+        unit_cell_width=None,
+        understood_shift_symmetry: bool = False,
+    ):
         """Construct a matrix product state from a given product state.
 
         Parameters
@@ -1689,6 +1955,8 @@ class MPS(BaseMPSExpectationValue):
             A single choice holds for all of the entries.
         chargeL : charges
             Leg charges at bond 0, which are purely conventional.
+        unit_cell_width : int
+            See :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
 
         Returns
         -------
@@ -1704,8 +1972,10 @@ class MPS(BaseMPSExpectationValue):
             >>> from tenpy.networks.mps import MPS
             >>> L = 10
             >>> M = tenpy.models.tf_ising.TFIChain({'L': L})
-            >>> p_state = ["up", "down"] * (L//2)  # repeats entries L/2 times
-            >>> psi = MPS.from_product_state(M.lat.mps_sites(), p_state, bc=M.lat.bc_MPS)
+            >>> p_state = ['up', 'down'] * (L // 2)  # repeats entries L/2 times
+            >>> psi = MPS.from_product_state(
+            ...     M.lat.mps_sites(), p_state, bc=M.lat.bc_MPS, unit_cell_width=M.lat.mps_unit_cell_width
+            ... )
 
         The meaning of the labels ``"up","down"`` is defined by the :class:`~tenpy.networks.Site`,
         in this example a :class:`~tenpy.networks.site.SpinHalfSite`.
@@ -1719,11 +1989,13 @@ class MPS(BaseMPSExpectationValue):
         .. doctest :: MPS.from_product_state
 
             >>> spin = tenpy.networks.site.SpinHalfSite(conserve=None, sort_charge=False)
-            >>> p_state = ["up", "down"] * (L//2)  # repeats entries L/2 times
-            >>> theta, phi = np.pi/4, np.pi/6
-            >>> bloch_sphere_state = np.array([np.cos(theta/2), np.exp(1.j*phi)*np.sin(theta/2)])
-            >>> p_state[L//2] = bloch_sphere_state   # replace one spin in center
-            >>> psi = MPS.from_product_state([spin]*L, p_state, bc=M.lat.bc_MPS, dtype=complex)
+            >>> p_state = ['up', 'down'] * (L // 2)  # repeats entries L/2 times
+            >>> theta, phi = np.pi / 4, np.pi / 6
+            >>> bloch_sphere_state = np.array([np.cos(theta / 2), np.exp(1.0j * phi) * np.sin(theta / 2)])
+            >>> p_state[L // 2] = bloch_sphere_state  # replace one spin in center
+            >>> psi = MPS.from_product_state(
+            ...     [spin] * L, p_state, bc=M.lat.bc_MPS, dtype=complex, unit_cell_width=M.lat.mps_unit_cell_width
+            ... )
 
         Note that for the more general :class:`~tenpy.models.spins.SpinChain`,
         the order of the two entries for the ``bloch_sphere_state`` would be *exactly the opposite*
@@ -1732,12 +2004,13 @@ class MPS(BaseMPSExpectationValue):
         where the states are ordered ascending from ``'down'`` to ``'up'``.
         The :class:`~tenpy.networks.site.SpinHalfSite` on the other hand uses the order
         ``'up', 'down'`` where that the Pauli matrices look as usual.
+
         """
         sites = list(sites)
         L = len(sites)
         p_state = list(p_state)
         if len(p_state) != L:
-            raise ValueError("Length of p_state does not match number of sites.")
+            raise ValueError('Length of p_state does not match number of sites.')
         ci = sites[0].leg.chinfo
         Bs = []
         chargeL = ci.make_valid(chargeL)  # sets to zero if `None`
@@ -1755,24 +2028,38 @@ class MPS(BaseMPSExpectationValue):
                 B[p_st, 0, 0] = 1.0
             else:  # iter works
                 if len(p_st) != site.dim:
-                    raise ValueError("p_state incompatible with local dim:" + repr(p_st))
+                    raise ValueError('p_state incompatible with local dim:' + repr(p_st))
                 B = np.array(p_st, dtype).reshape((site.dim, 1, 1))
             if perm:
                 B = B[site.perm, :, :]
             Bs.append(B)
-        SVs = [[1.]] * (L + 1)
-        return cls.from_Bflat(sites, Bs, SVs, bc, dtype, False, form, legL)
+        SVs = [[1.0]] * (L + 1)
+        return cls.from_Bflat(
+            sites,
+            Bs,
+            SVs,
+            bc,
+            dtype,
+            False,
+            form,
+            legL,
+            unit_cell_width,
+            understood_shift_symmetry=understood_shift_symmetry,
+        )
 
     @classmethod
-    def from_random_unitary_evolution(cls,
-                                      sites,
-                                      chi,
-                                      p_state,
-                                      bc='finite',
-                                      dtype=np.float64,
-                                      permute=True,
-                                      form='B',
-                                      chargeL=None):
+    def from_random_unitary_evolution(
+        cls,
+        sites,
+        chi,
+        p_state,
+        bc='finite',
+        dtype=np.float64,
+        permute=True,
+        form='B',
+        chargeL=None,
+        understood_shift_symmetry: bool = False,
+    ):
         """Construct a matrix product state by evolving a product state with random unitaries.
 
         Parameters
@@ -1805,13 +2092,16 @@ class MPS(BaseMPSExpectationValue):
             A single choice holds for all of the entries.
         chargeL : charges
             Leg charges at bond 0, which are purely conventional.
+
         """
         from ..algorithms.tebd import RandomUnitaryEvolution  # local import: avoid circular import
         if bc == 'segment':
-            msg = "MPS.from_random_unitary_evolution not implemented for segment BC."
+            msg = 'MPS.from_random_unitary_evolution not implemented for segment BC.'
             raise NotImplementedError(msg)
-        psi = MPS.from_product_state(sites, p_state, bc, dtype, permute, form, chargeL)
-        tebd_params = dict(N_steps = 10, trunc_params={'chi_max': chi})
+        psi = MPS.from_product_state(
+            sites, p_state, bc, dtype, permute, form, chargeL, understood_shift_symmetry=understood_shift_symmetry
+        )
+        tebd_params = dict(N_steps=10, trunc_params={'chi_max': chi})
         eng = RandomUnitaryEvolution(psi, tebd_params)
         _max_iter = 1000
         for _ in range(_max_iter):
@@ -1821,22 +2111,30 @@ class MPS(BaseMPSExpectationValue):
                 break
             eng.run()
         else:  # no break ocurred
-            warnings.warn(f'Did not reach desired chi after {_max_iter} iterations of random '
-                          f'unitary evolution. Is chi too large for the given system?',
-                          stacklevel=2)
-        logger.info("Generated MPS of bond dimension %r via random evolution.", list(psi.chi))
+            warnings.warn(
+                f'Did not reach desired chi after {_max_iter} iterations of random '
+                f'unitary evolution. Is chi too large for the given system?',
+                stacklevel=2,
+            )
+        logger.info('Generated MPS of bond dimension %r via random evolution.', list(psi.chi))
         psi.canonical_form()
         return psi
 
     @classmethod
-    def from_desired_bond_dimension(cls,
-                                    sites,
-                                    chis,
-                                    bc='finite',
-                                    dtype=np.float64,
-                                    permute=True,
-                                    chargeL=None):
-        """Construct a matrix product state with given bond dimensions from random matrices (no charge conservation).
+    def from_desired_bond_dimension(
+        cls,
+        sites,
+        chis,
+        bc='finite',
+        dtype=np.float64,
+        permute=True,
+        chargeL=None,
+        unit_cell_width=None,
+        understood_shift_symmetry: bool = False,
+    ):
+        """Construct a matrix product state with given bond dimensions from random matrices.
+
+        Note: no charge conservation
 
         Parameters
         ----------
@@ -1845,7 +2143,8 @@ class MPS(BaseMPSExpectationValue):
         chis : (list of) {int}
             Desired bond dimensions. For a single int, the same bond dimension is used on every bond.
         bc : {'infinite', 'finite'}
-            MPS boundary conditions. See docstring of :class:`MPS`. For 'finite' chi is capped to the maximum possible at each bond.
+            MPS boundary conditions. See docstring of :class:`MPS`. For 'finite' chi is capped to
+            the maximum possible at each bond.
         dtype : type or string
             The data type of the array entries.
         permute : bool
@@ -1856,66 +2155,83 @@ class MPS(BaseMPSExpectationValue):
             The `p_state` entries should then always be given as if `conserve=None` in the Site.
         chargeL : charges
             Leg charges at bond 0, which are purely conventional.
+        unit_cell_width : int
+            See :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
 
         Returns
         -------
         mps : :class:`MPS`
             An MPS with the desired bond dimension.
+
         """
         sites = list(sites)
         L = len(sites)
         # TODO: what happens if we have charge conservation?
-        assert sites[0].leg.chinfo.qnumber == 0, "does not work with conserved charges"
+        assert sites[0].leg.chinfo.qnumber == 0, 'does not work with conserved charges'
         if bc == 'finite':
             if isinstance(chis, int):
                 chi_uniform = chis
-                chis = [chi_uniform] * (L-1)
-            assert len(chis) == L-1, "wrong length of chi list"
+                chis = [chi_uniform] * (L - 1)
+            assert len(chis) == L - 1, 'wrong length of chi list'
             chis.append(1)
             SVs = [np.ones(1)]
             Q, _ = np.linalg.qr(np.random.rand(sites[0].dim, chis[0]))
-            Bflat = [Q.reshape(sites[0].dim, 1, Q.shape[1])] # TODO: this only does real entries
-            for i in range(1, L-1):
+            Bflat = [Q.reshape(sites[0].dim, 1, Q.shape[1])]  # TODO: this only does real entries
+            for i in range(1, L - 1):
                 B_vR = Bflat[-1].shape[2]
                 SV = np.random.rand(B_vR)
-                SVs.append(SV/np.linalg.norm(SV))
-                Q, _ = np.linalg.qr(np.random.rand(sites[i].dim*B_vR, chis[i]))
+                SVs.append(SV / np.linalg.norm(SV))
+                Q, _ = np.linalg.qr(np.random.rand(sites[i].dim * B_vR, chis[i]))
                 Bflat.append(Q.reshape(sites[i].dim, B_vR, Q.shape[1]))
             B_vR = Bflat[-1].shape[2]
             SV = np.random.rand(B_vR)
-            SVs.append(SV/np.linalg.norm(SV))
-            Bflat.append(np.random.rand(sites[-1].dim*chis[L-2]).reshape(sites[-1].dim, B_vR, 1))
+            SVs.append(SV / np.linalg.norm(SV))
+            Bflat.append(np.random.rand(sites[-1].dim * chis[L - 2]).reshape(sites[-1].dim, B_vR, 1))
             SVs = [np.ones(1)]
         elif bc == 'infinite':
             if isinstance(chis, int):
                 chi_uniform = chis
                 chis = [chi_uniform] * L
-            assert len(chis) == L, "wrong length of chi list"
+            assert len(chis) == L, 'wrong length of chi list'
             Bflat = []
             SVs = []
             for i in range(L):
                 SV = np.random.rand(chis[i])
-                SVs.append(SV/np.linalg.norm(SV))
-                Q, _ = np.linalg.qr(np.random.rand(sites[i].dim*chis[i], chis[(i+1)%L]))
-                Bflat.append(Q.reshape(sites[i].dim, chis[i], chis[(i+1)%L]))
+                SVs.append(SV / np.linalg.norm(SV))
+                Q, _ = np.linalg.qr(np.random.rand(sites[i].dim * chis[i], chis[(i + 1) % L]))
+                Bflat.append(Q.reshape(sites[i].dim, chis[i], chis[(i + 1) % L]))
             SVs.append(SVs[0])
         else:
-            raise NotImplementedError("MPS.from_desired_bond_dimension not implemented for segment BC.")
-        psi = MPS.from_Bflat(sites, Bflat, bc=bc, dtype=dtype, permute=permute, form=None, legL=chargeL)
+            raise NotImplementedError('MPS.from_desired_bond_dimension not implemented for segment BC.')
+        psi = MPS.from_Bflat(
+            sites,
+            Bflat,
+            bc=bc,
+            dtype=dtype,
+            permute=permute,
+            form=None,
+            legL=chargeL,
+            unit_cell_width=unit_cell_width,
+            understood_shift_symmetry=understood_shift_symmetry,
+        )
         psi.canonical_form()
-        logger.info("Generated MPS of bond dimension %r from random matrices.", list(psi.chi))
+        logger.info('Generated MPS of bond dimension %r from random matrices.', list(psi.chi))
         return psi
 
     @classmethod
-    def from_Bflat(cls,
-                   sites,
-                   Bflat,
-                   SVs=None,
-                   bc='finite',
-                   dtype=None,
-                   permute=True,
-                   form='B',
-                   legL=None):
+    def from_Bflat(
+        cls,
+        sites,
+        Bflat,
+        SVs=None,
+        bc='finite',
+        dtype=None,
+        permute=True,
+        form='B',
+        legL=None,
+        unit_cell_width=None,
+        understood_shift_symmetry: bool = False,
+    ):
         """Construct a matrix product state from a set of numpy arrays `Bflat` and singular vals.
 
         Parameters
@@ -1945,24 +2261,28 @@ class MPS(BaseMPSExpectationValue):
         leg_L : LegCharge | ``None``
             Leg charges at bond 0, which are purely conventional.
             If ``None``, use trivial charges.
+        unit_cell_width : int
+            See :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
 
         Returns
         -------
         mps : :class:`MPS`
             An MPS with the matrices `Bflat` converted to npc arrays.
+
         """
         sites = list(sites)
         L = len(sites)
         Bflat = list(Bflat)
         if len(Bflat) != L:
-            raise ValueError("Length of Bflat does not match number of sites.")
+            raise ValueError('Length of Bflat does not match number of sites.')
         ci = sites[0].leg.chinfo
         if legL is None:
             legL = npc.LegCharge.from_qflat(ci, [ci.make_valid(None)] * Bflat[0].shape[1])
             legL = legL.bunch()[1]
         if SVs is None:
             SVs = [np.ones(B.shape[1]) / np.sqrt(B.shape[1]) for B in Bflat]
-            SVs.append(np.ones(Bflat[-1].shape[2]) / np.sqrt(Bflat[-1].shape[2]))
+            if bc != 'infinite':
+                SVs.append(np.ones(Bflat[-1].shape[2]) / np.sqrt(Bflat[-1].shape[2]))
         Bs = []
         if dtype is None:
             dtype = np.dtype(np.common_type(*Bflat))
@@ -1982,21 +2302,33 @@ class MPS(BaseMPSExpectationValue):
             # so we need to gauge `qtotal` of the last `B` such that the right leg matches.
             chdiff = Bs[-1].get_leg('vR').charges[0] - Bs[0].get_leg('vL').charges[0]
             Bs[-1] = Bs[-1].gauge_total_charge('vR', ci.make_valid(chdiff))
-        res = cls(sites, Bs, SVs, form=form, bc=bc)
+        res = cls(
+            sites,
+            Bs,
+            SVs,
+            form=form,
+            bc=bc,
+            unit_cell_width=unit_cell_width,
+            understood_shift_symmetry=understood_shift_symmetry,
+        )
         if res.L > 1 and max(res.chi) > 1:
             # the SVs set above are not the correct Schmidt values if chi > 1.
             res.canonical_form()
         return res
 
     @classmethod
-    def from_full(cls,
-                  sites,
-                  psi,
-                  form=None,
-                  cutoff=1.e-16,
-                  normalize=True,
-                  bc='finite',
-                  outer_S=None):
+    def from_full(
+        cls,
+        sites,
+        psi,
+        form=None,
+        cutoff=1.0e-16,
+        normalize=True,
+        bc='finite',
+        outer_S=None,
+        unit_cell_width=None,
+        understood_shift_symmetry: bool = False,
+    ):
         """Construct an MPS from a single tensor `psi` with one leg per physical site.
 
         Performs a sequence of SVDs of psi to split off the `B` matrices and obtain the singular
@@ -2009,9 +2341,12 @@ class MPS(BaseMPSExpectationValue):
             The sites defining the local Hilbert space.
         psi : :class:`~tenpy.linalg.np_conserved.Array`
             The full wave function to be represented as an MPS.
-            Should have labels ``'p0', 'p1', ...,  'p{L-1}'``.
+            Should have labels ``'p0', 'p1', ...,  'p{L-1}'`` (in any order).
             Additionally, it may have (or must have for 'segment' `bc`) the legs ``'vL', 'vR'``,
             which are trivial for 'finite' `bc`.
+            For subclasses with multiple physical legs per site, we instead expect one set of labels
+            per site (e.g. ``'p0', 'q0', 'p1', 'q1', ...`` for
+            :class:`~tenpy.networks.purification_mps.PurificationMPS`).
         form  : ``'B' | 'A' | 'C' | 'G' | None``
             The canonical form of the resulting MPS, see module doc-string.
             ``None`` defaults to 'A' form on the first site and 'B' form on all following sites.
@@ -2024,22 +2359,25 @@ class MPS(BaseMPSExpectationValue):
         outer_S : None | (array, array)
             For 'segment' `bc` the singular values on the left and right of the considered segment,
             `None` for 'finite' boundary conditions.
+        unit_cell_width : int
+            See :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
 
         Returns
         -------
         psi_mps : :class:`MPS`
             MPS representation of `psi`, in canonical form and possibly normalized.
+
         """
         if form is not None and form not in ['B', 'A', 'C', 'G']:
-            raise ValueError("Invalid form: " + repr(form))
+            raise ValueError('Invalid form: ' + repr(form))
         if bc != 'finite' and bc != 'segment':
-            raise ValueError("Wrong boundary conditions: " + repr(bc))
+            raise ValueError('Wrong boundary conditions: ' + repr(bc))
         # perform SVDs to bring it into 'B' form, afterwards change the form.
         L = len(sites)
-        assert (L >= 2)
+        assert L >= 2
         B_list = [None] * L
         S_list = [None] * (L + 1)
-        norm = 1. if normalize else npc.norm(psi)
+        norm = 1.0 if normalize else npc.norm(psi)
         if not psi.has_label('vL'):
             psi = psi.add_trivial_leg(0, label='vL', qconj=+1)
         elif bc == 'finite' and psi.get_leg('vL').ind_len != 1:
@@ -2048,44 +2386,79 @@ class MPS(BaseMPSExpectationValue):
             psi = psi.add_trivial_leg(len(psi.get_leg_labels()), label='vR', qconj=-1)
         elif bc == 'finite' and psi.get_leg('vR').ind_len != 1:
             raise ValueError("non-trivial left leg for 'finite' bc!")
-        labels = ['vL'] + ['p' + str(i) for i in range(L)] + ['vR']
-        psi.itranspose(labels)
+
+        # need to consider subclasses with multiple legs per site (e.g. purification)
+        legs_per_site = len(cls._p_label)
+        # p_labels: e.g. [['p0', 'q0'], ['p1', 'q1'], ...]
+        p_labels = [[f'{p}{i}' for p in cls._p_label] for i in range(L)]
+        # psi_labels: e.g. ['vL', 'p0', 'q0', 'p1', 'q1', ..., 'vR']
+        psi_labels = ['vL'] + [p_i for P in p_labels for p_i in P] + ['vR']
+        psi.itranspose(psi_labels)
+
+        # combine to one leg per site
+        if legs_per_site > 1:
+            psi = psi.combine_legs([[1 + site * legs_per_site + n for n in range(legs_per_site)] for site in range(L)])
+            combined_P_labels = [npc.Array._combine_leg_labels(P) for P in p_labels]
+        else:
+            combined_P_labels = [P[0] for P in p_labels]
+        # now we have legs ``vL, P0, P1, ..., vR``, where e.g. P0==(p0.q0)
+        assert psi._labels == ['vL', *combined_P_labels, 'vR']
+
         # combine legs from left
         for i in range(0, L - 1):
             psi = psi.combine_legs([0, 1])  # combines the legs until `i`
-        # now psi has only three legs: ``'(((vL.p0).p1)...p{L-2})', 'p{L-1}', 'vR'``
+        # now psi has only three legs: ``'(((vL.P0).P1)...P{L-2})', 'P{L-1}', 'vR'``
         for i in range(L - 1, 0, -1):
             # split off B[i]
-            psi = psi.combine_legs([labels[i + 1], 'vR'])
+            psi = psi.combine_legs([combined_P_labels[i], 'vR'])
             psi, S, B = npc.svd(psi, inner_labels=['vR', 'vL'], cutoff=cutoff)
             S /= np.linalg.norm(S)  # normalize
             if i > 1:
                 psi.iscale_axis(S, 1)
-            B_list[i] = B.split_legs(1).replace_label(labels[i + 1], 'p')
+            B = B.split_legs(1)
+            if legs_per_site > 1:
+                B = B.split_legs(combined_P_labels[i])
+            B = B.replace_labels(p_labels[i], cls._p_label)
+            B_list[i] = B
             S_list[i] = S
             psi = psi.split_legs(0)
         # psi is now the first `B` in 'A' form
-        B_list[0] = psi.replace_label(labels[1], 'p')
+        if legs_per_site > 1:
+            psi = psi.split_legs(combined_P_labels[0])
+        B_list[0] = psi.replace_labels(p_labels[0], cls._p_label)
         B_form = ['A'] + ['B'] * (L - 1)
         if bc == 'finite':
             S_list[0] = S_list[-1] = np.ones([1], dtype=np.float64)
         elif outer_S is not None:
             S_list[0], S_list[-1] = outer_S
-        res = cls(sites, B_list, S_list, bc=bc, form=B_form, norm=norm)
+        res = cls(
+            sites,
+            B_list,
+            S_list,
+            bc=bc,
+            form=B_form,
+            norm=norm,
+            unit_cell_width=unit_cell_width,
+            understood_shift_symmetry=understood_shift_symmetry,
+        )
         if form is not None:
             res.convert_form(form)
         return res
 
     @classmethod
-    def from_singlets(cls,
-                      site,
-                      L,
-                      pairs,
-                      up='up',
-                      down='down',
-                      lonely=[],
-                      lonely_state='up',
-                      bc='finite'):
+    def from_singlets(
+        cls,
+        site,
+        L,
+        pairs,
+        up='up',
+        down='down',
+        lonely=[],
+        lonely_state='up',
+        bc='finite',
+        unit_cell_width=None,
+        understood_shift_symmetry: bool = False,
+    ):
         """Create an MPS of entangled singlets.
 
         Parameters
@@ -2107,28 +2480,48 @@ class MPS(BaseMPSExpectationValue):
             The state for the lonely sites.
         bc : {'infinite', 'finite', 'segment'}
             MPS boundary conditions. See docstring of :class:`MPS`.
+        unit_cell_width : int
+            See :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
 
         Returns
         -------
         singlet_mps : :class:`MPS`
             An MPS representing singlets on the specified pairs of sites.
+
         """
-        assert 2 * len(pairs) + len(lonely) == L, "incompatible indices"
-        psi_up_down = MPS.from_product_state([site]* 2, [up, down])
-        psi_down_up = MPS.from_product_state([site]* 2, [down, up])
-        psi_singlet = psi_up_down.add(psi_down_up, 0.5**0.5, -0.5**0.5)
-        mps_covering = [psi_singlet]*len(pairs)
+        if not site.leg.chinfo.trivial_shift:
+            # Singlet coverings may not be compatible with such symmetries.
+            # Consider e.g. the electric dipole moment where the "up" and "down" states have
+            # different electric charge. Then, a two-site singlet has no well-defined dipole moment.
+            raise ValueError(
+                'MPS.from_singlets does not support symmetries with non-trivial shift. '
+                'Singlet state are not necessarily symmetric w.r.t. such symmetries.'
+            )
+        assert 2 * len(pairs) + len(lonely) == L, 'incompatible indices'
+        # set unit_cell_width as if on a Chain. Will not be used by from_product_mps_covering
+        psi_up_down = MPS.from_product_state([site] * 2, [up, down], unit_cell_width=2)
+        psi_down_up = MPS.from_product_state([site] * 2, [down, up], unit_cell_width=2)
+        psi_singlet = psi_up_down.add(psi_down_up, 0.5**0.5, -(0.5**0.5))
+        mps_covering = [psi_singlet] * len(pairs)
         index_map = list(pairs)
         if len(lonely) > 0:
-            psi_lonely = MPS.from_product_state([site], [lonely_state])
+            psi_lonely = MPS.from_product_state([site], [lonely_state], unit_cell_width=1)
             mps_covering.extend([psi_lonely] * len(lonely))
-            index_map.extend([(i, ) for i in lonely])
-        psi = cls.from_product_mps_covering(mps_covering, index_map, bc=bc)
+            index_map.extend([(i,) for i in lonely])
+        psi = cls.from_product_mps_covering(
+            mps_covering,
+            index_map,
+            bc=bc,
+            unit_cell_width=unit_cell_width,
+            understood_shift_symmetry=understood_shift_symmetry,
+        )
         assert psi.L == L
         return psi
 
     @classmethod
-    def from_product_mps_covering(cls, mps_covering, index_map, bc='finite'):
+    def from_product_mps_covering(
+        cls, mps_covering, index_map, bc='finite', unit_cell_width=None, understood_shift_symmetry: bool = False
+    ):
         """Create an MPS as a product of (many) local mps covering all sites to be created.
 
         This is a generalization of :meth:`from_singlets` to allow arbitrary local, entangled
@@ -2152,6 +2545,10 @@ class MPS(BaseMPSExpectationValue):
         index_map : list of tuple of int
             For each `local_psi` in `mps_covering`, add one tuple with ``local_psi.L`` entries
             which sites in the returned `psi` should
+        bc : {'infinite', 'finite', 'segment'}
+            MPS boundary conditions. See docstring of :class:`MPS`.
+        unit_cell_width : int
+            See :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
 
         Returns
         -------
@@ -2191,14 +2588,15 @@ class MPS(BaseMPSExpectationValue):
         .. doctest :: product_mps_covering
 
             >>> ferm = FermionSite(conserve='N')
-            >>> lat = MultiSpeciesLattice(Square(4, 2, None), [ferm]*2, ['up', 'down'])
-            >>> ferm_up_down = MPS.from_product_state([ferm]*4, ['full', 'empty', 'empty', 'full'])
-            >>> ferm_down_up = MPS.from_product_state([ferm]*4, ['empty', 'full', 'full', 'empty'])
-            >>> ferm_singlet = ferm_up_down.add(ferm_down_up, 0.5**0.5, -0.5**0.5)
-            >>> index_map = [[(x, y, 0), (x, y, 1), (x+1, y, 0), (x+1, y, 1)]
-            ...    for (x, y) in [(0, 0), (0, 1), (2, 0), (2, 1)]]
+            >>> lat = MultiSpeciesLattice(Square(4, 2, None), [ferm] * 2, ['up', 'down'])
+            >>> ferm_up_down = MPS.from_product_state([ferm] * 4, ['full', 'empty', 'empty', 'full'], unit_cell_width=4)
+            >>> ferm_down_up = MPS.from_product_state([ferm] * 4, ['empty', 'full', 'full', 'empty'], unit_cell_width=4)
+            >>> ferm_singlet = ferm_up_down.add(ferm_down_up, 0.5**0.5, -(0.5**0.5))
+            >>> index_map = [
+            ...     [(x, y, 0), (x, y, 1), (x + 1, y, 0), (x + 1, y, 1)] for (x, y) in [(0, 0), (0, 1), (2, 0), (2, 1)]
+            ... ]
             >>> index_map = [[lat.lat2mps_idx(x_y_u) for x_y_u in pairs] for pairs in index_map]
-            >>> psi = MPS.from_product_mps_covering([ferm_singlet]*4, index_map)
+            >>> psi = MPS.from_product_mps_covering([ferm_singlet] * 4, index_map, unit_cell_width=4)
 
         This will generate a singlet valence bold solid (VBS) state looking like this::
 
@@ -2214,11 +2612,11 @@ class MPS(BaseMPSExpectationValue):
             assert local_psi.bc == 'finite'
             for site, i in zip(local_psi.sites, ind_map):
                 if sites[i % L] is not None:
-                    raise ValueError(f"duplicate index {i:d} for {L:d}-site index_map\n{index_map!r}")
+                    raise ValueError(f'duplicate index {i:d} for {L:d}-site index_map\n{index_map!r}')
                 sites[i % L] = site
         chinfo = sites[0].leg.chinfo
         for site in sites:
-            assert site.leg.chinfo == chinfo, "incompatible types of charges"
+            assert site.leg.chinfo == chinfo, 'incompatible types of charges'
         # first extract tensors from local mps
         # i = index in new psi to be constructed, j = index in local_psi
         B_parts = [[] for _ in range(L)]
@@ -2240,7 +2638,7 @@ class MPS(BaseMPSExpectationValue):
                 if j + 1 < len(ind_map):
                     next_i = ind_map[j + 1]
                     vR_leg = B.get_leg('vR')
-                    Triv = npc.diag(1., vR_leg.conj(), labels=['vL', 'vR'])
+                    Triv = npc.diag(1.0, vR_leg.conj(), labels=['vL', 'vR'])
                     for i2 in range(i + 1, next_i):
                         B_parts[i2 % L].append(Triv)
                         SR_parts[i2 % L].append(SR)
@@ -2256,8 +2654,8 @@ class MPS(BaseMPSExpectationValue):
                 B.ireplace_labels(['(vL.vL2)', '(vR.vR2)'], ['vL', 'vR'])
                 pipeR = B.get_leg('vR')
                 d, d2 = (len(SR), len(SR2))
-                inds = np.indices([d, d2]).transpose([1, 2, 0]).reshape([d*d2, 2])
-                SR = SR[inds[:, 0]] * SR2[inds[:, 1]] # = np.outer(SR, SR2).flatten()
+                inds = np.indices([d, d2]).transpose([1, 2, 0]).reshape([d * d2, 2])
+                SR = SR[inds[:, 0]] * SR2[inds[:, 1]]  # = np.outer(SR, SR2).flatten()
                 perm = [pipeR.map_incoming_flat(ind) for ind in inds]
                 SR = SR[inverse_permutation(perm)]
                 B.legs[B.get_leg_index('vR')] = pipeR.to_LegCharge()
@@ -2265,10 +2663,31 @@ class MPS(BaseMPSExpectationValue):
             Bs.append(B)
             SVs.append(SR)
         SVs[0] = SVs[-1]
-        return cls(sites, Bs, SVs, bc=bc, form='B')
+        if bc == 'finite':
+            SVs = SVs[:-1]
+        return cls(
+            sites,
+            Bs,
+            SVs,
+            bc=bc,
+            form='B',
+            unit_cell_width=unit_cell_width,
+            understood_shift_symmetry=understood_shift_symmetry,
+        )
 
     @classmethod
-    def project_onto_charge_sector(cls, sites, p_state_list, charge_sector, dtype=float, **kwargs):
+    def project_onto_charge_sector(
+        cls,
+        sites,
+        p_state_list,
+        charge_sector,
+        dtype=float,
+        bc='finite',
+        form='B',
+        norm=1.0,
+        unit_cell_width=None,
+        understood_shift_symmetry: bool = False,
+    ):
         """Generates an MPS from a product state list which is projected onto a given charge sector.
 
         Parameters
@@ -2281,16 +2700,41 @@ class MPS(BaseMPSExpectationValue):
         charge_sector : tuple of int
             The charge sector corresponding to the conserved charge of the ``sites``
         dtype : type
+            Datatype for the new MPS
+        bc, form, norm, unit_cell_width
+            Same argument as for :class:`~tenpy.networks.mps.MPS`.
 
         Returns
         -------
         projected_MPS : :class:`~tenpy.networks.mps.MPS`
+
         """
         charge_tree = cls.get_charge_tree_for_given_charge_sector(sites, charge_sector)
-        return cls._project_onto_sector_from_charge_tree(sites, p_state_list, charge_tree, dtype, **kwargs)
+        return cls._project_onto_sector_from_charge_tree(
+            sites,
+            p_state_list,
+            charge_tree,
+            dtype,
+            bc=bc,
+            form=form,
+            norm=norm,
+            unit_cell_width=unit_cell_width,
+            understood_shift_symmetry=understood_shift_symmetry,
+        )
 
     @classmethod
-    def _project_onto_sector_from_charge_tree(cls, sites, p_state_list, charge_tree, dtype=float, **kwargs):
+    def _project_onto_sector_from_charge_tree(
+        cls,
+        sites,
+        p_state_list,
+        charge_tree,
+        dtype=float,
+        bc='finite',
+        form='B',
+        norm=1.0,
+        unit_cell_width=None,
+        understood_shift_symmetry: bool = False,
+    ):
         """Select entries in a product state that are in a charge tree.
 
         Parameters
@@ -2304,14 +2748,18 @@ class MPS(BaseMPSExpectationValue):
             a list containing a set of possible charges at each site
         dtype : type
             The data type of the ``B``-tensors, defaults to float
+        bc, form, norm, unit_cell_width
+            Same argument as for :class:`~tenpy.networks.mps.MPS`.
+
         Returns
         -------
         projected_state : :class:`~tenpy.networks.mps.MPS`
+
         """
         p_state_list = np.array(p_state_list)  # convert (possible list) to ndarray for indexing
-        # check chiinfo
+        # check chinfo
         chinfo = sites[0].leg.chinfo
-        assert all(s.leg.chinfo == chinfo for s in sites), "Charge Info for all sites must be identical"
+        assert all(s.leg.chinfo == chinfo for s in sites), 'Charge Info for all sites must be identical'
 
         # init tensors and schmidt values
         Bs = []
@@ -2332,12 +2780,10 @@ class MPS(BaseMPSExpectationValue):
             leg_p = sites[i].leg
             Q_p = leg_p.to_qflat()  # array of charges of physical leg
 
-            B = npc.zeros([leg_L, leg_R, leg_p],
-                          dtype=dtype,
-                          labels=['vL', 'vR', 'p'])
+            B = npc.zeros([leg_L, leg_R, leg_p], dtype=dtype, labels=['vL', 'vR', 'p'])
 
             for j in range(leg_p.ind_len):  # iterate through possible charges of physical leg
-                value = p_state_list[i, - (j + 1)]  # go through values reversed
+                value = p_state_list[i, -(j + 1)]  # go through values reversed
                 Q_p_j = Q_p[j]
                 for vL, Q_v_L in enumerate(np.array(list(Q_L))):
                     Q_v_R = tuple(chinfo.make_valid(Q_v_L + Q_p_j))
@@ -2349,7 +2795,16 @@ class MPS(BaseMPSExpectationValue):
             # ignore S values as they will be obtained below from :meth:`MPS.canonical_form_finite`
             Ss.append(np.ones(B.shape[1], np.float64))
 
-        projected_state = cls(sites, Bs, Ss, **kwargs)
+        projected_state = cls(
+            sites,
+            Bs,
+            Ss,
+            bc=bc,
+            form=form,
+            norm=norm,
+            unit_cell_width=unit_cell_width,
+            understood_shift_symmetry=understood_shift_symmetry,
+        )
         projected_state.canonical_form_finite()  # calculate S values and normalize
         return projected_state
 
@@ -2369,7 +2824,7 @@ class MPS(BaseMPSExpectationValue):
 
         True for an MPS (``bc='finite', 'segment'``), False for an iMPS (``bc='infinite'``).
         """
-        assert (self.bc in self._valid_bc)
+        assert self.bc in self._valid_bc
         return self.bc != 'infinite'
 
     @property
@@ -2378,18 +2833,10 @@ class MPS(BaseMPSExpectationValue):
         # s.shape[0] == len(s) for 1D numpy array, but works also for a 2D npc Array.
         return [min(s.shape) for s in self._S[self.nontrivial_bonds]]
 
-    @property
-    def nontrivial_bonds(self):
-        """Slice of the non-trivial bond indices, depending on ``self.bc``."""
-        if self.bc == 'finite':
-            return slice(1, self.L)
-        elif self.bc == 'segment':
-            return slice(0, self.L + 1)
-        elif self.bc == 'infinite':
-            return slice(0, self.L)
-
-    def get_B(self, i, form='B', copy=False, cutoff=1.e-16, label_p=None):
+    def get_B(self, i, form='B', copy=False, cutoff=1.0e-16, label_p=None):
         """Return (view of) `B` at site `i` in canonical form.
+
+        Takes care of shifting as described in :ref:`shift_symmetry`.
 
         Parameters
         ----------
@@ -2400,7 +2847,9 @@ class MPS(BaseMPSExpectationValue):
             For ``None``, return the matrix in whatever form it is.
             If any of the tuple entry is None, also don't scale on the corresponding axis.
         copy : bool
-            Whether to return a copy even if `form` matches the current form.
+            If we should always to return a copy.
+            Otherwise, if the `form` does not need to be modified and we dont need to shift any
+            charges, we return the stored Array. Then it should not be inplace modified after!
         cutoff : float
             During DMRG with a mixer, `S` may be a matrix for which we need the inverse.
             This is calculated as the Penrose pseudo-inverse, which uses a cutoff for the
@@ -2421,19 +2870,21 @@ class MPS(BaseMPSExpectationValue):
         Raises
         ------
         ValueError : if self is not in canonical form and `form` is not None.
+
         """
-        i = self._to_valid_index(i)
-        new_form = self._to_valid_form(form)
-        old_form = self.form[i]
-        B = self._B[i]
+        i_in_unit_cell, num_unit_cells = self._to_valid_site_index(i, return_num_unit_cells=True)
+        B = self._B[i_in_unit_cell]
         if copy:
             B = B.copy()
+        B = self.shift_Array_unit_cells(B, num_unit_cells=num_unit_cells, inplace=copy)
+        new_form = self._to_valid_form(form)
+        old_form = self.form[i_in_unit_cell]
         if new_form is not None and old_form != new_form:
             if old_form is None:
                 raise ValueError("can't convert form of non-canonical state!")
-            if new_form[0] is not None and new_form[0] - old_form[0] != 0.:
+            if new_form[0] is not None and new_form[0] - old_form[0] != 0.0:
                 B = self._scale_axis_B(B, self.get_SL(i), new_form[0] - old_form[0], 'vL', cutoff)
-            if new_form[1] is not None and new_form[1] - old_form[1] != 0.:
+            if new_form[1] is not None and new_form[1] - old_form[1] != 0.0:
                 B = self._scale_axis_B(B, self.get_SR(i), new_form[1] - old_form[1], 'vR', cutoff)
         if label_p is not None:
             B = self._replace_p_label(B, label_p)
@@ -2441,6 +2892,8 @@ class MPS(BaseMPSExpectationValue):
 
     def set_B(self, i, B, form='B'):
         """Set `B` at site `i`.
+
+        Takes care of shifting as described in :ref:`shift_symmetry`.
 
         Parameters
         ----------
@@ -2452,11 +2905,13 @@ class MPS(BaseMPSExpectationValue):
         form : ``'B' | 'A' | 'C' | 'G' | 'Th' | None`` | tuple(float, float)
             The (canonical) form of the `B` to set.
             ``None`` stands for non-canonical form.
+
         """
-        i = self._to_valid_index(i)
-        self.form[i] = self._to_valid_form(form)
+        i_in_unit_cell, num_unit_cells = self._to_valid_site_index(i, return_num_unit_cells=True)
+        B = self.shift_Array_unit_cells(B, -num_unit_cells)
+        self.form[i_in_unit_cell] = self._to_valid_form(form)
         self.dtype = np.promote_types(self.dtype, B.dtype)
-        self._B[i] = B.itranspose(self._B_labels)
+        self._B[i_in_unit_cell] = B.itranspose(self._B_labels)
 
     def set_svd_theta(self, i, theta, trunc_par=None, update_norm=False):
         """SVD a two-site wave function `theta` and save it in `self`.
@@ -2473,11 +2928,10 @@ class MPS(BaseMPSExpectationValue):
             If ``None``, no truncation is done.
         update_norm : bool
             If ``True``, multiply the norm of `theta` into :attr:`norm`.
+
         """
-        i0 = self._to_valid_index(i)
-        i1 = self._to_valid_index(i0 + 1)
         self.dtype = np.promote_types(self.dtype, theta.dtype)
-        qtotal_LR = [self._B[i0].qtotal, None]
+        qtotal_LR = [self.get_B(i).qtotal, None]
         if trunc_par is None:
             U, S, VH = npc.svd(theta, qtotal_LR=qtotal_LR, inner_labels=['vR', 'vL'])
             renorm = np.linalg.norm(S)
@@ -2491,38 +2945,54 @@ class MPS(BaseMPSExpectationValue):
                 self.norm *= renorm
         U = U.split_legs().ireplace_label('p0', 'p')
         VH = VH.split_legs().ireplace_label('p1', 'p')
-        self._B[i0] = U.itranspose(self._B_labels)
-        self.form[i0] = self._valid_forms['A']
-        self._B[i1] = VH.itranspose(self._B_labels)
-        self.form[i1] = self._valid_forms['B']
+        self.set_B(i, U.itranspose(self._B_labels), form='A')
+        self.set_B(i + 1, VH.itranspose(self._B_labels), form='B')
         self.set_SR(i, S)
         return err
 
     def get_SL(self, i):
-        """Return singular values on the left of site `i`"""
-        i = self._to_valid_index(i)
-        return self._S[i]
+        """Return singular values on the left of site `i`.
+
+        Takes care of shifting as described in :ref:`shift_symmetry`.
+        """
+        i_in_unit_cell, num_unit_cells = self._to_valid_bond_index(i, is_left=True, return_num_unit_cells=True)
+        S = self._S[i_in_unit_cell]
+        if isinstance(S, npc.Array):
+            S = self.shift_Array_unit_cells(S, num_unit_cells, inplace=False)
+        return S
 
     def get_SR(self, i):
-        """Return singular values on the right of site `i`"""
-        i = self._to_valid_index(i)
-        return self._S[i + 1]
+        """Return singular values on the right of site `i`.
+
+        Takes care of shifting as described in :ref:`shift_symmetry`.
+        """
+        i_in_unit_cell, num_unit_cells = self._to_valid_bond_index(i, is_left=False, return_num_unit_cells=True)
+        S = self._S[i_in_unit_cell]
+        if isinstance(S, npc.Array):
+            S = self.shift_Array_unit_cells(S, num_unit_cells, inplace=False)
+        return S
 
     def set_SL(self, i, S):
-        """Set singular values on the left of site `i`"""
-        i = self._to_valid_index(i)
-        self._S[i] = S
-        if not self.finite and i == 0:
-            self._S[self.L] = S
+        """Set singular values on the left of site `i`. No copy is made!
+
+        Takes care of shifting as described in :ref:`shift_symmetry`.
+        """
+        i_in_unit_cell, num_unit_cells = self._to_valid_bond_index(i, is_left=True, return_num_unit_cells=True)
+        if isinstance(S, npc.Array):
+            S = self.shift_Array_unit_cells(S, -num_unit_cells)
+        self._S[i_in_unit_cell] = S
 
     def set_SR(self, i, S):
-        """Set singular values on the right of site `i`"""
-        i = self._to_valid_index(i)
-        self._S[i + 1] = S
-        if not self.finite and i == self.L - 1:
-            self._S[0] = S
+        """Set singular values on the right of site `i`. No copy is made!
 
-    def get_theta(self, i, n=2, cutoff=1.e-16, formL=1., formR=1.):
+        Takes care of shifting as described in :ref:`shift_symmetry`.
+        """
+        i_in_unit_cell, num_unit_cells = self._to_valid_bond_index(i, is_left=False, return_num_unit_cells=True)
+        if isinstance(S, npc.Array):
+            S = self.shift_Array_unit_cells(S, -num_unit_cells)
+        self._S[i_in_unit_cell] = S
+
+    def get_theta(self, i, n=2, cutoff=1.0e-16, formL=1.0, formR=1.0):
         """Calculates the `n`-site wavefunction on ``sites[i:i+n]``.
 
         Parameters
@@ -2546,23 +3016,27 @@ class MPS(BaseMPSExpectationValue):
             The n-site wave function with leg labels ``vL, p0, p1, .... p{n-1}, vR``.
             In Vidal's notation (with s=lambda, G=Gamma):
             ``theta = s**form_L G_i s G_{i+1} s ... G_{i+n-1} s**form_R``.
+
+        See Also
+        --------
+        :func:`~tenpy.algorithms.exact_diag.get_full_wavefunction`
+            Get the full wavefunction for a finite MPS, e.g. for debugging.
+
         """
-        i = self._to_valid_index(i)
         for j in range(i, i + n):
-            if self.form[j % self.L] is None:
+            if self.form[self._to_valid_site_index(j)] is None:
                 raise ValueError("can't calculate theta for non-canonical form")
         if n == 1:
-            return self.get_B(i, (1., 1.), True, cutoff, '0')
+            return self.get_B(i, (1.0, 1.0), True, cutoff, '0')
         elif n < 1:
-            raise ValueError("n needs to be larger than 0")
+            raise ValueError('n needs to be larger than 0')
         # n >= 2: contract some B's
         theta = self.get_B(i, (formL, None), False, cutoff, '0')  # right form as stored
-        _, old_fR = self.form[i]
+        _, old_fR = self.form[self._to_valid_site_index(i)]
         for k in range(1, n):  # non-empty range
-            j = self._to_valid_index(i + k)
             new_fR = None if k + 1 < n else formR  # right form as stored, except for last B
-            B = self.get_B(j, (1. - old_fR, new_fR), False, cutoff, str(k))
-            _, old_fR = self.form[j]
+            B = self.get_B(i + k, (1.0 - old_fR, new_fR), False, cutoff, str(k))
+            _, old_fR = self.form[self._to_valid_site_index(i + k)]
             theta = npc.tensordot(theta, B, axes=['vR', 'vL'])
         return theta
 
@@ -2578,6 +3052,7 @@ class MPS(BaseMPSExpectationValue):
         Raises
         ------
         ValueError : if trying to convert from a ``None`` form. Use :meth:`canonical_form` instead!
+
         """
         new_forms = self._parse_form(new_form)
         for i, new_form in enumerate(new_forms):
@@ -2591,17 +3066,21 @@ class MPS(BaseMPSExpectationValue):
         ----------
         factor : int
             The new number of sites in the unit cell will be increased from `L` to ``factor*L``.
+
         """
         if int(factor) != factor:
-            raise ValueError("`factor` should be integer!")
+            raise ValueError('`factor` should be integer!')
         if factor <= 1:
             raise ValueError("can't shrink!")
         if self.bc == 'segment':
             raise ValueError("can't enlarge segment MPS")
-        self.sites = factor * self.sites
-        self._B = factor * self._B
-        self._S = factor * self._S[:-1] + [self._S[-1]]
+        self._B = [self.get_B(j, form=None) for j in range(0, factor * self.L)]
+        self._S = [self.get_SL(j) for j in range(0, factor * self.L)]
+        if self.finite:
+            self._S.append([self.get_SR(factor * self.L - 1)])
+        self.sites = [self.get_site(j) for j in range(0, factor * self.L)]
         self.form = factor * self.form
+        self.unit_cell_width *= factor
         self.test_sanity()
 
     def roll_mps_unit_cell(self, shift=1):
@@ -2615,15 +3094,18 @@ class MPS(BaseMPSExpectationValue):
         ----------
         shift : int
             By how many sites to move the tensors to the right.
+
         """
         if self.finite:
-            raise ValueError("makes only sense for infinite boundary conditions")
-        inds = np.roll(np.arange(self.L), shift)
-        self.sites = [self.sites[i] for i in inds]
-        self.form = [self.form[i] for i in inds]
-        self._B = [self._B[i] for i in inds]
-        self._S = [self._S[i] for i in inds]
-        self._S.append(self._S[0])
+            raise ValueError('makes only sense for infinite boundary conditions')
+        inds = np.arange(self.L) - shift
+        valid_inds = inds % self.L
+        self.sites = [self.sites[i] for i in valid_inds]
+        self.form = [self.form[i] for i in valid_inds]
+        self._B = [self.get_B(i) for i in inds]
+        self._S = [self.get_SL(i) for i in inds]
+        if self.finite:
+            self._S.append([self.get_SR(inds[-1])])
 
     def overlap_translate_finite(self, psi, shift=1):
         r"""Contract ``<self|T^N|psi>`` for translation `T` with finite, periodic boundaries.
@@ -2654,11 +3136,12 @@ class MPS(BaseMPSExpectationValue):
         self_Tn_psi : float
             Contraction of ``<self|T^N|psi>``.
 
-        See also
+        See Also
         --------
         permute_sites : Allows more general permutations of the sites.
         overlap : Directly the overlap between two MPS without translation.
         roll_mps_unit_cell : Effectively applies ``T^shift`` on infinite MPS.
+
         """
         assert self.bc == psi.bc == 'finite'
         L = self.L
@@ -2666,7 +3149,7 @@ class MPS(BaseMPSExpectationValue):
         if shift < 0:
             shift = shift + self.L
         assert 0 < shift < self.L
-        forms = ['Th'] + ['B'] * (L-1)
+        forms = ['Th'] + ['B'] * (L - 1)
         inds = np.roll(np.arange(self.L), shift)  # consistent with `roll_mps_unit_cell`!
         B_bra = self.get_B(0, forms[0])
         B_ket = psi.get_B(inds[0], forms[inds[0]])
@@ -2681,8 +3164,7 @@ class MPS(BaseMPSExpectationValue):
                 C.ireplace_label('vR', 'openR')
                 C = npc.tensordot(C, B_ket, axes=['vL*', 'vL'])  # contract trivial left legs
             B_bra = self.get_B(i, forms[i])
-            C = npc.tensordot(C, B_bra.conj(), axes=[['vR*'] + self._get_p_label(''),
-                                                     ['vL*'] + self._get_p_label('*')])
+            C = npc.tensordot(C, B_bra.conj(), axes=[['vR*'] + self._get_p_label(''), ['vL*'] + self._get_p_label('*')])
         return npc.trace(npc.trace(C, 'vR', 'vL'), 'openR', 'vR*')
 
     def enlarge_chi(self, extra_legs, random_fct=np.random.normal):
@@ -2715,10 +3197,11 @@ class MPS(BaseMPSExpectationValue):
         permutations: list of 1D array | None
             Permutation performed on each virtual leg, such that
             ``new_S = concatenate(old_S, zeros)[perm]``.
+
         """
         self.convert_form('B')
         if len(extra_legs) != self.L + (1 if self.finite else 0):
-            raise ValueError("wrong len of extra_legs.")
+            raise ValueError('wrong len of extra_legs.')
         perms_L = [None] * (self.L + 1)
         perms_R = [None] * (self.L + 1)
         extra_legs = list(extra_legs)
@@ -2757,28 +3240,20 @@ class MPS(BaseMPSExpectationValue):
             if extra_leg_L is not None:
                 p_vR = B2.legs[1]
                 # get a new extra block of random entries for the vL leg
-                extra_B = npc.Array.from_func(random_fct, [extra_leg_L, p_vR],
-                                              dtype=B2.dtype,
-                                              qtotal=B2.qtotal,
-                                              shape_kw="size")
+                extra_B = npc.Array.from_func(
+                    random_fct, [extra_leg_L, p_vR], dtype=B2.dtype, qtotal=B2.qtotal, shape_kw='size'
+                )
                 # orthogonalize rows of extra_B against rows of B2
-                extra_B = extra_B - npc.tensordot(npc.tensordot(extra_B, B2.conj(), [1, 1]),
-                                                B2,
-                                                [1, 0])
+                extra_B = extra_B - npc.tensordot(npc.tensordot(extra_B, B2.conj(), [1, 1]), B2, [1, 0])
                 if npc.norm(extra_B) < 1e-12:
-                    logger.warning(
-                        f'Failed to orthogonalize extra_B against B2. norm(extra_B) = {npc.norm(extra_B)}.'
-                    )
+                    logger.warning(f'Failed to orthogonalize extra_B against B2. norm(extra_B) = {npc.norm(extra_B)}.')
                 # orthogonalize rows within extra_B by QR
-                extra_B, extra_R = npc.qr(extra_B.itranspose([1, 0]),
-                                          inner_qconj=-1,
-                                          qtotal_Q=extra_B.qtotal)
+                extra_B, extra_R = npc.qr(extra_B.itranspose([1, 0]), inner_qconj=-1, qtotal_Q=extra_B.qtotal)
                 try:
                     extra_B.legs[1].test_equal(extra_R.legs[1])
                 except ValueError as e:
                     print(extra_R)
-                    raise ValueError("QR for Gram-Schmidt messed up charges. "
-                                     "Incompatible charges?") from e
+                    raise ValueError('QR for Gram-Schmidt messed up charges. Incompatible charges?') from e
                 extra_B.itranspose([1, 0])
                 # append extra block in vL leg of B2 and sort by charges
                 new_B = npc.concatenate([B2, extra_B], axis='vL')
@@ -2819,12 +3294,13 @@ class MPS(BaseMPSExpectationValue):
         (L-1)/2 (odd L) as a fixpoint.
         For infinite MPS, the bond between MPS unit cells is another fix point.
         """
+        if not self.chinfo.trivial_shift:
+            # Similar to swap_sites, I (Jakob) dont think this is even possible.
+            raise RuntimeError('Can not invert if conserved charge has non-trivial shift.')
+
         self.sites = self.sites[::-1]
         self.form = [(f if f is None else (f[1], f[0])) for f in self.form[::-1]]
-        self._B = [
-            B.replace_labels(['vL', 'vR'], ['vR', 'vL']).transpose(self._B_labels)
-            for B in self._B[::-1]
-        ]
+        self._B = [B.replace_labels(['vL', 'vR'], ['vR', 'vL']).transpose(self._B_labels) for B in self._B[::-1]]
         self._S = self._S[::-1]
         self.test_sanity()
         return self
@@ -2843,9 +3319,10 @@ class MPS(BaseMPSExpectationValue):
         grouped_sites : None | list of :class:`~tenpy.networks.site.GroupedSite`
             The sites grouped together.
 
-        See also
+        See Also
         --------
         group_split : Reverts the grouping.
+
         """
         self.convert_form('B')
         if grouped_sites is None:
@@ -2867,12 +3344,14 @@ class MPS(BaseMPSExpectationValue):
             Bs.append(new_B.iset_leg_labels(self._B_labels))  # ['vL', 'p', 'vR']
             Ss.append(self._S[i])
             i += n_sites
-        Ss.append(self._S[-1])  # right-most singular values: need L+1 entries
+        if self.finite:
+            Ss.append(self._S[-1])  # right-most singular values: need L+1 entries
         self._B = Bs
         self._S = Ss
         self.sites = grouped_sites
         self.form = [B_form] * len(grouped_sites)
         self.grouped = self.grouped * n
+        # note: grouping leaves unit_cell_width unchanged
 
     def group_split(self, trunc_par=None):
         """Modify `self` inplace to split previously grouped sites.
@@ -2888,9 +3367,10 @@ class MPS(BaseMPSExpectationValue):
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error introduced by the truncation for the splitting.
 
-        See also
+        See Also
         --------
         group_sites : Should have been used before to combine sites.
+
         """
         if trunc_par is None:
             trunc_par = {}
@@ -2940,13 +3420,15 @@ class MPS(BaseMPSExpectationValue):
             Ss_new.append(self.get_SL(i))
             Bs.extend(Bs_new[::-1])
             Ss.extend(Ss_new[::-1])
-        Ss.append(self._S[-1])
+        if self.finite:
+            Ss.append(self._S[-1])
         self.sites = sites
         self._B = Bs
         self._S = Ss
         self.grouped = max(self.grouped // n0, 1)
         self.form = [self._valid_forms['B']] * len(sites)
         self.test_sanity()
+        # note: grouping / un-grouping leaves unit_cell_width unchanged
         return trunc_err
 
     def get_grouped_mps(self, blocklen):
@@ -2961,6 +3443,7 @@ class MPS(BaseMPSExpectationValue):
         -------
         grouped_MPS :
             New MPS object with bunched sites.
+
         """
         groupedMPS = self.copy()
         groupedMPS.group_sites(n=blocklen)
@@ -2978,14 +3461,17 @@ class MPS(BaseMPSExpectationValue):
         -------
         psi_segment : :class:`MPS`
             Copy of self with 'segment' boundary conditions.
+
         """
-        L = self.L
-        sites = [self.sites[i % L] for i in range(first, last + 1)]
+        unit_cell_width, remainder = divmod(last - first, self.N_sites_per_hor_spacing)
+        if remainder != 0:
+            raise ValueError(f'Number of sites must be an integer multiple of {self.N_sites_per_hor_spacing}.')
+        sites = [self.get_site(i) for i in range(first, last + 1)]
         B = [self.get_B(i) for i in range(first, last + 1)]
         S = [self.get_SL(i) for i in range(first, last + 1)]
         S.append(self.get_SR(last))
         # note: __init__ makes deep copies of B, S
-        cp = self.__class__(sites, B, S, 'segment', 'B', self.norm)
+        cp = self.__class__(sites, B, S, 'segment', 'B', self.norm, unit_cell_width=unit_cell_width)
         cp.grouped = self.grouped
         if self.bc == 'segment':
             U_L, V_R = self.segment_boundaries
@@ -3002,14 +3488,9 @@ class MPS(BaseMPSExpectationValue):
                 cp.segment_boundaries = (U_L, V_R)
         return cp
 
-    def extract_enlarged_segment(self,
-                                 psi_left,
-                                 psi_right,
-                                 first,
-                                 last,
-                                 add_unitcells=None,
-                                 new_first_last=None,
-                                 cutoff=1.e-14):
+    def extract_enlarged_segment(
+        self, psi_left, psi_right, first, last, add_unitcells=None, new_first_last=None, cutoff=1.0e-14
+    ):
         """Extract an enlarged segment from an initially smaller segment MPS.
 
         With :meth:`extract_segment`, we obtain a segment MPS on a small subsystem, or "segment"
@@ -3052,9 +3533,10 @@ class MPS(BaseMPSExpectationValue):
             New first and last site of the enlarge segment used for `psi_large_seg`.
             Like `first`, `last`, this is indexed with respect to the "original" MPSs
             `psi_left` and `psi_right`.
+
         """
         if (add_unitcells is not None) == (new_first_last is not None):
-            raise ValueError("Specify either `add_unitcells` or `new_first_last`!")
+            raise ValueError('Specify either `add_unitcells` or `new_first_last`!')
         if add_unitcells is not None:
             # get new_first and new_last
             add_unitcells = to_iterable(add_unitcells)
@@ -3063,8 +3545,8 @@ class MPS(BaseMPSExpectationValue):
             elif len(add_unitcells) == 2:
                 add_L, add_R = add_unitcells
             else:
-                raise ValueError(f"need 1 or 2 entries in add_unitcells={add_unitcells!r}")
-            new_first = int(- add_L * psi_left.L)
+                raise ValueError(f'need 1 or 2 entries in add_unitcells={add_unitcells!r}')
+            new_first = int(-add_L * psi_left.L)
             new_last = max(psi_right.L - 1, last)
             if not psi_right.finite:
                 # extend to full unit cell to the right if not yet full
@@ -3073,17 +3555,18 @@ class MPS(BaseMPSExpectationValue):
         else:
             new_first, new_last = new_first_last
         if not new_first <= first < last <= new_last:
-            raise ValueError("expected new_first <= first < last <= new_last, but got "
-                            f"{new_first} {first} {last} {new_last}")
+            raise ValueError(
+                f'expected new_first <= first < last <= new_last, but got {new_first} {first} {last} {new_last}'
+            )
         if new_first < 0 and psi_left.finite or psi_right.finite and new_last >= psi_right.L:
-            raise ValueError("Trying to extend segment outside of finite state")
+            raise ValueError('Trying to extend segment outside of finite state')
 
         if new_first == first and new_last == last:
             # nothing to do.  finite bc is okay in this case
             return self, new_first, new_last
 
         if self.bc != 'segment':
-            raise ValueError("only works for segment MPS!")
+            raise ValueError('only works for segment MPS!')
 
         # first, last, new_first, new_last are "original" i-indices
         # i = index in original (non-segment) state
@@ -3092,10 +3575,10 @@ class MPS(BaseMPSExpectationValue):
         # B[i - new_first] = B[k] where 0 <= k < new_L for new_first <= i <= new_last
         new_L = new_last - new_first + 1
 
-        sites = [None] * new_L # indexed by site k
+        sites = [None] * new_L  # indexed by site k
         Bs = [None] * new_L
         forms = ['B'] * new_L
-        Ss = [None] * (new_L + 1) # indexed by bond left of site k
+        Ss = [None] * (new_L + 1)  # indexed by bond left of site k
 
         # get A and left S from psi_left
         for i in range(new_first, first):
@@ -3117,7 +3600,7 @@ class MPS(BaseMPSExpectationValue):
         for i in range(last + 1, new_last + 1):
             k = i - new_first
             sites[k] = psi_right.sites[i % psi_right.L]
-            Bs[k] = psi_right.get_B(i, 'B') # needs to be in "B" form!
+            Bs[k] = psi_right.get_B(i, 'B')  # needs to be in "B" form!
             Ss[k + 1] = psi_right.get_SR(i)
 
         # handle segment_boundaries
@@ -3131,11 +3614,10 @@ class MPS(BaseMPSExpectationValue):
 
         # initialize MPS
         bc = 'segment'
-        if (psi_left.bc == 'finite' and new_first == 0 and
-            psi_right.bc == 'finite' and new_last == psi_right.L - 1):
+        if psi_left.bc == 'finite' and new_first == 0 and psi_right.bc == 'finite' and new_last == psi_right.L - 1:
             bc = 'finite'
 
-        psi_new = MPS(sites, Bs, Ss, bc=bc, form=forms)
+        psi_new = MPS(sites, Bs, Ss, bc=bc, form=forms, unit_cell_width=self.unit_cell_width)
         psi_new.canonical_form_finite(cutoff=cutoff)  # important: call canonical form
         # this propagates the S from the orthogonality center in the segment to the outer parts
 
@@ -3167,6 +3649,7 @@ class MPS(BaseMPSExpectationValue):
         -------
         qtotal : charges
             The sum of the `qtotal` of the individual `B` tensors.
+
         """
         tensors = self._B
         U, V = self.segment_boundaries
@@ -3176,7 +3659,7 @@ class MPS(BaseMPSExpectationValue):
         qtotal = np.sum([B.qtotal for B in tensors], axis=0)
         if only_physical_legs:
             if self.bc != 'finite':
-                raise ValueError("`only_physical_legs` not supported for bc=" + repr(self.bc))
+                raise ValueError('`only_physical_legs` not supported for bc=' + repr(self.bc))
             qtotal -= self._B[0].get_leg('vL').get_charge(0)
             qtotal -= self._B[-1].get_leg('vR').get_charge(0)  # takes qconj into account
         return self.chinfo.make_valid(qtotal)
@@ -3200,11 +3683,12 @@ class MPS(BaseMPSExpectationValue):
             For infinite MPS, we need `vL_leg` to be the conjugate leg of `vR_leg`.
             For segment MPS, these legs are the *outer-most* legs, possibly including the
             :attr:`segment_boundaries`.
+
         """
         if self.chinfo.qnumber == 0:
             return
         if self.segment_boundaries[0] is not None:
-            raise NotImplementedError("could be implemented.... do you need this?")
+            raise NotImplementedError('could be implemented.... do you need this?')
         if vL_leg is not None:
             vL_chdiff = vL_leg.get_charge(0) - self._B[0].get_leg('vL').get_charge(0)
         if vR_leg is not None:
@@ -3217,7 +3701,7 @@ class MPS(BaseMPSExpectationValue):
             qtotal_factor = np.array([0] * (self.L - 1) + [1], npc.QTYPE)
             qtotal = qtotal_factor[:, np.newaxis] * qtotal[np.newaxis, :]
         if qtotal.shape != (self.L, self.chinfo.qnumber):
-            raise ValueError("wrong shape of `qtotal`")
+            raise ValueError('wrong shape of `qtotal`')
         if vL_leg is not None:
             B = self._B[0]
             if np.any(vL_chdiff != 0):
@@ -3286,6 +3770,7 @@ class MPS(BaseMPSExpectationValue):
             On the contrary, for **finite** systems with ``bonds=None``, take the central value
             of the returned array ``entropies[len(entropies)//2)] == entropies[(L-1)//2]``
             (and **not** just ``entropies[L//2]``) to extract the half-chain entanglement entropy.
+
         """
         if bonds is None:
             nt = self.nontrivial_bonds
@@ -3295,7 +3780,7 @@ class MPS(BaseMPSExpectationValue):
         res = []
         for ib in bonds:
             if ib == self.L:
-                s = self.get_SR(ib-1)
+                s = self.get_SR(ib - 1)
             else:
                 s = self.get_SL(ib)
             if len(s.shape) == 1:
@@ -3306,7 +3791,7 @@ class MPS(BaseMPSExpectationValue):
                     s = npc.eigvalsh(npc.tensordot(s.conj(), s, axes=[0, 0]))
                     res.append(entropy(s, n))
                 else:
-                    raise ValueError("entropy with non-diagonal schmidt values")
+                    raise ValueError('entropy with non-diagonal schmidt values')
         return np.array(res)
 
     def entanglement_entropy_segment(self, segment=[0], first_site=None, n=1):
@@ -3337,6 +3822,7 @@ class MPS(BaseMPSExpectationValue):
         -------
         entropies : 1D ndarray
             ``entropies[i]`` contains the entropy for the the region ``A_i`` defined above.
+
         """
         segment = np.sort(segment)
         if first_site is None:
@@ -3344,10 +3830,7 @@ class MPS(BaseMPSExpectationValue):
                 first_site = range(0, self.L - segment[-1])
             else:
                 first_site = range(self.L)
-        comb_legs = [
-            self._get_p_labels(len(segment), False),
-            self._get_p_labels(len(segment), True)
-        ]
+        comb_legs = [self._get_p_labels(len(segment), False), self._get_p_labels(len(segment), True)]
         res = []
         for i0 in first_site:
             rho = self.get_rho_segment(segment + i0)
@@ -3383,22 +3866,20 @@ class MPS(BaseMPSExpectationValue):
         entropy : float
             The entropy for the the region defined by the `segment`
             (or equivalently it's complement).
+
         """
         segment = np.sort(segment)
         if len(segment) < 8:
-            warnings.warn("inefficient: use `entanglement_entropy_segment` instead!", stacklevel=2)
+            warnings.warn('inefficient: use `entanglement_entropy_segment` instead!', stacklevel=2)
         assert np.all(segment[1:] != segment[:-1])  # duplicates in segment
-        N_ol = 0  # number of open legs within the segment
         i0 = segment[0]
         rho = self.get_theta(i0, 1)
-        rho = npc.tensordot(rho,
-                            rho.conj(),
-                            axes=(self._get_p_labels(1), self._get_p_labels(1, True)))
+        rho = npc.tensordot(rho, rho.conj(), axes=(self._get_p_labels(1), self._get_p_labels(1, True)))
         not_in_segment = 0
         ax_p = self._get_p_label('')
         ax_pstar = self._get_p_label('*')
         for i in range(i0 + 1, segment[-1] + 1):
-            is_in_segment = (segment[i - i0 - not_in_segment] == i)
+            is_in_segment = segment[i - i0 - not_in_segment] == i
             if is_in_segment:
                 B = self.get_B(i, form='B')
                 rho = npc.tensordot(rho, B, axes=['vR', 'vL'])
@@ -3408,14 +3889,16 @@ class MPS(BaseMPSExpectationValue):
                 rho = npc.tensordot(rho, B, axes=['vR', 'vL'])
                 rho = npc.tensordot(rho, B.conj(), axes=['vR*', 'vL*'])
                 not_in_segment += 1
-        comb_legs = (['vL', 'vR'] + self._get_p_labels(not_in_segment),
-                     ['vL*', 'vR*'] + self._get_p_labels(not_in_segment, star=True))
+        comb_legs = (
+            ['vL', 'vR'] + self._get_p_labels(not_in_segment),
+            ['vL*', 'vR*'] + self._get_p_labels(not_in_segment, star=True),
+        )
         rho = rho.combine_legs(comb_legs, qconj=[+1, -1])
         p = npc.eigvalsh(rho)
         return entropy(p, n)
 
     def entanglement_spectrum(self, by_charge=False):
-        r"""return entanglement energy spectrum.
+        r"""Return entanglement energy spectrum.
 
         Parameters
         ----------
@@ -3431,21 +3914,21 @@ class MPS(BaseMPSExpectationValue):
             value and :math:`\xi_i` labels the entanglement 'energy' in the returned spectrum.
             If `by_charge` is True, return a a list of tuples ``(charge, sub_spectrum)``
             for each possible charge on that bond.
+
         """
         if by_charge:
             res = []
             for i in range(self.L + 1)[self.nontrivial_bonds]:
-                ss = -2. * np.log(self._S[i])
+                ss = -2.0 * np.log(self._S[i])
                 if i < self.L:
                     leg = self._B[i].get_leg('vL')
                 else:  # i == L: segment b.c.
                     leg = self._B[i - 1].get_leg('vR').conj()
-                spectrum = [(leg.get_charge(qi), np.sort(ss[leg.get_slice(qi)]))
-                            for qi in range(leg.block_number)]
+                spectrum = [(leg.get_charge(qi), np.sort(ss[leg.get_slice(qi)])) for qi in range(leg.block_number)]
                 res.append(spectrum)
             return res
         else:
-            return [np.sort(-2. * np.log(ss)) for ss in self._S[self.nontrivial_bonds]]
+            return [np.sort(-2.0 * np.log(ss)) for ss in self._S[self.nontrivial_bonds]]
 
     def get_rho_segment(self, segment):
         """Return reduced density matrix for a segment.
@@ -3463,12 +3946,12 @@ class MPS(BaseMPSExpectationValue):
         rho : :class:`~tenpy.linalg.np_conserved.Array`
             Reduced density matrix of the segment sites.
             Labels ``'p0', 'p1', ..., 'pk', 'p0*', 'p1*', ..., 'pk*'`` with ``k=len(segment)``.
+
         """
         if len(segment) > 12:
-            warnings.warn("{0:d} sites in the segment, that's much!".format(len(segment)),
-                          stacklevel=2)
+            warnings.warn(f"{len(segment):d} sites in the segment, that's much!", stacklevel=2)
         if len(segment) > 20:
-            raise ValueError("too large segment; this is exponentially expensive!")
+            raise ValueError('too large segment; this is exponentially expensive!')
         segment = np.sort(segment)
         if np.all(segment[1:] == segment[:-1] + 1):  # consecutive
             theta = self.get_theta(segment[0], segment[-1] - segment[0] + 1)
@@ -3513,24 +3996,24 @@ class MPS(BaseMPSExpectationValue):
             Rows are the different charge fluctuations at this bond
         probabilities : 1D array
             For each row of `charge_values` the probability for these values of charge fluctuations.
+
         """
         if self.bc == 'segment' and bond == self.L:
-            S = self.get_SR(self.L - 1)**2
+            S = self.get_SR(self.L - 1) ** 2
             leg = self.get_B(self.L - 1, form=None).get_leg('vR').conj()
         else:  # usually the case
-            S = self.get_SL(bond)**2
+            S = self.get_SL(bond) ** 2
             leg = self.get_B(bond, form=None).get_leg('vL')
         assert leg.qconj == +1
         if not leg.is_blocked():
-            raise ValueError("leg not blocked: can have duplicate entries in charge values")
+            raise ValueError('leg not blocked: can have duplicate entries in charge values')
         ps = []
         for qi in range(leg.block_number):
             sl = leg.get_slice(qi)
             ps.append(np.sum(S[sl]))
         ps = np.array(ps)
-        if abs(np.sum(ps) - 1.) > 1.e-10:
-            warnings.warn("Probability_per_charge: Sum of probabilities not 1. Canonical form?",
-                          stacklevel=2)
+        if abs(np.sum(ps) - 1.0) > 1.0e-10:
+            warnings.warn('Probability_per_charge: Sum of probabilities not 1. Canonical form?', stacklevel=2)
         return leg.charges.copy(), ps
 
     def average_charge(self, bond=0):
@@ -3551,6 +4034,7 @@ class MPS(BaseMPSExpectationValue):
         average_charge : 1D array
             For each type of charge in :attr:`chinfo`
             the average value when summing the charge values over sites left of the given bond.
+
         """
         charges, ps = self.probability_per_charge(bond)
         return np.sum(ps[:, np.newaxis] * charges, axis=0)
@@ -3573,10 +4057,11 @@ class MPS(BaseMPSExpectationValue):
         average_charge : 1D array
             For each type of charge in :attr:`chinfo`
             the variance of of the charge values left of the given bond.
+
         """
         charges_mean = self.average_charge(bond)
         charges, ps = self.probability_per_charge(bond)
-        return np.sum(ps[:, np.newaxis] * (charges - charges_mean[np.newaxis, :])**2, axis=0)
+        return np.sum(ps[:, np.newaxis] * (charges - charges_mean[np.newaxis, :]) ** 2, axis=0)
 
     @staticmethod
     def get_charge_tree_for_given_charge_sector(sites: list, charge_sector: tuple):
@@ -3598,12 +4083,13 @@ class MPS(BaseMPSExpectationValue):
             A tree of possible charges (at the sites) for the desired ``charge_sector``.
             I.e. consider the state :math:`\ket{++}`. The desired charge tree for the sector ``(0,)``
             is ``[{(0,)}, {(1,), (-1,)}, {(0,)}]``.
+
         """
         L = len(sites)
-        assert L > 0, "sites must contain a :class:`Site` with conserved charges"
+        assert L > 0, 'sites must contain a :class:`Site` with conserved charges'
         # check that all have same chiinfo
         chinfo = sites[0].leg.chinfo
-        assert all(s.leg.chinfo == chinfo for s in sites), "Charge Info for all sites must be identical"
+        assert all(s.leg.chinfo == chinfo for s in sites), 'Charge Info for all sites must be identical'
 
         charge_sector_left = chinfo.make_valid(None)  # zero charges
         charge_sector_right = chinfo.make_valid(charge_sector)
@@ -3624,8 +4110,9 @@ class MPS(BaseMPSExpectationValue):
             Q_from_right[i] = Q_L
 
         if tuple(charge_sector_left) not in Q_from_right[0]:
-            raise ValueError("can't get desired charge sector {charge_sector!r} "
-                             "for the given charges on physical sites!")
+            raise ValueError(
+                "can't get desired charge sector {charge_sector!r} for the given charges on physical sites!"
+            )
 
         # create a "charge-tree" from the left (starting with no charges), similar logic to above
         Q_from_left = [set([tuple(charge_sector_left)])] + [None] * L
@@ -3666,6 +4153,7 @@ class MPS(BaseMPSExpectationValue):
         mutinf : 1D array
             ``mutinf[k]`` is the mutual information :math:`I(i:j)` between the
             sites ``i, j = coords[k]``.
+
         """
         #  Basically the code of get_rho_segment and entanglement_entropy,
         #  but optimized to run in O(L*max_range)
@@ -3676,7 +4164,8 @@ class MPS(BaseMPSExpectationValue):
         # = (['p0', 'p1'], ['p0*', 'p1*'])
         contr_legs = (
             ['vR*'] + self._get_p_label('1'),  # ['vL', 'p1']
-            ['vL*'] + self._get_p_label('1*'))  # ['vL*', 'p1*']
+            ['vL*'] + self._get_p_label('1*'),
+        )  # ['vL*', 'p1*']
         mutinf = []
         coord = []
         for i in range(self.L):
@@ -3697,8 +4186,7 @@ class MPS(BaseMPSExpectationValue):
                     rho = npc.tensordot(rho, B.conj(), axes=contr_legs)
         return np.array(coord), np.array(mutinf)
 
-    def overlap(self, other, charge_sector=None, ignore_form=False, understood_infinite=False,
-                **kwargs):
+    def overlap(self, other, charge_sector=None, ignore_form=False, understood_infinite=False, **kwargs):
         """Compute overlap ``<self|other>``.
 
         Parameters
@@ -3728,6 +4216,7 @@ class MPS(BaseMPSExpectationValue):
             (i.e., taking into account the :attr:`norm` of both MPS).
             For an infinite MPS, ``<self|other>`` is the overlap per unit cell, i.e.,
             the largest eigenvalue of the TransferMatrix.
+
         """
         if self.bc != other.bc:
             raise ValueError("can't take overlap between MPS with different bc")
@@ -3735,19 +4224,21 @@ class MPS(BaseMPSExpectationValue):
             if ignore_form:
                 # Use TransferMatrix with option to ignore the form
                 TM = TransferMatrix(self, other, charge_sector=charge_sector, form=None)
-                res = TM.matvec(TM.initial_guess(1.))  # apply transfer matrix to identity
+                res = TM.matvec(TM.initial_guess(1.0))  # apply transfer matrix to identity
                 return npc.trace(res, 0, 1) * self.norm * other.norm
             else:
                 env = MPSEnvironment(self, other)
                 return env.full_contraction(0)
         else:  # infinite
             if not understood_infinite:
-                warnings.warn("The returned overlap between two iMPS is **not** just <phi|psi>, "
-                              "as you might assume naively, but here defined to return the "
-                              "dominant eigenvalue eta of the (mixed) TransferMatrix. "
-                              "The former is lim_{N -> infty} eta^N and vanishes in the "
-                              "thermodynamic limit! "
-                              "See the warning in the docs of tenpy.networks.mps.")
+                warnings.warn(
+                    'The returned overlap between two iMPS is **not** just <phi|psi>, '
+                    'as you might assume naively, but here defined to return the '
+                    'dominant eigenvalue eta of the (mixed) TransferMatrix. '
+                    'The former is lim_{N -> infty} eta^N and vanishes in the '
+                    'thermodynamic limit! '
+                    'See the warning in the docs of tenpy.networks.mps.'
+                )
             form = None if ignore_form else 'B'
             TM = TransferMatrix(self, other, charge_sector=charge_sector, form=form)
             ov, _ = TM.eigenvectors(**kwargs)
@@ -3758,7 +4249,7 @@ class MPS(BaseMPSExpectationValue):
 
         This is equivalent to the following expression::
 
-            sum([self.expectation_value_term(term)*strength for term, strength in term_list])
+            sum([self.expectation_value_term(term) * strength for term, strength in term_list])
 
         However, for efficiency, the term_list is converted to an MPO and the expectation value
         of the MPO is evaluated.
@@ -3778,12 +4269,14 @@ class MPS(BaseMPSExpectationValue):
             For a finite MPS, ``terms_sum = _mpo.expectation_value(self)``, for an infinite MPS
             ``terms_sum = _mpo.expectation_value(self) * self.L``
 
-        See also
+        See Also
         --------
         expectation_value_term : evaluates a single `term`.
         tenpy.networks.mpo.MPO.expectation_value : expectation value density of an MPO.
+
         """
         from . import mpo, terms
+
         L = self.L
         if not self.finite:
             copy = None
@@ -3800,7 +4293,7 @@ class MPS(BaseMPSExpectationValue):
         # conversion
         ot, ct = term_list.to_OnsiteTerms_CouplingTerms(self.sites)
         bc = 'finite' if self.finite else 'infinite'
-        mpo_graph = mpo.MPOGraph.from_terms((ot, ct), self.sites, bc)
+        mpo_graph = mpo.MPOGraph.from_terms((ot, ct), self.sites, bc, unit_cell_width=self.unit_cell_width)
         mpo_ = mpo_graph.build_MPO()
         terms_sum = mpo_.expectation_value(self, max_range=ct.max_range())
         if not self.finite:
@@ -3810,13 +4303,9 @@ class MPS(BaseMPSExpectationValue):
     # SAJANT - Adapt this function to work with two physical legs -> purification or doubled
     # MPS when treaated as pure state. Need to decide what to do about extra ancilla leg 'q'.
     # Do we sample it or leave it behind? Sampling would be most efficient.
-    def sample_measurements(self,
-                            first_site=0,
-                            last_site=None,
-                            ops=None,
-                            rng=None,
-                            norm_tol=1.e-12,
-                            complex_amplitude=True):
+    def sample_measurements(
+        self, first_site=0, last_site=None, ops=None, rng=None, norm_tol=1.0e-12, complex_amplitude=True
+    ):
         """Sample measurement results in the computational basis.
 
         This function samples projective measurements on a contiguous range of sites,
@@ -3857,26 +4346,26 @@ class MPS(BaseMPSExpectationValue):
             For a finite system where we sample all sites (i.e., the trace over the compliment of
             the sites is trivial), this is the actual overlap ``<sigmas...|psi>``
             including the phase. If complex_amplitude is True, we return ``weight**2``.
+
         """
-        if tuple(self._p_label) != ('p', ):
+        if tuple(self._p_label) != ('p',):
             raise NotImplementedError("Only works for a single physical 'p' leg")
         if last_site is None:
             last_site = self.L - 1
         if rng is None:
             rng = np.random.default_rng()
         sigmas = []
-        total_weight = 1.
+        total_weight = 1.0
         theta = self.get_theta(first_site, n=1).replace_label('p0', 'p')
         for i in range(first_site, last_site + 1):
             # theta = wave function in basis vL [sigmas...] p vR
             # where the `sigmas` are already fixed to the measurement results
-            i0 = self._to_valid_index(i)
-            site = self.sites[i0]
+            site = self.get_site(i)
             if ops is not None:
                 op_name = ops[(i - first_site) % len(ops)]
                 op = site.get_op(op_name).transpose(['p', 'p*'])
-                if npc.norm(op - op.conj().transpose()) > 1.e-13:
-                    raise ValueError(f"measurement operator {op_name!r} not hermitian")
+                if npc.norm(op - op.conj().transpose()) > 1.0e-13:
+                    raise ValueError(f'measurement operator {op_name!r} not hermitian')
                 W, V = npc.eigh(op)
                 theta = npc.tensordot(V.conj(), theta, axes=['p*', 'p']).replace_label('eig*', 'p')
             else:
@@ -3886,8 +4375,8 @@ class MPS(BaseMPSExpectationValue):
             rho = npc.tensordot(theta.conj(), theta, [['vL*', 'vR*'], ['vL', 'vR']])
             # probabilities p(sigma) = <sigma|rho|sigma>
             rho_diag = np.abs(np.diag(rho.to_ndarray()))  # abs: real dtype & roundoff err
-            if abs(np.sum(rho_diag) - 1.) > norm_tol:
-                raise ValueError("not normalized to `norm_tol`")
+            if abs(np.sum(rho_diag) - 1.0) > norm_tol:
+                raise ValueError('not normalized to `norm_tol`')
             rho_diag /= np.sum(rho_diag)
             sigma = rng.choice(site.dim, p=rho_diag)  # randomly select index from probabilities
             sigmas.append(W[sigma])
@@ -3906,7 +4395,7 @@ class MPS(BaseMPSExpectationValue):
                 total_weight = total_weight * theta[0, 0] / weight
             if not complex_amplitude:
                 # return probability
-                total_weight = np.abs(total_weight)**2
+                total_weight = np.abs(total_weight) ** 2
         return sigmas, total_weight
 
     def norm_test(self):
@@ -3928,6 +4417,7 @@ class MPS(BaseMPSExpectationValue):
                 |   .--theta[i]---         .--s[i+1]--
                 |   |    |          vs     |
                 |   .--theta*[i]--         .--s[i+1]--
+
         """
         err = np.empty((self.L, 2), dtype=float)
         lbl_R = (self._get_p_label('0') + ['vR'], self._get_p_label('0*') + ['vR*'])
@@ -3938,7 +4428,7 @@ class MPS(BaseMPSExpectationValue):
             S = self.get_SL(i)
             if isinstance(S, npc.Array):  # during DMRG with mixer, S may be a 2D npc.Array
                 if S.rank != 2:
-                    raise ValueError("Expect 2D npc.Array or 1D numpy ndarray")
+                    raise ValueError('Expect 2D npc.Array or 1D numpy ndarray')
                 rho_L2 = npc.tensordot(S, S.conj(), axes=['vR', 'vR*'])
             else:
                 rho_L2 = npc.diag(S**2, rho_L.get_leg('vL'), dtype=rho_L.dtype)
@@ -3947,7 +4437,7 @@ class MPS(BaseMPSExpectationValue):
             S = self.get_SR(i)
             if isinstance(S, npc.Array):
                 if S.rank != 2:
-                    raise ValueError("Expect 2D npc.Array or 1D numpy ndarray")
+                    raise ValueError('Expect 2D npc.Array or 1D numpy ndarray')
                 rho_R2 = npc.tensordot(S, S.conj(), axes=['vL', 'vL*'])
             else:
                 rho_R2 = npc.diag(S**2, rho_R.get_leg('vR'), dtype=rho_L.dtype)
@@ -3965,7 +4455,7 @@ class MPS(BaseMPSExpectationValue):
         else:
             return self.canonical_form_infinite1(**kwargs)
 
-    def canonical_form_finite(self, renormalize=True, cutoff=0., envs_to_update=None):
+    def canonical_form_finite(self, renormalize=True, cutoff=0.0, envs_to_update=None):
         """Bring a finite (or segment) MPS into canonical form; in place.
 
         If any site is in :attr:`form` ``None``, it does *not* use any of the singular values `S`
@@ -3994,21 +4484,22 @@ class MPS(BaseMPSExpectationValue):
             Only returned for ``'segment'`` boundary conditions.
             The unitaries defining the new left and right Schmidt states in terms of the old ones,
             with legs ``'vL', 'vR'``.
+
         """
-        assert (self.finite)
+        assert self.finite
         L = self.L
-        assert (L > 1)  # otherwise implement yourself...
+        assert L > 1  # otherwise implement yourself...
         # normalize very left singular values
         S = self.get_SL(0)
         if self.bc == 'segment':
             if S is None:
-                raise ValueError("Need S[0] and S[L] for segment boundary conditions.")
+                raise ValueError('Need S[0] and S[L] for segment boundary conditions.')
             self.set_SL(0, S / np.linalg.norm(S))
             S = self.get_SR(L - 1)
             self.set_SR(L - 1, S / np.linalg.norm(S))
         else:  # bc == 'finite':
-            self.set_SL(0, np.array([1.]))  # trivial singular value on very left/right
-            self.set_SR(L - 1, np.array([1.]))
+            self.set_SL(0, np.array([1.0]))  # trivial singular value on very left/right
+            self.set_SR(L - 1, np.array([1.0]))
         # sweep from left to right to bring it into left canonical form.
         if any([(f is None) for f in self.form]):
             # ignore any 'S' and canonical form
@@ -4031,19 +4522,19 @@ class MPS(BaseMPSExpectationValue):
         M = npc.tensordot(R, M, axes=['vR', 'vL'])
         if self.bc == 'segment':
             # also need to calculate new singular values on the very right
-            U, S, VR_segment = npc.svd(M.combine_legs(['vL'] + self._p_label),
-                                       cutoff=cutoff,
-                                       qtotal_LR=[M.qtotal, None],
-                                       inner_labels=['vR', 'vL'])
+            U, S, VR_segment = npc.svd(
+                M.combine_legs(['vL'] + self._p_label),
+                cutoff=cutoff,
+                qtotal_LR=[M.qtotal, None],
+                inner_labels=['vR', 'vL'],
+            )
             S /= np.linalg.norm(S)
             self.set_SR(L - 1, S)
             M = U.scale_axis(S, 1).split_legs(0)
         else:
             VR_segment = None
         # sweep from right to left, calculating all the singular values
-        U, S, V = npc.svd(M.combine_legs(['vR'] + self._p_label, qconj=-1),
-                          cutoff=cutoff,
-                          inner_labels=['vR', 'vL'])
+        U, S, V = npc.svd(M.combine_legs(['vR'] + self._p_label, qconj=-1), cutoff=cutoff, inner_labels=['vR', 'vL'])
         if not renormalize:
             self.norm = self.norm * np.linalg.norm(S)
         S = S / np.linalg.norm(S)  # normalize
@@ -4052,10 +4543,12 @@ class MPS(BaseMPSExpectationValue):
         for i in range(L - 2, -1, -1):
             M = self.get_B(i, 'A')
             M = npc.tensordot(M, U.scale_axis(S, 'vR'), axes=['vR', 'vL'])
-            U, S, V = npc.svd(M.combine_legs(['vR'] + self._p_label, qconj=-1),
-                              cutoff=cutoff,
-                              qtotal_LR=[None, M.qtotal],
-                              inner_labels=['vR', 'vL'])
+            U, S, V = npc.svd(
+                M.combine_legs(['vR'] + self._p_label, qconj=-1),
+                cutoff=cutoff,
+                qtotal_LR=[None, M.qtotal],
+                inner_labels=['vR', 'vL'],
+            )
             S = S / np.linalg.norm(S)  # normalize
             self.set_SL(i, S)
             self.set_B(i, V.split_legs(1), form='B')
@@ -4068,8 +4561,10 @@ class MPS(BaseMPSExpectationValue):
                 update_ket = env.ket is self
                 update_bra = env.bra is self
                 if not (update_ket or update_bra):
-                    raise ValueError("called `psi.canonical_form_finite(..., envs_to_update), "
-                                     "but (one of) the environment doesn't contain that `psi`")
+                    raise ValueError(
+                        'called `psi.canonical_form_finite(..., envs_to_update), '
+                        "but (one of) the environment doesn't contain that `psi`"
+                    )
                 env.clear()
                 if self.bc == 'segment':
                     env._update_gauge_LP(0, U, update_bra, update_ket)
@@ -4084,7 +4579,7 @@ class MPS(BaseMPSExpectationValue):
                 self.segment_boundaries = (U, VR_segment)
             return U, VR_segment
 
-    def canonical_form_infinite1(self, renormalize=True, tol_xi=1.e6):
+    def canonical_form_infinite1(self, renormalize=True, tol_xi=1.0e6):
         """Bring an infinite MPS into canonical form; in place.
 
         If any site is in :attr:`form` ``None``, it does *not* use any of the singular values `S`.
@@ -4112,6 +4607,7 @@ class MPS(BaseMPSExpectationValue):
         tol_xi : float
             Raise an error if the correlation length is larger than that
             (which indicates a degenerate "cat" state, e.g., for spontaneous symmetry breaking).
+
         """
         assert not self.finite
         L = self.L
@@ -4129,24 +4625,27 @@ class MPS(BaseMPSExpectationValue):
         # phase 1: bring bond (i1-1, i1) in canonical form
         # find dominant right eigenvector
         norm, Gr = self._canonical_form_dominant_gram_matrix(i1, False, tol_xi)
+        Gr = self.shift_Array_unit_cells(Gr, -1)
         self._B[i1] /= np.sqrt(norm)  # correct norm
         if not renormalize:
             self.norm *= np.sqrt(norm)
         # make Gr diagonal to Wr
         Wr, Kl, Kr = self._canonical_form_correct_right(i1, Gr)
         # guess for Gl
-        Gl = npc.tensordot(Kr.scale_axis(self.get_SL(i1)**2, 1), Kl, axes=['vR', 'vL'])
+        Gl = npc.tensordot(Kr.scale_axis(self.get_SL(i1) ** 2, 1), Kl, axes=['vR', 'vL'])
         Gl.iset_leg_labels(['vR*', 'vR'])
         # find dominant left eigenvector
         norm, Gl = self._canonical_form_dominant_gram_matrix(i1, True, tol_xi, Gl)
-        if abs(1. - norm) > 1.e-13:
-            logger.warning("Although we renormalized the TransferMatrix, "
-                           "the largest eigenvalue is not 1")  # (this shouldn't happen)
+        if abs(1.0 - norm) > 1.0e-13:
+            logger.warning(
+                'Although we renormalized the TransferMatrix, the largest eigenvalue is not 1'
+            )  # (this shouldn't happen)
         self._B[i1] /= np.sqrt(norm)  # correct norm again
         if not renormalize:
             self.norm *= np.sqrt(norm)
         # bring bond to canonical form
         Gl, Yl, Yr = self._canonical_form_correct_left(i1, Gl, Wr)
+        Gl = self.shift_Array_unit_cells(Gl, -1)
         Wr = np.ones(Yr.legs[0].ind_len, np.float64)
         # now the bond (i1-1,i1) is in canonical form
         Wr_list[i1] = Wr  # diag(Wr) is right eigenvector on bond (i1-1, i1)
@@ -4167,16 +4666,13 @@ class MPS(BaseMPSExpectationValue):
             Gl = npc.tensordot(
                 B1.conj(),  # old B1; now on site j1-1
                 npc.tensordot(Gl, B1, axes=['vR', 'vL']),
-                axes=[self._get_p_label('*') + ['vL*'], self._p_label + ['vR*']])
+                axes=[self._get_p_label('*') + ['vL*'], self._p_label + ['vR*']],
+            )
             # axes=[['p*', 'vL*'], ['p', 'vR*']])
             Gl, Yl, Yr = self._canonical_form_correct_left(j1, Gl, Wr_list[j1 % L])
         # done
 
-    def canonical_form_infinite2(self,
-                                 renormalize=True,
-                                 tol=1.e-15,
-                                 arnoldi_params=None,
-                                 cutoff=1.e-15):
+    def canonical_form_infinite2(self, renormalize=True, tol=1.0e-15, arnoldi_params=None, cutoff=1.0e-15):
         """Convert infinite MPS to canonical form; in place.
 
         Implementation following Algorithm 1,2 in :cite:`vanderstraeten2019`.
@@ -4193,6 +4689,7 @@ class MPS(BaseMPSExpectationValue):
             Parameters for :class:`~tenpy.linalg.lanczos.Arnoldi`.
         cutoff :
             Truncation cutoff for small singular values.
+
         """
         assert not self.finite
         assert cutoff <= tol
@@ -4207,7 +4704,7 @@ class MPS(BaseMPSExpectationValue):
             # -> make sure we don't use multiple S on one bond in our definition of the MPS
             self.convert_form('B')
         # self._B holds original B
-        R_guess = npc.diag(1., self._B[0].get_leg('vL'), labels=['vL', 'vR'])
+        R_guess = npc.diag(1.0, self._B[0].get_leg('vL'), labels=['vL', 'vR'])
         new_Bs, _, norm = self._canonical_form_right_orthogonalize(R_guess, tol, arnoldi_params)
         if not renormalize:
             self.norm *= norm
@@ -4226,9 +4723,7 @@ class MPS(BaseMPSExpectationValue):
         # so V new_Bs V^d is right-canonical with diagonal S on bond (-1, 0)
         # and U^d new_As U is left-canonical with diagonal S on bond (-1, 0)
         # we could update self._Bs here, but we overwrite them in the following loop
-        new_As[0] = npc.tensordot(U.conj().ireplace_label('vR*', 'vL'),
-                                  new_As[0],
-                                  axes=['vL*', 'vL'])
+        new_As[0] = npc.tensordot(U.conj().ireplace_label('vR*', 'vL'), new_As[0], axes=['vL*', 'vL'])
         #  new_As[-1] = npc.tensordot(new_As[-1], U, axes=['vR', 'vL']) # is done in loop below
         # get S with a bunch of SVDs
         for i in reversed(range(len(new_As))):
@@ -4238,6 +4733,7 @@ class MPS(BaseMPSExpectationValue):
             self._B[i] = V.split_legs()
             self.set_SL(i, S)
         # note: we included SVD on i=0; else the virtual leg (-1, 0) might not even be sorted
+        U = self.shift_Array_unit_cells(U, 1)
         self._B[-1] = npc.tensordot(self._B[-1], U, axes=['vR', 'vL'])
 
     def _canonical_form_left_orthogonalize(self, L, tol, arnoldi_params):
@@ -4253,20 +4749,19 @@ class MPS(BaseMPSExpectationValue):
             if err <= tol:
                 return new_As, L, norm
             # get better guess for L with Arnoldi
-            arnoldi_params['E_tol'] = err / 10.
-            TM = TransferMatrix.from_Ns_Ms(new_As, self._B, transpose=True)
+            arnoldi_params['E_tol'] = err / 10.0
+            TM = TransferMatrix.from_Ns_Ms(new_As, self._B, transpose=True, unit_cell_width=self.unit_cell_width)
             L.ireplace_label('vL', 'vR*')
             E, Ls, N = Arnoldi(TM, L, arnoldi_params).run()
             L = Ls[0]
             L.ireplace_label('vR*', 'vL')
             # again QR to get positive diagonal part of L, in same way as in _canonical_form_qr_L2R
-            _, L = npc.qr(L.itranspose(['vL', 'vR']),
-                          inner_labels=['vR', 'vL'],
-                          pos_diag_R=True,
-                          inner_qconj=+1)
-        msg = (f'canonical_form did not converge up to tol={tol}. '
-               f'Final error after {max_iters} iterations: {err}. '
-               f'Consider increasing the tolerance, but proceed with care.')
+            _, L = npc.qr(L.itranspose(['vL', 'vR']), inner_labels=['vR', 'vL'], pos_diag_R=True, inner_qconj=+1)
+        msg = (
+            f'canonical_form did not converge up to tol={tol}. '
+            f'Final error after {max_iters} iterations: {err}. '
+            f'Consider increasing the tolerance, but proceed with care.'
+        )
         raise RuntimeError(msg)
 
     def _canonical_form_right_orthogonalize(self, R, tol, arnoldi_params):
@@ -4282,20 +4777,19 @@ class MPS(BaseMPSExpectationValue):
             if err <= tol:
                 return new_Bs, R, norm
             #  _, R = self._canonical_form_arnoldi(new_Bs, R, err/10.)
-            TM = TransferMatrix.from_Ns_Ms(new_Bs, self._B, transpose=False)
+            TM = TransferMatrix.from_Ns_Ms(new_Bs, self._B, transpose=False, unit_cell_width=self.unit_cell_width)
             R.ireplace_label('vR', 'vL*')
-            arnoldi_params['E_tol'] = err / 10.
+            arnoldi_params['E_tol'] = err / 10.0
             E, Rs, N = Arnoldi(TM, R, arnoldi_params).run()
             R = Rs[0]
             R.ireplace_label('vL*', 'vR')
             # again QR to get positive diagonal part of R, in same way as in _canonical_form_qr_R2L
-            _, R = npc.qr(R.itranspose(['vR', 'vL']),
-                          inner_labels=['vL', 'vR'],
-                          pos_diag_R=True,
-                          inner_qconj=-1)
-        msg = (f'canonical_form did not converge up to tol={tol}. '
-               f'Final error after {max_iters} iterations: {err}. '
-               f'Consider increasing the tolerance, but proceed with care.')
+            _, R = npc.qr(R.itranspose(['vR', 'vL']), inner_labels=['vL', 'vR'], pos_diag_R=True, inner_qconj=-1)
+        msg = (
+            f'canonical_form did not converge up to tol={tol}. '
+            f'Final error after {max_iters} iterations: {err}. '
+            f'Consider increasing the tolerance, but proceed with care.'
+        )
         raise RuntimeError(msg)
 
     def _canonical_form_qr_L2R(self, L):
@@ -4304,11 +4798,7 @@ class MPS(BaseMPSExpectationValue):
         for i in range(self.L):
             LB = npc.tensordot(L, self._B[i], axes=['vR', 'vL'])
             LB = LB.combine_legs(['vL'] + self._p_label, new_axes=0, qconj=+1)
-            Q, L = npc.qr(LB,
-                          inner_labels=['vR', 'vL'],
-                          pos_diag_R=True,
-                          qtotal_Q=LB.qtotal,
-                          inner_qconj=+1)
+            Q, L = npc.qr(LB, inner_labels=['vR', 'vL'], pos_diag_R=True, qtotal_Q=LB.qtotal, inner_qconj=+1)
             Qs[i] = Q.split_legs()
         return Qs, L
 
@@ -4318,15 +4808,11 @@ class MPS(BaseMPSExpectationValue):
         for i in reversed(range(self.L)):
             BR = npc.tensordot(self._B[i], R, axes=['vR', 'vL'])
             BR = BR.combine_legs(self._p_label + ['vR'], new_axes=0, qconj=-1)
-            Q, R = npc.qr(BR,
-                          inner_labels=['vL', 'vR'],
-                          pos_diag_R=True,
-                          qtotal_Q=BR.qtotal,
-                          inner_qconj=-1)
+            Q, R = npc.qr(BR, inner_labels=['vL', 'vR'], pos_diag_R=True, qtotal_Q=BR.qtotal, inner_qconj=-1)
             Qs[i] = Q.split_legs()
         return Qs, R
 
-    def correlation_length(self, target=1, tol_ev0=1.e-8, charge_sector=0, return_charges=False):
+    def correlation_length2(self, target=1, tol_ev0=1.0e-8, charge_sector=0, return_charges=False):
         r"""Calculate the correlation length by diagonalizing the transfer matrix.
 
         Assumes that `self` is in canonical form.
@@ -4342,16 +4828,10 @@ class MPS(BaseMPSExpectationValue):
         Thus :math:`\lambda_2 = \exp(-\frac{1}{\xi})`.
 
         More general for a `L`-site unit cell we get :math:`\lambda_2 = \exp(-\frac{L}{\xi})`,
-        where the `xi` is given in units of 1 lattice spacing in the MPS.
+        where the `xi` is given in units of the horizontal lattice spacing.
 
-        .. warning ::
-            For a higher-dimensional lattice (which the MPS class doesn't know about),
-            the correct unit is the lattice spacing in x-direction, and the correct formula is
-            :math:`\lambda_2 = \exp(-\frac{L_x}{\xi})`,
-            where `L_x` is the number of lattice spacings in the infinite direction within the
-            MPS unit cell, e.g. the number of "rings" of a cylinder in the MPS unit cell.
-            To get to these units, divide the returned `xi` by the number of sites within a "ring",
-            for a lattice given in :attr:`~tenpy.models.lattice.Lattice.N_sites_per_ring`.
+        Unlike the old :meth:`correlation_length`, this method returns the correlation length in
+        correct units, even for higher-dimensional lattices.
 
         Parameters
         ----------
@@ -4376,16 +4856,69 @@ class MPS(BaseMPSExpectationValue):
         xi : float | 1D array
             If `target` = 1, return just the correlation length,
             otherwise an array of the `target` largest correlation lengths.
-            It is measured in units of a single spacing between sites in the MPS language,
-            see the warning above.
-        charge_sectors :  list of charge sectors
+            It is measured in units of the horizontal spacing of the lattice.
+        charge_sectors :  list of charge sectors, optional
             For each entry in `xi` the charge sector, i.e., qtotal of the dominant eigenvalue.
+            Only returned if `return_charges`.
 
-        See also
+        See Also
         --------
         correlation_length_charge_sectors : lists possible charge sectors.
+
         """
-        assert (not self.finite)
+        res = self._correlation_length(target, tol_ev0, charge_sector, return_charges)
+        if return_charges:
+            xi, charges = res
+        else:
+            xi = res
+        xi = xi / self.N_sites_per_hor_spacing
+        if return_charges:
+            return xi, charges
+        return xi
+
+    def correlation_length(self, target=1, tol_ev0=1.0e-8, charge_sector=0, return_charges=False):
+        r"""Calculate the correlation length by diagonalizing the transfer matrix.
+
+        .. deprecated ::
+            This is an old implementation, from before MPS had access to ``N_sites_per_hor_spacing``.
+            It is only kept for backwards compatibility. Use :meth:`correlation_length2` instead.
+
+        .. warning ::
+            For higher-dimensional lattices, this function does not return the correlation length
+            in correct units. Use :meth:`correlation_length2` or read the documentation of the
+            return value carefully.
+
+        Parameters
+        ----------
+        target, tol_ev0, charge_sector, return_charges
+            same as for :meth:`correlation_length2`.
+        _ignore_warning : bool
+            Flag to suppress the ``DeprecationWarning``.
+
+        Returns
+        -------
+        xi : float | 1D array
+            The correlation length(s) in units of "lattice spacing per MPS site", i.e.
+            ``self.correlation_length(*a) == self.correlation_length2(*a) * self.N_sites_per_hor_spacing``.
+        charge_sectors :  list of charge sectors, optional
+            For each entry in `xi` the charge sector, i.e., qtotal of the dominant eigenvalue.
+            Only returned if `return_charges`.
+
+        """
+        msg = (
+            'The method `correlation_length` is deprecated. Use `correlation_length2` instead. '
+            'Note the different units of the output for higher-dimensional lattices!'
+        )
+        warnings.warn(msg, DeprecationWarning, 2)
+        return self._correlation_length(target, tol_ev0, charge_sector, return_charges)
+
+    def _correlation_length(self, target, tol_ev0, charge_sector, return_charges):
+        """Internal implementation of :meth:`correlation_length2` and :meth:`correlation_length`.
+
+        Returns like :meth:`correlation_length`, in particular *without* accounting for
+        lattice geometry.
+        """
+        assert not self.finite
         zero_charge = self.chinfo.make_valid()
         if any(chi == 1 for chi in self.chi):
             # product states have zero correlation length
@@ -4393,7 +4926,7 @@ class MPS(BaseMPSExpectationValue):
                 if target == 1:
                     return 0, zero_charge
                 return [0] * target, [zero_charge] * target
-            return 0. if target == 1 else [0] * target
+            return 0.0 if target == 1 else [0] * target
         if charge_sector is not None and isinstance(charge_sector, Iterable):
             # iterable check excludes charge_sector=0 (c.f. issue 289)
             charge_sector = self.chinfo.make_valid(charge_sector)
@@ -4439,31 +4972,34 @@ class MPS(BaseMPSExpectationValue):
                 E0, _ = T.eigenvectors(num, which='LM')
                 E0 = E0[0]
             else:
-                E0 = 1.   # explicitly set it by hand
+                E0 = 1.0  # explicitly set it by hand
             if not abs(E0) > abs(E[0]):
                 # shouldn't happen... error handling or warning with only numerical errors?
                 if tol_ev0 is not None and abs(E[0]) - abs(E0) < tol_ev0:
                     prec = tol_ev0
-                elif tol_ev0 is None and abs(E[0]) - abs(E0) < 1.e-5:
-                    prec = 1.e-5
+                elif tol_ev0 is None and abs(E[0]) - abs(E0) < 1.0e-5:
+                    prec = 1.0e-5
                 else:
                     prec = None
                 if prec is not None:
-                    logger.warning("correlation_length: other charge sector has eigenvalue "
-                                   " bigger than the eigenvalue 1. in the zero charge sector, "
-                                   "but still within precision {prec:.1e}")
+                    logger.warning(
+                        'correlation_length: other charge sector has eigenvalue '
+                        ' bigger than the eigenvalue 1. in the zero charge sector, '
+                        'but still within precision {prec:.1e}'
+                    )
                     E0 = E[0] + prec
                 else:
-                    raise ValueError("dominant eigenvalue is not in zero charge sector???")
+                    raise ValueError('dominant eigenvalue is not in zero charge sector???')
             E = [E0] + list(E)
             if return_charges:
                 V_charges = [None] + V_charges
-        if tol_ev0 is not None and abs(E[0] - 1.) > tol_ev0:
-            logger.warning(f"Correlation length: largest eigenvalue not one, but {E[0]:.12f}. "
-                            "Not in canonical form/normalized?")
+        if tol_ev0 is not None and abs(E[0] - 1.0) > tol_ev0:
+            logger.warning(
+                f'Correlation length: largest eigenvalue not one, but {E[0]:.12f}. Not in canonical form/normalized?'
+            )
         assert len(E) >= 2
         E = np.array(E)
-        xis = -1. / np.log(np.abs(E[1:target + 1] / E[0])) * self.L
+        xis = -1.0 / np.log(np.abs(E[1 : target + 1] / E[0])) * self.L
         # finally return
         if return_charges:
             if target == 1:
@@ -4496,6 +5032,7 @@ class MPS(BaseMPSExpectationValue):
         ----------
         drop_symmetric : bool
             See above.
+
         """
         if self.chinfo.qnumber == 0:
             return []
@@ -4506,11 +5043,11 @@ class MPS(BaseMPSExpectationValue):
             return charges
         conj_charges = self.chinfo.make_valid(-charges)
         perm = np.lexsort(conj_charges.T)
-        keep = (perm <= np.arange(len(perm)))
+        keep = perm <= np.arange(len(perm))
         # note: the equal is necessary to include 0 and e.g. 2 for a Z_4 charge.
         return charges[keep]
 
-    def add(self, other, alpha, beta, cutoff=1.e-15):
+    def add(self, other, alpha, beta, cutoff=1.0e-15):
         """Return an MPS which represents ``alpha|self> + beta |others>``.
 
         Works only for 'finite', 'segment' boundary conditions.
@@ -4534,9 +5071,10 @@ class MPS(BaseMPSExpectationValue):
         sum : :class:`MPS`
             An MPS representing ``alpha|self> + beta |other>``.
             Has same total charge as `self`.
+
         """
         L = self.L
-        assert (other.L == L and L >= 2)  # (if you need this, generalize this function...)
+        assert other.L == L and L >= 2  # (if you need this, generalize this function...)
         assert self.finite
         assert self.bc == other.bc
         other = self._gauge_compatible_vL_vR(other)
@@ -4560,17 +5098,20 @@ class MPS(BaseMPSExpectationValue):
         for i in range(1, L - 1):
             B1 = self.get_B(i).transpose(legs)
             B2 = other.get_B(i).transpose(legs)
-            grid = [[B1, npc.zeros([B1.get_leg('vL'), B2.get_leg('vR')] + B1.legs[2:])],
-                    [npc.zeros([B2.get_leg('vL'), B1.get_leg('vR')] + B1.legs[2:]), B2]]
+            grid = [
+                [B1, npc.zeros([B1.get_leg('vL'), B2.get_leg('vR')] + B1.legs[2:])],
+                [npc.zeros([B2.get_leg('vL'), B1.get_leg('vR')] + B1.legs[2:]), B2],
+            ]
             Bs.append(npc.grid_concat(grid, [0, 1]))
         Bs.append(npc.grid_concat([[last_B_self], [last_B_other]], axes=[0, 1]))
         Ss = [np.ones(Bs[0].shape[0])] + [np.ones(B.shape[1]) for B in Bs]
-        psi = self.__class__(self.sites, Bs, Ss, self.bc, form=None)  # new class instance
+        # new class instance
+        psi = self.__class__(self.sites, Bs, Ss, self.bc, form=None, unit_cell_width=self.unit_cell_width)
         # bring to canonical form, calculate Ss
         psi.canonical_form_finite(renormalize=False, cutoff=cutoff)
         return psi
 
-    def subspace_expansion(self, expand_into=[], trunc_par={'svd_min': 1.e-8}):
+    def subspace_expansion(self, expand_into=[], trunc_par={'svd_min': 1.0e-8}):
         """Subspace expansion increasing chi without changing the represented state.
 
         We mostly follow the approach `:cite:yang2020`; starting on the rightmost tensor and sweeping
@@ -4595,6 +5136,7 @@ class MPS(BaseMPSExpectationValue):
         -------
         eig_error : :class:`TruncationError`
             Error from truncating eigenvalues of reduced density matrices. Not the easiest to interpret.
+
         """
         L = self.L
         assert self.finite
@@ -4604,37 +5146,38 @@ class MPS(BaseMPSExpectationValue):
 
         # assume that all psi are already canonical so that we can just use A form tensors immediately.
         for i in range(1, len(psis)):
-            assert (psis[i].L == L and L >= 2)  # (if you need this, generalize this function...)
+            assert psis[i].L == L and L >= 2  # (if you need this, generalize this function...)
             assert self.bc == psis[i].bc
 
         eig_error = TruncationError()
-        trunc_par = asConfig(trunc_par, "trunc_params")
+        trunc_par = asConfig(trunc_par, 'trunc_params')
         site_trunc_par = trunc_par.copy()
-        chi_max = site_trunc_par.get('chi_max', 100)    # Maximum bond dimension allowed on any bond
+        chi_max = site_trunc_par.get('chi_max', 100)  # Maximum bond dimension allowed on any bond
         # site_dims = [s.dim for s in self.sites]       # Only needed if we impose edge constraints
 
         current_Cs = []
         for i in range(len(psis)):
-            current_Cs.append(psis[i].get_theta(L-1, n=1).replace_label('p0', 'p').transpose(self._B_labels))
+            current_Cs.append(psis[i].get_theta(L - 1, n=1).replace_label('p0', 'p')).transpose(self._B_labels)
 
         for j in reversed(range(1, L)):
             current_vL_dim = current_Cs[0].get_leg('vL').ind_len
 
-            # We want to ensure that the bond dimension after expansion is at most chi_max so that SingleSiteTDVP respects
-            # the maximum bond dimension. We know that the bond dimension must respect the exponential bounds from the edge
-            # of the chain (2**i or (L-2)**i for the two edges for spin-1/2 Hilbert spaces). However, I find that if we
-            # impose the edge constraints, the first site is decoupled from the rest when using Krylov vectors (random expansion
-            # works, however). So instead, we just force the bond dimension to be less than chi_max and then the SVDs will
-            # enforce the edge constraints.
+            # We want to ensure that the bond dimension after expansion is at most chi_max so that
+            # SingleSiteTDVP respects the maximum bond dimension. We know that the bond dimension
+            # must respect the exponential bounds from the edge of the chain (2**i or (L-2)**i for
+            # the two edges for spin-1/2 Hilbert spaces). However, I find that if we impose the
+            # edge constraints, the first site is decoupled from the rest when using Krylov vectors
+            # (random expansion works, however). So instead, we just force the bond dimension to be
+            # less than chi_max and then the SVDs will enforce the edge constraints.
             # site_chi_max = int(np.min([chi_max, np.prod(site_dims[:j]), np.prod(site_dims[j:])])) - current_vL_dim
             site_chi_max = int(chi_max - current_vL_dim)  # How much do we allow vL to grow?
             site_trunc_par['chi_max'] = site_chi_max
 
             _, exact_B = npc.lq(current_Cs[0].combine_legs(['p', 'vR']), mode='reduced', inner_labels=['vR', 'vL'])
-            eBhc_eB = npc.tensordot(exact_B.conj(), exact_B, axes=(['vL*'], ['vL']))    # (p.vR)*, (p.vR)
+            eBhc_eB = npc.tensordot(exact_B.conj(), exact_B, axes=(['vL*'], ['vL']))  # (p.vR)*, (p.vR)
             proj = npc.eye_like(eBhc_eB, labels=eBhc_eB.get_leg_labels()) - eBhc_eB
             rho = proj.zeros_like()
-            if npc.norm(proj) < 1.e-12 or site_chi_max <= 0:
+            if npc.norm(proj) < 1.0e-12 or site_chi_max <= 0:
                 # First condition: original tensor already spans the virtual Hilbert space
                 # Second condition: we don't have any bond dimension budget for growth
                 new_B = exact_B.split_legs()
@@ -4647,11 +5190,15 @@ class MPS(BaseMPSExpectationValue):
                     # Generate a random (hermitian) density matrix that will provide random vectors
                     # in the orthogonal subspace.
                     leg = proj.legs[0]
-                    rho = npc.Array.from_func_square(GUE if proj.dtype.kind == 'c' else GOE, leg, labels=proj.get_leg_labels())
-                    rho = npc.tensordot(rho.conj(), rho, axes=(['(p.vR)'], ['(p*.vR*)'])) # Make this positive
-                rho /= npc.norm(rho) # Normalize the density matrix
-                proj_rho = npc.tensordot(npc.tensordot(proj, rho, axes=(['(p.vR)'], ['(p*.vR*)'])), proj, axes=(['(p.vR)'], ['(p*.vR*)']))
-                if npc.norm(proj_rho) < 1.e-12:
+                    rho = npc.Array.from_func_square(
+                        GUE if proj.dtype.kind == 'c' else GOE, leg, labels=proj.get_leg_labels()
+                    )
+                    rho = npc.tensordot(rho.conj(), rho, axes=(['(p.vR)'], ['(p*.vR*)']))  # Make this positive
+                rho /= npc.norm(rho)  # Normalize the density matrix
+                proj_rho = npc.tensordot(
+                    npc.tensordot(proj, rho, axes=(['(p.vR)'], ['(p*.vR*)'])), proj, axes=(['(p.vR)'], ['(p*.vR*)'])
+                )
+                if npc.norm(proj_rho) < 1.0e-12:
                     new_B = exact_B.split_legs()
                 else:
                     w_enl_trunc, B_enl_trunc, err_trunc = eigh_rho(proj_rho, trunc_par=site_trunc_par, sort='m>')
@@ -4661,20 +5208,25 @@ class MPS(BaseMPSExpectationValue):
             old_Cs = current_Cs
             current_Cs = []
             for i, oC in enumerate(old_Cs):
-                current_Cs.append(npc.tensordot(psis[i].get_B(j-1, form='A'),
-                                                npc.tensordot(oC, new_B.conj(), axes=(['p', 'vR'], ['p*', 'vR*'])).replace_label('vL*', 'vR'),
-                                                axes=(['vR'], ['vL'])).transpose(self._B_labels))
-             # Set new_B and padded SVs on site j AFTER we've gotten tensors on site j-1
+                Ci = npc.tensordot(
+                    psis[i].get_B(j - 1, form='A'),
+                    npc.tensordot(oC, new_B.conj(), axes=(['p', 'vR'], ['p*', 'vR*'])).replace_label('vL*', 'vR'),
+                    axes=(['vR'], ['vL']),
+                ).transpose(self._B_labels)
+                current_Cs.append(Ci)
+            # Set new_B and padded SVs on site j AFTER we've gotten tensors on site j-1
             self.set_B(j, new_B, form='B')
             # Need to handle edge case if SVs are not 1D array but instead are npc matrices?
-            self.set_SL(j, np.pad(self.get_SL(j), (0, new_B.get_leg('vL').ind_len - current_vL_dim), mode='constant', constant_values=0.0))
+            Sj = np.pad(
+                self.get_SL(j), (0, new_B.get_leg('vL').ind_len - current_vL_dim), mode='constant', constant_values=0.0
+            )
+            self.set_SL(j, Sj)
 
         self.set_B(0, current_Cs[0], form='B')
         self.test_sanity()
         return eig_error
 
-    def apply_local_op(self, i, op, unitary=None, renormalize=False, cutoff=1.e-13,
-                       understood_infinite=False):
+    def apply_local_op(self, i, op, unitary=None, renormalize=False, cutoff=1.0e-13, understood_infinite=False):
         r"""Apply a local (one or multi-site) operator to `self`. In place.
 
         Note that this destroys the canonical form if the local operator is non-unitary.
@@ -4689,11 +5241,13 @@ class MPS(BaseMPSExpectationValue):
         i : int
             (Left-most) index of the site(s) on which the operator should act.
         op : str | npc.Array
-            A physical operator acting on site `i`, with legs ``'p', 'p*'`` for a single-site
-            operator or with legs ``['p0', 'p1', ...], ['p0*', 'p1*', ...]`` for an operator
-            acting on `n`>=2 sites.
-            Strings (like ``'Id', 'Sz'``) are translated into single-site operators defined by
-            :attr:`sites`.
+            A physical operator acting on a single site `i`, or on ``n`` consecutive sites
+            ``range(i, i + n)``.  Strings (like ``'Id', 'Sz'``) are translated into single-site
+            operators defined by :attr:`sites`, in particular by ``sites[i]``.
+            The number of sites, and which leg of `op` acts on which leg of the MPS, are inferred
+            from the labels of `op`, see notes below. In most cases, the labels should be either
+            ``['p', 'p*']`` for a single-site operator or ``['p0', 'p1', ..., 'p0*', 'p1*', ...]``
+            (in any order) for a multi-site operator.
         unitary : None | bool
             Whether `op` is unitary, i.e., whether the canonical form is preserved (``True``)
             or whether we should call :meth:`canonical_form` (``False``).
@@ -4707,56 +5261,106 @@ class MPS(BaseMPSExpectationValue):
         understood_infinite : bool
             Raise a warning to make aware of :ref:`iMPSWarning`.
             Set ``understood_infinite=True`` to suppress the warning.
+
+        Notes
+        -----
+        We infer quite a bit of information about how exactly to apply the operator, just from
+        its labels. We require that the labels of `op` come in pairs ``l, l + '*'``, where ``l``
+        is one of the :attr:`_p_labels` of the class, optionally followed by an integer number.
+        E.g. for :class:`MPS` it must be either ``'p'`` or e.g. ``'p2'``, while for a
+        :class:`~tenpy.networks.purification.PurificationMPS`` it could additionally also be
+        ``'q'`` or e.g. ``'q2'``. We then contract the ``l + '*'`` leg of `op` with the ``l`` leg
+        of the local wavefunction (see :meth:`get_theta`), and the ``l`` leg of `op` remains as
+        a leg of the resulting MPS.
+        All the (non-starred) ``l`` labels must either end with a non-number character, and we
+        assume a single-site operator, or they must all end in an integer number. A label ending a
+        number ``m`` acts on site ``i + m``, e.g. ``'p0'`` acts on site `i`, and we infer the
+        number of sites ``n`` from the largest of these ``m``.
+
         """
         if not self.finite and not understood_infinite:
-            warnings.warn("For infinite MPS, apply_local_op acts on *each* unit cell in parallel."
-                          "See the warning in the docs of tenpy.networks.mps.")
+            warnings.warn(
+                'For infinite MPS, apply_local_op acts on *each* unit cell in parallel.'
+                'See the warning in the docs of tenpy.networks.mps.'
+            )
 
-        i = self._to_valid_index(i)
+        i, num_unit_cells = self._to_valid_site_index(i, return_num_unit_cells=True)
         if isinstance(op, str):
             op, need_JW = self.get_op([op], i)
             if need_JW:
                 if self.bc == 'infinite':
-                    raise ValueError("open JW string ending in each unit cell"
-                                     "breaks translation invariance!")
+                    raise ValueError('open JW string ending in each unit cellbreaks translation invariance!')
                 try:
-                    JW_sign = self.apply_JW_string_left_of_virt_leg(self._B[i], 'vL', i)
+                    _ = self.apply_JW_string_left_of_virt_leg(self._B[i], 'vL', i)
+                    # modifies self._B[i] in-place
                 except ValueError as e:
-                    raise ValueError(f"Would need JW string for operator {op!r}, "
-                                     "but can't extract JW signs from the charges") from e
+                    raise ValueError(
+                        f"Would need JW string for operator {op!r}, but can't extract JW signs from the charges"
+                    ) from e
             opname = op
         else:
+            op = self.shift_Array_unit_cells(op, -num_unit_cells, inplace=False)
             opname = op
             need_JW = False
-        n = op.rank // 2  # same as int(rank/2)
-        if n == 1:
-            pstar, p = 'p*', 'p'
+
+        # Infer n_sites and the labels to contract from op._labels
+        p = [l for l in op._labels if not l.endswith('*')]
+        pstar = [f'{l}*' for l in p]
+        if set(op._labels) != set(p + pstar):
+            raise ValueError('The labels of `op` must come in pairs ``l, l + "*"``.')
+        if p[0][-1].isdigit():
+            # need to consider edge case n_sites > 10, where multiple characters give the site index
+            site_idcs = []
+            for l in p:
+                num_non_digits = len(l.rstrip('0123456789'))
+                site_idx = l[num_non_digits:]
+                try:
+                    site_idx = int(site_idx)
+                except Exception:
+                    msg = 'The labels of `op` must either all end in numbers or none of them.'
+                    raise ValueError(msg) from None
+                site_idcs.append(site_idx)
+            n_sites = max(site_idcs) + 1
+            if n_sites == 1:
+                raise ValueError('For a single-site operator, omit the "0" at the end of labels.')
+        elif any(l[-1].isdigit() for l in p):
+            msg = 'The labels of `op` must either all end in numbers or none of them.'
+            raise ValueError(msg)
         else:
-            p = self._get_p_labels(n, False)
-            pstar = self._get_p_labels(n, True)
+            n_sites = 1
+
         if unitary is None:
             op_op_dagger = npc.tensordot(op, op.conj(), axes=[pstar, p])
-            if n > 1:
+            if n_sites > 1:
                 op_op_dagger = op_op_dagger.combine_legs([p, pstar], qconj=[+1, -1])
             unitary = npc.norm(op_op_dagger - npc.eye_like(op_op_dagger)) < cutoff
-        if n == 1:
-            opB = npc.tensordot(op, self._B[i], axes=['p*', 'p'])
+        if n_sites == 1:
+            opB = npc.tensordot(op, self._B[i], axes=[pstar, p])
             self.set_B(i, opB, self.form[i])
-            if opB.norm() < 1.e-12:
-                raise ValueError(f"Applying the operator {opname!s} on site {i:d} destroys state!")
+            if opB.norm() < 1.0e-12:
+                raise ValueError(f'Applying the operator {opname!s} on site {i:d} destroys state!')
         else:
-            th = self.get_theta(i, n)
+            th = self.get_theta(i, n_sites)
             th = npc.tensordot(op, th, axes=[pstar, p])
-            if th.norm() < 1.e-12:
-                raise ValueError(f"Applying the operator {opname!s} on site {i:d} destroys state!")
+            if th.norm() < 1.0e-12:
+                raise ValueError(f'Applying the operator {opname!s} on site {i:d} destroys state!')
             # use MPS.from_full to split the sites
-            split_th = self.from_full(self.sites[i:i + n], th, None, cutoff, renormalize,
-                                      'segment', (self.get_SL(i), self.get_SR(i + n - 1)))
+            sites = [self.get_site(j) for j in range(i, i + n_sites)]
+            split_th = self.from_full(
+                sites,
+                th,
+                None,
+                cutoff,
+                renormalize,
+                'segment',
+                (self.get_SL(i), self.get_SR(i + n_sites - 1)),
+                unit_cell_width=n_sites,  # dummy value, this MPS is not exposed.
+            )
             if not renormalize:
                 self.norm *= split_th.norm
-            for j in range(n):
+            for j in range(n_sites):
                 self.set_B(i + j, split_th._B[j], split_th.form[j])
-            for j in range(n - 1):
+            for j in range(n_sites - 1):
                 self.set_SR(i + j, split_th._S[j + 1])
         if not unitary:
             self.canonical_form(renormalize=renormalize)
@@ -4790,10 +5394,11 @@ class MPS(BaseMPSExpectationValue):
         renormalize : bool
             Whether the final state should keep track of the norm (False, default), or
             the *change* of norm should be discarded (True).
+
         """
         ops = to_iterable(ops)
         if self.L % len(ops) != 0:
-            raise ValueError("len of ops incommensurate with self.L")
+            raise ValueError('len of ops incommensurate with self.L')
         self.convert_form('B')
         for i in range(self.L):
             op = ops[i % len(ops)]
@@ -4803,19 +5408,14 @@ class MPS(BaseMPSExpectationValue):
                 op = self.sites[i].get_op(op)
             if unitary is None:
                 op_op_dagger = npc.tensordot(op, op.conj(), axes=['p*', 'p'])
-                if npc.norm(op_op_dagger - npc.eye_like(op_op_dagger)) > 1.e-14:
+                if npc.norm(op_op_dagger - npc.eye_like(op_op_dagger)) > 1.0e-14:
                     unitary = False
             # actually apply the operator at site i
             self._B[i] = npc.tensordot(op, self._B[i], axes=['p*', 'p'])
         if not unitary:
             self.canonical_form(renormalize=renormalize)
 
-    def apply_local_term(self,
-                         term,
-                         autoJW=True,
-                         i_offset=0,
-                         canonicalize=True,
-                         renormalize=False):
+    def apply_local_term(self, term, autoJW=True, i_offset=0, canonicalize=True, renormalize=False):
         """Similar as :meth:`apply_local_op`, but for a whole `term` acting on multiple sites.
 
         Note that this destroys the canonical form if the local operator is non-unitary.
@@ -4839,24 +5439,25 @@ class MPS(BaseMPSExpectationValue):
             Whether a change in the norm should be discarded (True),
             or used to update :attr:`norm` (False).
             Ignored if ``canonicalize=False``.
+
         """
         ops, i_min, has_extra_JW = self._term_to_ops_list(term, autoJW, i_offset, False)
         if has_extra_JW:
             if self.bc == 'infinite':
-                raise ValueError("open JW string ending in each unit cell"
-                                 "breaks translation invariance!")
+                raise ValueError('open JW string ending in each unit cellbreaks translation invariance!')
             try:
-                i = self._to_valid_index(i_min)
+                i = self._to_valid_site_index(i_min)
                 self.apply_JW_string_left_of_virt_leg(self._B[i], 'vL', i)
             except ValueError as e:
-                raise ValueError(f"Would need JW string for term {term!r}, "
-                                 "but can't extract JW signs from the charges") from e
+                raise ValueError(
+                    f"Would need JW string for term {term!r}, but can't extract JW signs from the charges"
+                ) from e
         for j, op in enumerate(ops):
-            i = self._to_valid_index(j + i_min)  # i_min includes i_offset!
+            i = self._to_valid_site_index(j + i_min)  # i_min includes i_offset!
             opB = npc.tensordot(op, self._B[i], axes=['p*', 'p'])
             self.set_B(i, opB, self.form[i])
-            if opB.norm() < 1.e-12:
-                raise ValueError(f"Applying the operator on site {i:d} destroys state!")
+            if opB.norm() < 1.0e-12:
+                raise ValueError(f'Applying the operator on site {i:d} destroys state!')
         if canonicalize:
             self.canonical_form(renormalize=renormalize)
 
@@ -4875,8 +5476,10 @@ class MPS(BaseMPSExpectationValue):
             :func:`~tenpy.linalg.random_matrix.CRE`, respectively.
         canonicalize : bool
             Wether to call `psi.canonical_from in the end. Defaults to ``not close_1``.
+
         """
         from ..algorithms.tebd import RandomUnitaryEvolution  # local import: avoid circular import
+
         if randomize_params is None:
             randomize_params = {}
         if close_1:
@@ -4988,30 +5591,42 @@ class MPS(BaseMPSExpectationValue):
                                              labels=['p1', 'p0', 'p0*', 'p1*'])
 
         """
+        if not self.chinfo.trivial_shift:
+            # I (Jakob) dont think this is possible in general and would require very complicated
+            # specialization on the details of the symmetry.
+            # If the conserved charge transforms non-trivially under spatial translations, then
+            # the swap gate that is effectively applied here does not preserve that charge (in general).
+            # There may, of course, be exceptions depending on the details of the symmetry.
+            # Example for dipole p of some charge q, both conserved::
+            #
+            #   (q1, p1) , (q2, p2)  --swap-->  (q2, p2 - q2) , (q1, p1 + q1)
+            #
+            # -> swap has no well defined qtotal! (p charge rule for a swap-Array depends on q1, q2)
+            raise RuntimeError('Can not swap sites if conserved charge has non-trivial shift.')
+
         if trunc_par is None:
             trunc_par = {}
-        siteL, siteR = self.sites[self._to_valid_index(i)], self.sites[self._to_valid_index(i + 1)]
+        siteL, siteR = self.get_site(i), self.get_site(i + 1)
         if isinstance(swap_op, str):
             dL, dR = siteL.dim, siteR.dim
             # site.JW_exponent is just the `n_i` in the equations of the note above.
             n_i = np.outer(siteL.JW_exponent, np.ones(dR)).reshape(dL * dR)
             n_j = np.outer(np.ones(dL), siteR.JW_exponent).reshape(dL * dR)
             if np.any(n_i * n_j):
-                legL, legR = siteL.leg, siteR.leg
                 if swap_op == 'auto':
-                    swap_op_diag = (-1.)**(n_i * n_j)
+                    swap_op_diag = (-1.0) ** (n_i * n_j)
                 elif swap_op == 'autoInv':
-                    swap_op_diag = (-1.)**(n_i * n_j) * (-1.j)**n_i * (-1.j)**n_j
+                    swap_op_diag = (-1.0) ** (n_i * n_j) * (-1.0j) ** n_i * (-1.0j) ** n_j
                 else:
                     raise ValueError("don't understand swap_op = " + repr(swap_op))
                 legs = [siteL.leg, siteR.leg, siteL.leg.conj(), siteR.leg.conj()]
-                swap_op = npc.Array.from_ndarray(np.diag(swap_op_diag).reshape([dL, dR, dL, dR]),
-                                                 legs,
-                                                 labels=['p1', 'p0', 'p0*', 'p1*'])
+                swap_op = npc.Array.from_ndarray(
+                    np.diag(swap_op_diag).reshape([dL, dR, dL, dR]), legs, labels=['p1', 'p0', 'p0*', 'p1*']
+                )
             else:  # at least one site isn't Fermions -> commutes
                 swap_op = None  # continue with transposition as for Bosons
         theta = self.get_theta(i, n=2)
-        C = self.get_theta(i, n=2, formL=0.)  # inversion free, see also TEBDEngine.update_bond()
+        C = self.get_theta(i, n=2, formL=0.0)  # inversion free, see also TEBDEngine.update_bond()
         if swap_op is None:
             # just replace the labels, effectively this is a transposition.
             theta.ireplace_labels(['p0', 'p1'], ['p1', 'p0'])
@@ -5020,20 +5635,18 @@ class MPS(BaseMPSExpectationValue):
             theta = npc.tensordot(swap_op, theta, axes=[['p0*', 'p1*'], ['p0', 'p1']])
             C = npc.tensordot(swap_op, C, axes=(['p0*', 'p1*'], ['p0', 'p1']))
         else:
-            raise ValueError("Invalid swap_op: got " + repr(swap_op))
+            raise ValueError('Invalid swap_op: got ' + repr(swap_op))
         theta = theta.combine_legs([('vL', 'p0'), ('vR', 'p1')], qconj=[+1, -1])
         U, S, V, err, renormalize = svd_theta(theta, trunc_par, inner_labels=['vR', 'vL'])
         B_R = V.split_legs(1).ireplace_label('p1', 'p')
-        B_L = npc.tensordot(C.combine_legs(('vR', 'p1'), pipes=theta.legs[1]),
-                            V.conj(),
-                            axes=['(vR.p1)', '(vR*.p1*)'])
+        B_L = npc.tensordot(C.combine_legs(('vR', 'p1'), pipes=theta.legs[1]), V.conj(), axes=['(vR.p1)', '(vR*.p1*)'])
         B_L.ireplace_labels(['vL*', 'p0'], ['vR', 'p'])
         B_L /= renormalize  # re-normalize to <psi|psi> = 1
         self.set_SR(i, S)
         self.set_B(i, B_L, 'B')
         self.set_B(i + 1, B_R, 'B')
-        self.sites[self._to_valid_index(i)] = siteR  # swap 'sites' as well
-        self.sites[self._to_valid_index(i + 1)] = siteL
+        self.sites[self._to_valid_site_index(i)] = siteR  # swap 'sites' as well
+        self.sites[self._to_valid_site_index(i + 1)] = siteL
         return err
 
     def permute_sites(self, perm, swap_op='auto', trunc_par=None):
@@ -5054,6 +5667,7 @@ class MPS(BaseMPSExpectationValue):
         -------
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error of the represented state introduced by the truncation after the swaps.
+
         """
         perm = list(perm)  # gets modified, so we should copy
         # In order to keep sites close together, we always scan from the left,
@@ -5080,12 +5694,7 @@ class MPS(BaseMPSExpectationValue):
                 i += 1
         return trunc_err
 
-    def compute_K(self,
-                  perm,
-                  swap_op='auto',
-                  trunc_par=None,
-                  canonicalize=1.e-6,
-                  expected_mean_k=0.):
+    def compute_K(self, perm, swap_op='auto', trunc_par=None, canonicalize=1.0e-6, expected_mean_k=0.0):
         r"""Compute the momentum quantum numbers of the entanglement spectrum for 2D states.
 
         Works for an infinite MPS living on a cylinder, infinitely long in `x` direction and with
@@ -5135,10 +5744,12 @@ class MPS(BaseMPSExpectationValue):
         trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The error of the represented state introduced by the truncation after swaps when
             performing the truncation.
+
         """
         from ..models.lattice import Lattice  # dynamical import to avoid import loops
+
         if self.finite:
-            raise ValueError("Works only for infinite b.c.")
+            raise ValueError('Works only for infinite b.c.')
 
         if isinstance(perm, Lattice):
             lat = perm
@@ -5151,7 +5762,7 @@ class MPS(BaseMPSExpectationValue):
         self.convert_form('B')
         norm_err = np.linalg.norm(self.norm_test())
         if norm_err > canonicalize:
-            warnings.warn("self.norm_test() = {0!s} ==> canonicalize".format(self.norm_test()))
+            warnings.warn(f'self.norm_test() = {self.norm_test()!s} ==> canonicalize')
             self.canonical_form()
         # get copy of self
         psi_t = self.copy()
@@ -5161,7 +5772,7 @@ class MPS(BaseMPSExpectationValue):
         # re-check canonical form
         norm_err = np.linalg.norm(psi_t.norm_test())
         if norm_err > canonicalize:
-            logger.warning("norm_error=%.10f after permutation: ==> canonicalize", norm_err)
+            logger.warning('norm_error=%.10f after permutation: ==> canonicalize', norm_err)
         psi_t.convert_form('B')
         TM = TransferMatrix(self, psi_t, transpose=True, charge_sector=0)
         # Find left dominant eigenvector of this mixed transfer matrix.
@@ -5169,11 +5780,14 @@ class MPS(BaseMPSExpectationValue):
         # the resulting vector should be sUs up to a scaling.
         ov, sUs = TM.eigenvectors(num_ev=self._transfermatrix_keep)
         if np.abs(ov[0]) < 0.9:
-            logger.warning("compute_K: psi is not eigenvector of permutation/translation in y!"
-                           f"expected |o| = 1., got |o| = {abs(ov[0]):.3e}\n")
+            logger.warning(
+                'compute_K: psi is not eigenvector of permutation/translation in y!'
+                f'expected |o| = 1., got |o| = {abs(ov[0]):.3e}\n'
+            )
 
-        logger.info("compute_K: overlap %.5f, |o| = 1. - %.e5., trunc_err.eps=%.3e", ov[0],
-                    1. - np.abs(ov[0]), trunc_err.eps)
+        logger.info(
+            'compute_K: overlap %.5f, |o| = 1. - %.e5., trunc_err.eps=%.3e', ov[0], 1.0 - np.abs(ov[0]), trunc_err.eps
+        )
         sUs = sUs[0].split_legs(0)
         _, sUs_blocked = sUs.as_completely_blocked()
         W = npc.eigvals(sUs_blocked, sort='m>')
@@ -5181,10 +5795,10 @@ class MPS(BaseMPSExpectationValue):
         # (as an eigenvector, sUS has arbitrary/unknown prefactor!)
         W = W / np.sum(np.abs(W))  # fix overall scaling by normalization np.sum(S[i]**2) == 1.
         mean_exp_ik = np.sum(W)
-        if np.abs(mean_exp_ik) > 1.e-5:
-            W *= np.exp(1.j*expected_mean_k) * np.conj(mean_exp_ik) / np.abs(mean_exp_ik)
+        if np.abs(mean_exp_ik) > 1.0e-5:
+            W *= np.exp(1.0j * expected_mean_k) * np.conj(mean_exp_ik) / np.abs(mean_exp_ik)
         # Strip S's from U
-        inv_S = 1. / self.get_SL(0)
+        inv_S = 1.0 / self.get_SL(0)
         U = sUs.scale_axis(inv_S, 0).iscale_axis(inv_S, 1)  # note: U should commute with s
         # U should be unitary - rescale it such that norm(U)**2 = tr(U^dagger U) = chi
         U *= np.sqrt(U.shape[0]) / npc.norm(U)
@@ -5192,15 +5806,15 @@ class MPS(BaseMPSExpectationValue):
 
     def __str__(self):
         """Some status information about the MPS."""
-        res = ["MPS, L={L:d}, bc={bc!r}.".format(L=self.L, bc=self.bc)]
-        res.append("chi: " + str(self.chi))
+        res = [f'MPS, L={self.L:d}, bc={self.bc!r}.']
+        res.append('chi: ' + str(self.chi))
         if self.L > 10:
-            res.append("first two sites: " + repr(self.sites[0]) + " " + repr(self.sites[1]))
-            res.append("first two forms:" + " ".join([repr(f) for f in self.form[:2]]))
+            res.append('first two sites: ' + repr(self.sites[0]) + ' ' + repr(self.sites[1]))
+            res.append('first two forms:' + ' '.join([repr(f) for f in self.form[:2]]))
         else:
-            res.append("sites: " + " ".join([repr(s) for s in self.sites]))
-            res.append("forms: " + " ".join([repr(f) for f in self.form]))
-        return "\n".join(res)
+            res.append('sites: ' + ' '.join([repr(s) for s in self.sites]))
+            res.append('forms: ' + ' '.join([repr(f) for f in self.form]))
+        return '\n'.join(res)
 
     def compress(self, options):
         """Compress an MPS.
@@ -5221,14 +5835,16 @@ class MPS(BaseMPSExpectationValue):
         -------
         max_trunc_err : :class:`~tenpy.algorithms.truncation.TruncationError`
             The maximal truncation error of a two-site wave function.
+
         """
-        options = asConfig(options, "MPS_compress")
+        options = asConfig(options, 'MPS_compress')
         method = options['compression_method']
         trunc_params = options.subconfig('trunc_params')
         if method == 'SVD':
             return self.compress_svd(trunc_params)
         elif method == 'variational':
             from ..algorithms.mps_common import VariationalCompression
+
             return VariationalCompression(self, options).run()
         elif method == 'DMT':
             dmt_params = options['dmt_par']
@@ -5239,7 +5855,7 @@ class MPS(BaseMPSExpectationValue):
 
             return self.compress_dmt(trunc_params, dmt_params, trace_env, MPO_envs, svd_trunc_params_0, svd_trunc_params_2)
         #SAJANT - ADD DMT OPTION
-        raise ValueError("Unknown compression method: " + repr(method))
+        raise ValueError('Unknown compression method: ' + repr(method))
 
     def compress_svd(self, trunc_par):
         """Compress `self` with a single sweep of SVDs; in place.
@@ -5254,6 +5870,7 @@ class MPS(BaseMPSExpectationValue):
         ----------
         trunc_par : dict
             Parameters for truncation, see :cfg:config:`truncation`.
+
         """
         trunc_err = TruncationError()
         if self.bc == 'finite':
@@ -5295,7 +5912,7 @@ class MPS(BaseMPSExpectationValue):
                 theta = theta.combine_legs([['vL'] + p_l[:len(p_l)//2], p_l[len(p_l)//2:] + ['vR']], qconj=[+1, -1])
                 trunc_err += self.set_svd_theta(i, theta, trunc_par, update_norm=False)
         else:
-            raise NotImplementedError("unsupported boundary conditions " + repr(self.bc))
+            raise NotImplementedError('unsupported boundary conditions ' + repr(self.bc))
         return trunc_err
 
     def compress_dmt(self, trunc_par, dmt_par,
@@ -5425,7 +6042,7 @@ class MPS(BaseMPSExpectationValue):
         if len(form) == 1:
             form = [form[0]] * self.L
         if len(form) != self.L:
-            raise ValueError("Wrong len of `form`: " + repr(form))
+            raise ValueError('Wrong len of `form`: ' + repr(form))
         return [self._to_valid_form(f) for f in form]
 
     def _to_valid_form(self, form):
@@ -5451,18 +6068,18 @@ class MPS(BaseMPSExpectationValue):
             return B  # nothing to do
         if not isinstance(S, npc.Array):
             # the usual case: S is a 1D array with singular values
-            if form_diff == -1.:
-                S = 1. / S
-            elif form_diff != 1.:
+            if form_diff == -1.0:
+                S = 1.0 / S
+            elif form_diff != 1.0:
                 S = S**form_diff
             return B.scale_axis(S, axis_B)
         else:
             # e.g. during DMRG with a DensityMatrixMixer
             if S.rank != 2:
-                raise ValueError("Expect 2D npc.Array or 1D numpy ndarray")
+                raise ValueError('Expect 2D npc.Array or 1D numpy ndarray')
             if form_diff == -1:
                 S = npc.pinv(S, cutoff)
-            elif form_diff != 1.:
+            elif form_diff != 1.0:
                 raise ValueError("Can't scale/tensordot a 2D `S` for non-integer `form_diff`")
 
             # Hack: mpo.MPOEnvironment.full_contraction uses ``axis_B == 'vL*'``
@@ -5471,7 +6088,7 @@ class MPS(BaseMPSExpectationValue):
             elif axis_B == 'vR' or axis_B == 'vR*':
                 B = npc.tensordot(B, S, axes=[axis_B, 0]).replace_label(-1, axis_B)
             else:
-                raise ValueError("This should never happen: unexpected leg for scaling with S")
+                raise ValueError('This should never happen: unexpected leg for scaling with S')
             return B
 
     def _canonical_form_dominant_gram_matrix(self, bond0, transpose, tol_xi, guess=None):
@@ -5481,33 +6098,32 @@ class MPS(BaseMPSExpectationValue):
         """
         TM = TransferMatrix(self, self, bond0, bond0, transpose=transpose, charge_sector=0)
         if guess is None:
-            diag = self.get_SL(bond0)**2 if transpose else 1.
+            diag = self.get_SL(bond0) ** 2 if transpose else 1.0
             guess = TM.initial_guess(diag)
         guess = guess.combine_legs([0, 1], pipes=TM.pipe)
         eta, V = TM.eigenvectors(self._transfermatrix_keep, v0_npc=guess, which='LM')
         self._transfermatrix_keep = len(eta)
         if len(eta) > 1:
             if np.abs(eta[0]) > np.abs(eta[1]):
-                xi = -self.L / np.log(np.abs((eta[1] / eta[0])))
+                xi = -self.L / np.log(np.abs(eta[1] / eta[0]))
             else:
                 xi = np.inf
             if xi > tol_xi:
-                raise ValueError("Degenerate spectrum of TransferMatrix "
-                                 "(corr length xi={xi:.3e})".format(xi=xi))
+                raise ValueError(f'Degenerate spectrum of TransferMatrix (corr length xi={xi:.3e})')
         eta, G = eta[0], V[0]
         G = G.split_legs()
         # note: the dominant eigenvector should be hermitian and positive
         # removes phase (arbitrary for eigenvectors!) and normalize
         # right eigenvectors should have trace chi, left ones trace 1
         # (since we expect something close to eye(chi) for right and diag(S**2) for left G)
-        norm = 1. if transpose else G.shape[0]
+        norm = 1.0 if transpose else G.shape[0]
         G *= norm / npc.trace(G, 0, 1)
         if self.dtype.kind != 'c':  # psi is real -> G should be real
             eta = np.abs(eta)
             G.iunary_blockwise(np.real)
         return eta, G  # G has legs vL, vL* or vR, vR*
 
-    def _canonical_form_correct_right(self, i1, Gr, eps=2. * np.finfo(np.double).eps):
+    def _canonical_form_correct_right(self, i1, Gr, eps=2.0 * np.finfo(np.double).eps):
         """Given the right gram matrix Gr, updated the bond (i0, i1), where i0 = i1 - 1.
 
         Diagonalize Gr = X^H Wr X and update
@@ -5522,24 +6138,24 @@ class MPS(BaseMPSExpectationValue):
         if np.sign(W[np.argmax(np.abs(W))]) == -1:  # fix sign
             W = -W  # should actually never happen:  we initially normalize tr(Gr) = chi > 0
         # discard small values on order of machine precision
-        proj = (W > eps)
+        proj = W > eps
         if np.count_nonzero(proj) < len(W):
             # project into non-degenerate subspace, reducing the bond dimensions!
             if np.count_nonzero(proj) < len(W) * 0.9:
-                logger.warning("canonical_form_infinite: project to significantly smaller chi")
+                logger.warning('canonical_form_infinite: project to significantly smaller chi')
             XH.iproject(proj, axes=1)
             W = W[proj]
         norm = len(W) / np.sum(W)
         W *= norm
         norm = np.sqrt(norm)  # (norm doesn't change eigenvalue of TM)
-        Kl = XH.iset_leg_labels(['vL', 'vR']) * (1. / norm)
+        Kl = XH.iset_leg_labels(['vL', 'vR']) * (1.0 / norm)
         Kr = XH.transpose().iconj().iset_leg_labels(['vL', 'vR']) * norm
         i0 = i1 - 1
         self.set_B(i0, npc.tensordot(self.get_B(i0), Kl, axes=['vR', 'vL']))
         self.set_B(i1, npc.tensordot(Kr, self.get_B(i1), axes=['vR', 'vL']))
         return W, Kl, Kr
 
-    def _canonical_form_correct_left(self, i1, Gl, Wr, eps=2. * np.finfo(np.double).eps):
+    def _canonical_form_correct_left(self, i1, Gl, Wr, eps=2.0 * np.finfo(np.double).eps):
         """Bring into canonical form on bond (i0, i1) where i0= i1 - 1.
 
         Given the left Gram matrix Gl (with legs 'vR*', 'vR')
@@ -5559,20 +6175,20 @@ class MPS(BaseMPSExpectationValue):
         rhor = Gl.scale_axis(sqrt_Wr, 0).iscale_axis(sqrt_Wr, 1)
         S2, YH = npc.eigh(rhor, sort='>')  # YH has legs 'vR*', 'vR'
         S2 /= np.sum(S2)  # equivalent to normalizing tr(rhor)=1
-        s_norm = 1.
+        s_norm = 1.0
         # discard small values on order of machine precision
-        proj = (S2 > eps)
+        proj = S2 > eps
         if np.count_nonzero(proj) < len(S2):
             # project into non-degenerate subspace, reducing the bond dimensions!
             if np.count_nonzero(proj) < len(S2) * 0.9:
-                logger.warning("canonical_form_infinite: project to significantly smaller chi")
+                logger.warning('canonical_form_infinite: project to significantly smaller chi')
             YH.iproject(proj, axes=1)
             S2 = S2[proj]
             s_norm = np.sqrt(np.sum(S2))
         S = np.sqrt(S2) / s_norm
         self.set_SL(i1, S)
         Yl = YH.scale_axis(sqrt_Wr / s_norm, 0).iset_leg_labels(['vL', 'vR'])
-        Yr = YH.transpose().iconj().scale_axis(1. / sqrt_Wr, 1).iset_leg_labels(['vL', 'vR'])
+        Yr = YH.transpose().iconj().scale_axis(1.0 / sqrt_Wr, 1).iset_leg_labels(['vL', 'vR'])
         i0 = i1 - 1
         self.set_B(i0, npc.tensordot(self.get_B(i0), Yl, axes=['vR', 'vL']))
         self.set_B(i1, npc.tensordot(Yr, self.get_B(i1), axes=['vR', 'vL']))
@@ -5589,7 +6205,7 @@ class MPS(BaseMPSExpectationValue):
         """
         if self.chinfo.qnumber == 0:
             return other
-        need_gauge = (self.outer_virtual_legs() != other.outer_virtual_legs())
+        need_gauge = self.outer_virtual_legs() != other.outer_virtual_legs()
         if need_gauge:
             vL, vR = self.outer_virtual_legs()
             other = copy.copy(other)  # make shallow copy
@@ -5605,6 +6221,7 @@ class MPS(BaseMPSExpectationValue):
         vL, vR : :class:`~tenpy.linalg.charges.LegCharge`
             Outermost virtual legs of the MPS. Preserved for a segment MPS even when calling
             :meth:`canonical_form` on the segment.
+
         """
         U, V = self.segment_boundaries
         if U is not None:
@@ -5619,7 +6236,7 @@ class MPS(BaseMPSExpectationValue):
         return self, self
 
     def _normalize_exp_val(self, value):
-        return np.real_if_close(value) # ignore self.norm
+        return np.real_if_close(value)  # ignore self.norm
 
     def _contract_with_LP(self, C, i):
         C.ireplace_labels(['vL'], ['vR*'])
@@ -5630,7 +6247,7 @@ class MPS(BaseMPSExpectationValue):
         return C
 
 
-class BaseEnvironment(metaclass=ABCMeta):
+class BaseEnvironment(MPSGeometry, metaclass=ABCMeta):
     """Base class for :class:`MPSEnvironment` storing partial contractions between MPS.
 
     When `bra` and `ket` are the same, a suitable canonical form simplifies `LP` and `RP` tensors
@@ -5665,17 +6282,10 @@ class BaseEnvironment(metaclass=ABCMeta):
 
     Attributes
     ----------
-    sites : list of :class:`~tenpy.networks.site.Site`
-        Defines the local Hilbert space for each site.
-    L : int
-        Number of physical sites involved into the Environment, i.e. the least common multiple
-        of ``bra.L`` and ``ket.L``.
     bra, ket : :class:`~tenpy.networks.mps.MPS`
         The two MPS for the contraction.
     dtype : type
         The data type.
-    finite : bool
-        Whether the boundary conditions of the MPS are finite.
     cache : :class:`~tenpy.tools.cache.DictCache`
         Cache for saving the environment tensors.
     _LP_keys, _RP_keys : list of str
@@ -5696,6 +6306,7 @@ class BaseEnvironment(metaclass=ABCMeta):
         Used for book-keeping, how large the DMRG system grew:
         ``_RP_age[i]`` stores the number of physical sites involved into the contraction
         network which yields ``self._RP[i]``.
+
     """
 
     def __init__(self, bra, ket, cache=None, **init_env_data):
@@ -5706,36 +6317,42 @@ class BaseEnvironment(metaclass=ABCMeta):
         self.bra = bra
         self.ket = ket
         self.dtype = np.promote_types(bra.dtype, ket.dtype)
-        self.L = L = lcm(bra.L, ket.L)
+        L = lcm(bra.L, ket.L)
         if hasattr(self, 'H'):
-            self.L = L = lcm(self.H.L, L)
-        self.finite = self.ket.finite  # just for _to_valid_index
-        self.sites = self.ket.sites * (L // self.ket.L)
-        self._LP_keys = ['LP_{0:d}'.format(i) for i in range(L)]
-        self._RP_keys = ['RP_{0:d}'.format(i) for i in range(L)]
+            L = lcm(self.H.L, L)
+        if bra.finite:  # finite or segment
+            assert ket.finite
+            # distinction between bc='finite' and bc='segment' is not very important.
+            # just set something sensible.
+            if bra.bc == 'segment' or ket.bc == 'segment':
+                bc = 'segment'
+            else:
+                bc = 'finite'
+        else:
+            bc = 'infinite'
+        sites = self.ket.sites * (L // self.ket.L)
+        super().__init__(sites=sites, bc=bc, unit_cell_width=ket.unit_cell_width * (L // ket.L))
+        self._LP_keys = [f'LP_{i:d}' for i in range(L)]
+        self._RP_keys = [f'RP_{i:d}' for i in range(L)]
         self._LP_age = [None] * L
         self._RP_age = [None] * L
         if cache is None:
             cache = DictCache.trivial()
         self.cache = cache
         if not self.cache.long_term_storage.trivial and L < 8:
-            warnings.warn("non-trivial cache for short-length environment: "
-                          "Much overhead for a little RAM saving. Necessary?")
+            warnings.warn(
+                'non-trivial cache for short-length environment: Much overhead for a little RAM saving. Necessary?'
+            )
         self.init_first_LP_last_RP(**init_env_data)
         self.test_sanity()
 
-    def init_first_LP_last_RP(self,
-                              init_LP=None,
-                              init_RP=None,
-                              age_LP=0,
-                              age_RP=0,
-                              start_env_sites=0):
+    def init_first_LP_last_RP(self, init_LP=None, init_RP=None, age_LP=0, age_RP=0, start_env_sites=0):
         """(Re)initialize first LP and last RP from the given data.
 
         Parameters
         ----------
         init_LP : ``None`` | :class:`~tenpy.linalg.np_conserved.Array`
-            Initial very left part ``LP``. If ``None``, build one with :meth`init_LP`.
+            Initial very left part ``LP``. If ``None``, build one with :meth:`init_LP`.
         init_RP : ``None`` | :class:`~tenpy.linalg.np_conserved.Array`
             Initial very right part ``RP``. If ``None``, build one with :meth:`init_RP`.
         age_LP : int
@@ -5744,6 +6361,7 @@ class BaseEnvironment(metaclass=ABCMeta):
             The number of physical sites involved into the contraction of `init_RP`.
         start_env_sites : int
             If `init_LP` and `init_RP` are not specified, contract each `start_env_sites` for them.
+
         """
         init_LP, init_RP = self._check_compatible_legs(init_LP, init_RP, start_env_sites)
         ket_U, ket_V = self.ket.segment_boundaries
@@ -5769,7 +6387,10 @@ class BaseEnvironment(metaclass=ABCMeta):
 
     def test_sanity(self):
         """Sanity check, raises ValueErrors, if something is wrong."""
-        assert (self.bra.finite == self.ket.finite == self.finite)
+        super().test_sanity()
+        assert self.bra.finite == self.ket.finite == self.finite
+        assert self.unit_cell_width == self.ket.unit_cell_width * (self.L // self.ket.L)
+        assert self.unit_cell_width == self.bra.unit_cell_width * (self.L // self.bra.L)
         assert any(key in self.cache for key in self._LP_keys)
         assert any(key in self.cache for key in self._RP_keys)
 
@@ -5784,16 +6405,24 @@ class BaseEnvironment(metaclass=ABCMeta):
                 vR_ket = self.ket.get_B(self.L - 1 + start_env_sites, 'B').get_leg('vR')
                 vR_bra = self.bra.get_B(self.L - 1 + start_env_sites, 'B').get_leg('vR')
         if init_LP is not None:
-            compatible = (init_LP.get_leg('vR') == vL_ket.conj()
-                          and init_LP.get_leg('vR*') == vL_bra)
-            if not compatible:
-                warnings.warn("dropping `init_LP` with incompatible MPS legs")
+            incompatible_legs = []
+            if init_LP.get_leg('vR') != vL_ket.conj():
+                incompatible_legs.append('vR')
+            if init_LP.get_leg('vR*') != vL_bra:
+                incompatible_legs.append('vR*')
+            if incompatible_legs:
+                msg = f'dropping `init_LP` with incompatible virtual legs: {", ".join(incompatible_legs)}'
+                warnings.warn(msg, stacklevel=2)
                 init_LP = None
         if init_RP is not None:
-            compatible = (init_RP.get_leg('vL') == vR_ket.conj()
-                          and init_RP.get_leg('vL*') == vR_bra)
-            if not compatible:
-                warnings.warn("dropping `init_RP` with incompatible MPS legs")
+            incompatible_legs = []
+            if init_RP.get_leg('vL') != vR_ket.conj():
+                incompatible_legs.append('vL')
+            if init_RP.get_leg('vL*') != vR_bra:
+                incompatible_legs.append('vL*')
+            if incompatible_legs:
+                msg = f'dropping `init_RP` with incompatible virtual legs: {", ".join(incompatible_legs)}'
+                warnings.warn(msg, stacklevel=2)
                 init_RP = None
         return init_LP, init_RP
 
@@ -5817,8 +6446,9 @@ class BaseEnvironment(metaclass=ABCMeta):
         -------
         init_LP : :class:`~tenpy.linalg.np_conserved.Array`
             Identity contractible with the `vL` leg of ``ket.get_B(i)``, labels ``'vR*', 'vR'``.
+
         """
-        if self.ket.bc == "segment" and self.bra is not self.ket:
+        if self.ket.bc == 'segment' and self.bra is not self.ket:
             U_bra, V_bra = self.bra.segment_boundaries
             U_ket, V_ket = self.ket.segment_boundaries
             if U_bra is not None or U_ket is not None:
@@ -5832,7 +6462,7 @@ class BaseEnvironment(metaclass=ABCMeta):
         leg_ket = self.ket.get_B(i - start_env_sites, None).get_leg('vL')
         leg_bra = self.bra.get_B(i - start_env_sites, None).get_leg('vL')
         leg_ket.test_equal(leg_bra)
-        init_LP = npc.diag(1., leg_ket, dtype=self.dtype, labels=['vR*', 'vR'])
+        init_LP = npc.diag(1.0, leg_ket, dtype=self.dtype, labels=['vR*', 'vR'])
         for j in range(i - start_env_sites, i):
             init_LP = self._contract_LP(j, init_LP)
         return init_LP
@@ -5857,8 +6487,9 @@ class BaseEnvironment(metaclass=ABCMeta):
         -------
         init_RP : :class:`~tenpy.linalg.np_conserved.Array`
             Identity contractible with the `vR` leg of ``ket.get_B(i)``, labels ``'vL*', 'vL'``.
+
         """
-        if self.ket.bc == "segment" and self.bra is not self.ket:
+        if self.ket.bc == 'segment' and self.bra is not self.ket:
             U_bra, V_bra = self.bra.segment_boundaries
             U_ket, V_ket = self.ket.segment_boundaries
             if V_bra is not None or V_ket is not None:
@@ -5872,7 +6503,7 @@ class BaseEnvironment(metaclass=ABCMeta):
         leg_ket = self.ket.get_B(i + start_env_sites, None).get_leg('vR')
         leg_bra = self.bra.get_B(i + start_env_sites, None).get_leg('vR')
         leg_ket.test_equal(leg_bra)
-        init_RP = npc.diag(1., leg_ket, dtype=self.dtype, labels=['vL*', 'vL'])
+        init_RP = npc.diag(1.0, leg_ket, dtype=self.dtype, labels=['vL*', 'vL'])
         for j in range(i + start_env_sites, i, -1):
             init_RP = self._contract_RP(j, init_RP)
         return init_RP
@@ -5889,6 +6520,8 @@ class BaseEnvironment(metaclass=ABCMeta):
             |     |       |             |
             |     .-------N[0]*-- ... --N[i-1]*--<-   'vR*'
 
+        Takes care of shifting as described in :ref:`shift_symmetry`.
+
         Parameters
         ----------
         i : int
@@ -5901,16 +6534,19 @@ class BaseEnvironment(metaclass=ABCMeta):
         LP_i : :class:`~tenpy.linalg.np_conserved.Array`
             Contraction of everything left of site `i`,
             with labels ``'vR*', 'vR'`` for `bra`, `ket`.
+
         """
         # find nearest available LP to the left.
         for i0 in range(i, i - self.L, -1):
-            key = self._LP_keys[self._to_valid_index(i0)]
+            i0_in_unit_cell, num_unit_cells = self._to_valid_site_index(i0, return_num_unit_cells=True)
+            key = self._LP_keys[i0_in_unit_cell]
             LP = self.cache.get(key, None)
             if LP is not None:
+                LP = self.shift_Array_unit_cells(LP, num_unit_cells, inplace=False)
                 break
             # (for finite, LP[0] should always be set, so we should abort at latest with i0=0)
         else:  # no break called
-            raise ValueError("No left part in the system???")
+            raise ValueError('No left part in the system???')
         age = self.get_LP_age(i0)
         for j in range(i0, i):
             LP = self._contract_LP(j, LP)
@@ -5931,6 +6567,7 @@ class BaseEnvironment(metaclass=ABCMeta):
             |                |              |         |
             |     'vL*' -<---N[i+1]*- ... --N[L-1]*---.
 
+        Takes care of shifting as described in :ref:`shift_symmetry`.
 
         Parameters
         ----------
@@ -5944,16 +6581,19 @@ class BaseEnvironment(metaclass=ABCMeta):
         RP_i : :class:`~tenpy.linalg.np_conserved.Array`
             Contraction of everything left of site `i`,
             with labels ``'vL', 'vL*'`` for `ket`, `bra`.
+
         """
         # find nearest available RP to the right.
         for i0 in range(i, i + self.L):
-            key = self._RP_keys[self._to_valid_index(i0)]
+            i0_in_unit_cell, num_unit_cells = self._to_valid_site_index(i0, return_num_unit_cells=True)
+            key = self._RP_keys[i0_in_unit_cell]
             RP = self.cache.get(key, None)
             if RP is not None:
+                RP = self.shift_Array_unit_cells(RP, num_unit_cells, inplace=False)
                 break
             # (for finite, RP[-1] should always be set, so we should abort at latest with i0=L-1)
         else:  # no break called
-            raise ValueError("No right part in the system???")
+            raise ValueError('No right part in the system???')
         age = self.get_RP_age(i0)
         for j in range(i0, i, -1):
             RP = self._contract_RP(j, RP)
@@ -5967,36 +6607,42 @@ class BaseEnvironment(metaclass=ABCMeta):
 
         Might be ``None``.
         """
-        return self._LP_age[self._to_valid_index(i)]
+        return self._LP_age[self._to_valid_site_index(i)]
 
     def get_RP_age(self, i):
         """Return number of physical sites in the contractions of get_RP(i).
 
         Might be ``None``.
         """
-        return self._RP_age[self._to_valid_index(i)]
+        return self._RP_age[self._to_valid_site_index(i)]
 
     def set_LP(self, i, LP, age):
-        """Store part to the left of site `i`."""
-        i = self._to_valid_index(i)
-        self.cache[self._LP_keys[i]] = LP
+        """Store part to the left of site `i`. No copy is made!
+
+        Takes care of shifting as described in :ref:`shift_symmetry`.
+        """
+        i, num_unit_cells = self._to_valid_site_index(i, return_num_unit_cells=True)
+        self.cache[self._LP_keys[i]] = self.shift_Array_unit_cells(LP, -num_unit_cells)
         self._LP_age[i] = age
 
     def set_RP(self, i, RP, age):
-        """Store part to the right of site `i`."""
-        i = self._to_valid_index(i)
-        self.cache[self._RP_keys[i]] = RP
+        """Store part to the right of site `i`. No copy is made!
+
+        Takes care of shifting as described in :ref:`shift_symmetry`.
+        """
+        i, num_unit_cells = self._to_valid_site_index(i, return_num_unit_cells=True)
+        self.cache[self._RP_keys[i]] = self.shift_Array_unit_cells(RP, -num_unit_cells)
         self._RP_age[i] = age
 
     def del_LP(self, i):
         """Delete stored part strictly to the left of site `i`."""
-        i = self._to_valid_index(i)
+        i = self._to_valid_site_index(i)
         del self.cache[self._LP_keys[i]]
         self._LP_age[i] = None
 
     def del_RP(self, i):
         """Delete stored part strictly to the right of site `i`."""
-        i = self._to_valid_index(i)
+        i = self._to_valid_site_index(i)
         del self.cache[self._RP_keys[i]]
         self._RP_age[i] = None
 
@@ -6010,11 +6656,11 @@ class BaseEnvironment(metaclass=ABCMeta):
 
     def has_LP(self, i):
         """Return True if `LP` left of site `i` is stored."""
-        return self._LP_keys[self._to_valid_index(i)] in self.cache
+        return self._LP_keys[self._to_valid_site_index(i)] in self.cache
 
     def has_RP(self, i):
         """Return True if `RP` right of site `i` is stored."""
-        return self._RP_keys[self._to_valid_index(i)] in self.cache
+        return self._RP_keys[self._to_valid_site_index(i)] in self.cache
 
     def cache_optimize(self, short_term_LP=[], short_term_RP=[], preload_LP=None, preload_RP=None):
         """Update `short_term_keys` for the cache and possibly preload tensors.
@@ -6028,17 +6674,20 @@ class BaseEnvironment(metaclass=ABCMeta):
         preload_LP, preload_RP : int | None
             If not None, preload the tensors for the corresponding :meth:`get_LP` and :meth:`get_RP`
             call, respectively, from disk.
+
         """
         LP_keys = self._LP_keys
         RP_keys = self._RP_keys
         preload = []
         if preload_LP is not None:
-            preload.append(LP_keys[self._to_valid_index(preload_LP)])
+            preload.append(LP_keys[self._to_valid_site_index(preload_LP)])
         if preload_RP is not None:
-            preload.append(RP_keys[self._to_valid_index(preload_RP)])
-        self.cache.set_short_term_keys(*(LP_keys[self._to_valid_index(i)] for i in short_term_LP),
-                                       *(RP_keys[self._to_valid_index(i)] for i in short_term_RP),
-                                       *preload)
+            preload.append(RP_keys[self._to_valid_site_index(preload_RP)])
+        self.cache.set_short_term_keys(
+            *(LP_keys[self._to_valid_site_index(i)] for i in short_term_LP),
+            *(RP_keys[self._to_valid_site_index(i)] for i in short_term_RP),
+            *preload,
+        )
         self.cache.preload(*preload)
 
     def get_initialization_data(self, first=0, last=None, include_bra=False, include_ket=False):
@@ -6066,6 +6715,7 @@ class BaseEnvironment(metaclass=ABCMeta):
             bra, ket : :class:`~tenpy.networks.mps.MPS`
                 References of :attr:`bra` and :attr:`ket`.
                 Only included if `include_bra` and `include_ket` are True, respectively.
+
         """
         if last is None:
             last = self.L - 1
@@ -6131,12 +6781,13 @@ class BaseEnvironment(metaclass=ABCMeta):
         ----------
         i0 : int
             Site index.
+
         """
         ...  # can use _full_contraction_LP_RP
 
     def _full_contraction_LP_RP(self, i0):
         if self.ket.finite and i0 + 1 == self.L:
-            # special case to handle `_to_valid_index` correctly:
+            # special case to handle `_to_valid_site_index` correctly:
             # get_LP(L) is not valid for finite b.c, so we use need to calculate it explicitly.
             LP = self.get_LP(i0, store=False)
             LP = self._contract_LP(i0, LP)
@@ -6156,6 +6807,57 @@ class BaseEnvironment(metaclass=ABCMeta):
         RP = self.get_RP(i0, store=False)
         return LP, RP
 
+    def expectation_value_terms_sum(self, term_list):
+        """Calculate expectation values for a bunch of terms and sum them up.
+
+        This is equivalent to the following expression::
+
+            sum([self.expectation_value_term(term) * strength for term, strength in term_list])
+
+        However, for efficiency, the term_list is converted to an MPO and the expectation value
+        of the MPO is evaluated.
+
+         .. warning ::
+
+             This function works only for finite bra and ket and does not include normalization factors.
+
+        Parameters
+        ----------
+        term_list : :class:`~tenpy.networks.terms.TermList`
+            The terms and prefactors (`strength`) to be summed up.
+
+        Returns
+        -------
+        terms_sum : (complex) float
+            Equivalent to the expression
+            ``sum([self.expectation_value_term(term)*strength for term, strength in term_list])``.
+        _mpo :
+            Intermediate results: the generated MPO.
+            For a finite MPS, ``terms_sum = _mpo.expectation_value(self)``, for an infinite MPS
+            ``terms_sum = _mpo.expectation_value(self) * self.L``
+
+        See Also
+        --------
+        expectation_value_term : evaluates a single `term`.
+        tenpy.networks.mpo.MPO.expectation_value : expectation value density of an MPO.
+
+        """
+        # this implementation assumes that bra and ket are different. the implementation in MPS
+        # overrides this.
+        from . import mpo
+
+        if not self.finite:
+            raise ValueError('MPO expectation values only works for a finite MPSEnvironment')
+        # conversion
+        ot, ct = term_list.to_OnsiteTerms_CouplingTerms(self.sites)
+        bc = 'finite' if self.finite else 'infinite'
+        mpo_graph = mpo.MPOGraph.from_terms((ot, ct), self.sites, bc, unit_cell_width=self.unit_cell_width)
+        mpo_ = mpo_graph.build_MPO()
+
+        env = mpo.MPOEnvironment(self.bra, mpo_, self.ket)
+        terms_sum = env.full_contraction(0)  # handles explicit_plus_hc
+        return np.real_if_close(terms_sum), mpo_
+
     @abstractmethod
     def _contract_LP(self, i, LP):
         """Contract LP with the tensors on site `i` to form ``self.get_LP(i+1)``"""
@@ -6165,6 +6867,47 @@ class BaseEnvironment(metaclass=ABCMeta):
     def _contract_RP(self, i, RP):
         """Contract RP with the tensors on site `i` to form ``self.get_RP(i-1)``"""
         ...
+
+    def _to_valid_index(self, i):
+        """Make sure `i` is a valid index of a site.
+
+        .. deprecated :: 1.2.0
+            Use :meth:`~tenpy.networks.mps.MPSGeometry._to_valid_site_index`
+            or :meth:`~tenpy.networks.mps.MPSGeometry._to_valid_bond_index` instead.
+            Note that they have an additional return value.
+
+        For finite MPS, we just check if ``i`` is within bounds.
+        For infinite MPS, we return the index *within* the unit cell that is equivalent to
+        ``i``, by adding a suitable multiple of ``self.L``.
+        """
+        msg = '_to_valid_index methods have been deprecated. Use _to_valid_site_index or _to_valid_bond_index instead.'
+        warnings.warn(msg, category=FutureWarning, stacklevel=2)
+        i, _ = self._to_valid_site_index(i)
+        return i
+
+    def _update_gauge_LP(self, i, U, update_bra, update_ket):
+        """Update LP[i] following the MPS gauge ``A[i-1] A[i] -> (A[i-1] U) (Udagger A[i])``."""
+        assert update_bra or update_ket
+        if not self.has_LP(i):
+            return
+        LP = self.get_LP(i)
+        if update_ket:
+            LP = npc.tensordot(LP, U, axes=['vR', 'vL'])
+        if update_bra:
+            LP = npc.tensordot(U.conj(), LP, axes=['vL*', 'vR*'])
+        self.set_LP(i, LP, self.get_LP_age(i))
+
+    def _update_gauge_RP(self, i, V, update_bra, update_ket):
+        """Update RP[i] following the MPS gauge ``B[i] B[i+1] -> (B[i] Vdagger) (V B[i+1])``."""
+        assert update_bra or update_ket
+        if not self.has_RP(i):
+            return
+        RP = self.get_RP(i)
+        if update_ket:
+            RP = npc.tensordot(V, RP, axes=['vR', 'vL'])
+        if update_bra:
+            RP = npc.tensordot(RP, V.conj(), axes=['vL*', 'vR*'])
+        self.set_RP(i, RP, self.get_RP_age(i))
 
 
 class MPSEnvironment(BaseEnvironment, BaseMPSExpectationValue):
@@ -6206,6 +6949,7 @@ class MPSEnvironment(BaseEnvironment, BaseMPSExpectationValue):
         ----------
         i0 : int
             Site index.
+
         """
         LP, RP = self._full_contraction_LP_RP(i0)
         contr = npc.inner(LP, RP, axes=[['vR*', 'vR'], ['vL*', 'vL']], do_conj=False)
@@ -6247,30 +6991,6 @@ class MPSEnvironment(BaseEnvironment, BaseMPSExpectationValue):
         RP = self.get_RP(i, store=True)
         C = npc.tensordot(C, RP, axes=['vR', 'vL'])  # axes_p + (vL, vL*)
         return C
-
-    def _update_gauge_LP(self, i, U, update_bra, update_ket):
-        """Update LP[i] following the MPS gauge ``A[i-1] A[i] -> (A[i-1] U) (Udagger A[i])``."""
-        assert update_bra or update_ket
-        if not self.has_LP(i):
-            return
-        LP = self.get_LP(i)
-        if update_ket:
-            LP = npc.tensordot(LP, U, axes=['vR', 'vL'])
-        if update_bra:
-            LP = npc.tensordot(U.conj(), LP, axes=['vL*', 'vR*'])
-        self.set_LP(i, LP, self.get_LP_age(i))
-
-    def _update_gauge_RP(self, i, V, update_bra, update_ket):
-        """Update RP[i] following the MPS gauge ``B[i] B[i+1] -> (B[i] Vdagger) (V B[i+1])``."""
-        assert update_bra or update_ket
-        if not self.has_RP(i):
-            return
-        RP = self.get_RP(i)
-        if update_ket:
-            RP = npc.tensordot(V, RP, axes=['vR', 'vL'])
-        if update_bra:
-            RP = npc.tensordot(RP, V.conj(), axes=['vL*', 'vR*'])
-        self.set_RP(i, RP, self.get_RP_age(i))
 
 
 class NonTrivialMPSEnvironment(BaseEnvironment):
@@ -6385,7 +7105,7 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
         leg_bra = self.bra.get_B(i - start_env_sites, None).get_leg('vL') # incoming
         # Won't be true!
         #leg_ket.test_equal(leg_bra)
-        combined_leg_ket = LegPipe([leg_bra, leg_ket.conj()], leg_ket.qconj)
+        combined_leg_ket = npc.LegPipe([leg_bra, leg_ket.conj()], leg_ket.qconj)
         init_LP = npc.diag(1., combined_leg_ket, dtype=self.dtype, labels=['(vR*.vR)', '(vL*.vL)']) # ought to have 4 legs now.
         init_LP = init_LP.split_legs()
         for j in range(i - start_env_sites, i):
@@ -6402,7 +7122,7 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
         leg_bra = self.bra.get_B(i + start_env_sites, None).get_leg('vR')
         # Won't be true!
         #leg_ket.test_equal(leg_bra)
-        combined_leg_ket = LegPipe([leg_bra, leg_ket.conj()], leg_ket.qconj)
+        combined_leg_ket = npc.LegPipe([leg_bra, leg_ket.conj()], leg_ket.qconj)
         init_RP = npc.diag(1., combined_leg_ket, dtype=self.dtype, labels=['(vL*.vL)', '(vR*.vR)']) # ought to have 4 legs now.
         init_RP = init_RP.split_legs()
         for j in range(i + start_env_sites, i, -1):
@@ -6536,7 +7256,7 @@ class TransferMatrix(sparse.NpcLinearOperator):
     shift_ket : int
         We start the `M` of the ket at site `shift_ket`.
     transpose : bool
-        Whether `self.matvec` acts on `RP` (``True``) or `LP` (``False``).
+        Whether `self.matvec` acts on `RP` (``False``) or `LP` (``True``).
     qtotal : charges
         Total charge of the transfer matrix (which is gauged away in matvec).
     form : tuple(float, float) | None
@@ -6552,19 +7272,14 @@ class TransferMatrix(sparse.NpcLinearOperator):
         Complex conjugated matrices of the bra, transposed for fast `matvec`.
     _ket_M : list of npc.Array
         The matrices of the ket, transposed for fast `matvec`.
+
     """
 
-    def __init__(self,
-                 bra,
-                 ket,
-                 shift_bra=0,
-                 shift_ket=0,
-                 transpose=False,
-                 charge_sector=0,
-                 form='B'):
+    def __init__(self, bra, ket, shift_bra=0, shift_ket=0, transpose=False, charge_sector=0, form='B'):
         L = lcm(bra.L, ket.L)
+        unit_cell_width = ket.unit_cell_width * (L // ket.L)
         if ket.chinfo != bra.chinfo:
-            raise ValueError("incompatible charges")
+            raise ValueError('incompatible charges')
         self.shift_bra = shift_bra
         self.shift_ket = shift_ket
         assert ket._p_label == bra._p_label
@@ -6572,15 +7287,32 @@ class TransferMatrix(sparse.NpcLinearOperator):
         ket_M = [ket.get_B(i, form=form) for i in range(shift_ket, shift_ket + L)]
         bra_N = [bra.get_B(i, form=form) for i in range(shift_bra, shift_bra + L)]
 
-        self._init_from_Ns_Ms(bra_N, ket_M, transpose, charge_sector, ket._p_label, not ket.finite)
+        self._init_from_Ns_Ms(
+            bra_N, ket_M, transpose, charge_sector, ket._p_label, not ket.finite, unit_cell_width=unit_cell_width
+        )
 
-    def _init_from_Ns_Ms(self, bra_N, ket_M, transpose, charge_sector, p_label, infinite=True):
+    def _init_from_Ns_Ms(
+        self, bra_N, ket_M, transpose, charge_sector, p_label, infinite=True, conjugate_Ns=True, unit_cell_width=None
+    ):
         """Initialize directly from N and M.
 
         bra_N and ket_M are *not* reversed for transpose=False, i.e. ordered left to right.
         """
-        self.L = len(bra_N)
-        assert len(ket_M) == self.L
+        self.L = L = len(bra_N)
+        if unit_cell_width is None:
+            # TODO: deprecate the default value.
+            #       when doing so, remove the default in other __init__, classmethods, ...
+            warnings.warn(
+                'unit_cell_width is a new argument for MPS and similar classes. '
+                'It is optional for now, but will become mandatory in a future release. '
+                'The default value (unit_cell_width=len(sites)) is correct, iff the '
+                'lattice is a Chain. For other lattices, it is incorrect. '
+                'It is used for dipolar charges and correlation_function2.'
+            )
+            unit_cell_width = len(bra_N)
+        assert isinstance(unit_cell_width, int) and 0 < unit_cell_width <= L and L % unit_cell_width == 0
+        self.unit_cell_width = unit_cell_width
+        assert len(ket_M) == L
         self.transpose = transpose
         self._p_label = p = p_label  # for usual MPS just ['p']
         self._pstar_label = pstar = [lbl + '*' for lbl in self._p_label]
@@ -6588,15 +7320,19 @@ class TransferMatrix(sparse.NpcLinearOperator):
             label = '(vL.vL*)'  # what we act on
             label_split = ['vL', 'vL*']
             M = self._ket_M = [B.itranspose(['vL'] + p + ['vR']) for B in reversed(ket_M)]
-            N = self._bra_N = [
-                B.conj().itranspose(pstar + ['vR*', 'vL*']) for B in reversed(bra_N)
-            ]
+            if conjugate_Ns:
+                N = self._bra_N = [B.conj().itranspose(pstar + ['vR*', 'vL*']) for B in reversed(bra_N)]
+            else:
+                N = self._bra_N = [B.itranspose(pstar + ['vR*', 'vL*']) for B in reversed(bra_N)]
             pipe = npc.LegPipe([M[0].get_leg('vR'), N[0].get_leg('vR*')], qconj=-1).conj()
         else:  # left to right
             label = '(vR*.vR)'  # mathematically more natural
             label_split = ['vR*', 'vR']
             M = self._ket_M = [B.itranspose(['vL'] + p + ['vR']) for B in ket_M]
-            N = self._bra_N = [B.conj().itranspose(['vR*', 'vL*'] + pstar) for B in bra_N]
+            if conjugate_Ns:
+                N = self._bra_N = [B.conj().itranspose(['vR*', 'vL*'] + pstar) for B in bra_N]
+            else:
+                N = self._bra_N = [B.itranspose(['vR*', 'vL*'] + pstar) for B in bra_N]
             pipe = npc.LegPipe([N[0].get_leg('vL*'), M[0].get_leg('vL')], qconj=+1).conj()
         dtype = np.promote_types(M[0].dtype, N[0].dtype)
         self.pipe = pipe
@@ -6612,15 +7348,19 @@ class TransferMatrix(sparse.NpcLinearOperator):
             enlarge_factors = []
             for i in np.nonzero(self.qtotal)[0]:
                 if chinfo.mod[i] == 1:  # U(1) qtotal
-                    raise ValueError("TransferMatrix is nil-potent due to charges")
+                    raise ValueError('TransferMatrix is nil-potent due to charges')
                 enlarge_factors.append(chinfo.mod[i])  # get N of Z_N charge
-            raise ValueError("TransferMatrix has non-zero qtotal for Z_N charges. "
-                             "It can have valid eigenvectors, but they will break the Z_N charge. "
-                             "To avoid that, you can enlarge the unit cell of the MPS "
-                             "by a factor of " + str(enlarge_factors))
+            raise ValueError(
+                'TransferMatrix has non-zero qtotal for Z_N charges. '
+                'It can have valid eigenvectors, but they will break the Z_N charge. '
+                'To avoid that, you can enlarge the unit cell of the MPS '
+                'by a factor of ' + str(enlarge_factors)
+            )
 
     @classmethod
-    def from_Ns_Ms(cls, bra_N, ket_M, transpose=False, charge_sector=0, p_label=['p']):
+    def from_Ns_Ms(
+        cls, bra_N, ket_M, transpose=False, charge_sector=0, p_label=['p'], conjugate_Ns=True, unit_cell_width=None
+    ):
         """Initialize a TransferMatrix directly from the MPS tensors.
 
         Parameters
@@ -6636,10 +7376,17 @@ class TransferMatrix(sparse.NpcLinearOperator):
             Defaults to ``0``, i.e., **assumes** the dominant eigenvector is in charge sector 0.
         p_label : list of str
             Physical label(s) of the tensors.
+        conjugate_Ns : bool
+            If False, assumes that bra_N is already complex conjugated.
+        unit_cell_width : int
+            See :attr:`~tenpy.models.lattice.Lattice.mps_unit_cell_width`.
+
         """
         self = cls.__new__(cls)
         self.shift_bra = self.shift_ket = 0
-        self._init_from_Ns_Ms(bra_N, ket_M, transpose, charge_sector, p_label)
+        self._init_from_Ns_Ms(
+            bra_N, ket_M, transpose, charge_sector, p_label, conjugate_Ns=conjugate_Ns, unit_cell_width=unit_cell_width
+        )
         return self
 
     @property
@@ -6665,6 +7412,7 @@ class TransferMatrix(sparse.NpcLinearOperator):
         -------
         mat_vec : :class:`~tenpy.linalg.np_conserved.Array`
             The transfer matrix acted on `vec`, in the same form as given.
+
         """
         pipe = None
         if self.label_split[0] not in vec._labels:
@@ -6672,26 +7420,26 @@ class TransferMatrix(sparse.NpcLinearOperator):
             pipe = self.pipe
         orig_labels = vec.get_leg_labels()
         # vec.itranspose(self.label_split)  # ['vL', 'vL*'] or ['vR*', 'vR']
-        qtotal = vec.qtotal
-        legs = vec.legs
         # the actual work
         if not self.transpose:  # right to left
             contract = [self._p_label + ['vL*'], self._pstar_label + ['vR*']]
             for N, M in zip(self._bra_N, self._ket_M):
                 vec = npc.tensordot(M, vec, axes=['vR', 'vL'])
                 vec = npc.tensordot(vec, N, axes=contract)  # [['p', 'vL*'], ['p*', 'vR*']]
+            vec = vec.shift_charges_horizontal(dx_0=self.unit_cell_width)
         else:  # left to right
             contract = [['vL*'] + self._pstar_label, ['vR*'] + self._p_label]
             for N, M in zip(self._bra_N, self._ket_M):
                 vec = npc.tensordot(vec, M, axes=['vR', 'vL'])
                 vec = npc.tensordot(N, vec, axes=contract)  # [['vL*', 'p*'], ['vR*', 'p']])
+            vec = vec.shift_charges_horizontal(dx_0=-self.unit_cell_width)
         if pipe is None:
             vec.itranspose(orig_labels)  # make sure we have the same labels/order as before
         else:
             vec = vec.combine_legs(self.label_split, pipes=pipe)
         return vec
 
-    def initial_guess(self, diag=1.):
+    def initial_guess(self, diag=1.0):
         """Return a diagonal matrix as initial guess for the eigenvector.
 
         Parameters
@@ -6703,6 +7451,7 @@ class TransferMatrix(sparse.NpcLinearOperator):
         -------
         mat : :class:`~tenpy.linalg.np_conserved.Array`
             A 2D array with `diag` on the diagonal such that :meth:`matvec` can act on it.
+
         """
         return npc.diag(diag, self.pipe.legs[0], labels=self.label_split)
 
@@ -6759,10 +7508,10 @@ class InitialStateBuilder:
 
     .. doctest :: InitialStateBuilder
 
-        >>> options = {'method': 'lat_product_state',
-        ...            'product_state' : [[['up'], ['down']],
-        ...                               [['down'], ['up']]],
-        ...            }
+        >>> options = {
+        ...     'method': 'lat_product_state',
+        ...     'product_state': [[['up'], ['down']], [['down'], ['up']]],
+        ... }
         >>> psi = InitialStateBuilder(lat, options).run()
 
     Note that the `method` options is mandatory, it selects which other method :meth:`run` calls.
@@ -6781,6 +7530,7 @@ class InitialStateBuilder:
 
     If you define such a custom class, you can activate it in simulations by explicitly setting
     the :cfg:option:`Simulation.initial_state_builder_class` to the name of it.
+
     """
 
     #: logger : An instance of a logger; see :doc:`/intro/logging`. NB: class attribute.
@@ -6801,13 +7551,13 @@ class InitialStateBuilder:
         -------
         psi : :class:`MPS`
             The generated MPS.
+
         """
         method_name = self.options['method']
         method = getattr(self, method_name, None)
         if method is None:
-            raise ValueError(f"initial state 'method'={method_name!r} not recognized in " +
-                             self.__class__.__name__)
-        self.logger.info("calling %s.%s()", self.__class__.__name__, method_name)
+            raise ValueError(f"initial state 'method'={method_name!r} not recognized in " + self.__class__.__name__)
+        self.logger.info('calling %s.%s()', self.__class__.__name__, method_name)
         psi = method()
         self.check_total_charge(psi)
         return psi
@@ -6824,6 +7574,7 @@ class InitialStateBuilder:
 
             check_total_charge : tuple of int
                 Check that the :meth:`MPS.get_total_charge` returns these values.
+
         """
         check_charge = self.options.get('check_global_charge', None)
         if check_charge is None:
@@ -6846,8 +7597,8 @@ class InitialStateBuilder:
                 Can be recursive (separated by '/'), see :func:`tenpy.tools.misc.get_recursive`.
         """
         filename = self.options['filename']
-        data_key = self.options.get('data_key', "psi", str)
-        self.logger.info("loading initial state from %r, key %r", filename, data_key)
+        data_key = self.options.get('data_key', 'psi', str)
+        self.logger.info('loading initial state from %r, key %r', filename, data_key)
         if filename.endswith('.h5') or filename.endswith('.hdf5'):
             with hdf5_io.h5py.File(filename, 'r') as f:
                 psi = hdf5_io.load_from_hdf5(f, data_key)
@@ -6876,8 +7627,7 @@ class InitialStateBuilder:
         self.check_filling(p_state)
         dtype = self.options.get('dtype', self.model_dtype)
         allow_incommensurate = self.options.get('allow_incommensurate', False, bool)
-        psi = MPS.from_lat_product_state(self.lattice, p_state, dtype=dtype,
-                                         allow_incommensurate=allow_incommensurate)
+        psi = MPS.from_lat_product_state(self.lattice, p_state, dtype=dtype, allow_incommensurate=allow_incommensurate)
         return psi
 
     def mps_product_state(self, p_state=None):
@@ -6897,7 +7647,9 @@ class InitialStateBuilder:
         self.check_filling(p_state)
         dtype = self.options.get('dtype', self.model_dtype)
         lat = self.lattice
-        psi = MPS.from_product_state(lat.mps_sites(), p_state, bc=lat.bc_MPS, dtype=dtype)
+        psi = MPS.from_product_state(
+            lat.mps_sites(), p_state, bc=lat.bc_MPS, dtype=dtype, unit_cell_width=lat.mps_unit_cell_width
+        )
         return psi
 
     def mps_state_in_charge_sector(self, charge_sector=None, p_state=None):
@@ -6930,8 +7682,7 @@ class InitialStateBuilder:
             p_state = np.ones((lat.N_sites, sites[0].leg.block_number))  # equal superposition product state
         self.check_filling(p_state)
         # sites must all be the same, however an error would be raised anyways in :meth:`project_onto_charge_sector`
-        psi = MPS.project_onto_charge_sector(sites, p_state,
-                                             charge_sector=charge_sector, dtype=dtype, bc=lat.bc_MPS)
+        psi = MPS.project_onto_charge_sector(sites, p_state, charge_sector=charge_sector, dtype=dtype, bc=lat.bc_MPS)
         return psi
 
     def desired_bond_dimension(self, chi=None):
@@ -6953,7 +7704,6 @@ class InitialStateBuilder:
         psi = MPS.from_desired_bond_dimension(lat.mps_sites(), chi, bc=lat.bc_MPS, dtype=dtype)
         return psi
 
-
     def check_filling(self, p_state):
         """Ensure that the filling of the product state matches `check_filling` parameter.
 
@@ -6968,25 +7718,22 @@ class InitialStateBuilder:
                 Definition of which local states are "full" and "empty".
                 For example you can use ``full_empty=('up', 'down')`` if you have spin sites.
         """
-        check_filling = self.options.get("check_filling", None)
+        check_filling = self.options.get('check_filling', None)
         if check_filling is None:
             return
-        full, empty = self.options.get("full_empty", ('full', 'empty'))
+        full, empty = self.options.get('full_empty', ('full', 'empty'))
         p_state = np.asarray(p_state, dtype=object)
         N_filled = np.sum(p_state == full)
         N_total = p_state.size
         try:
             p, q = check_filling
             check_filling = p / q
-        except:
+        except Exception:
             p, q = int(round(check_filling * N_total)), N_total
-        if abs(p - check_filling * N_total) > 1.e-13:
-            raise ValueError(
-                "check_filling={0:.5f} doesn't fit as integer in p_state.size = {1:d}".format(
-                    check_filling, N_total))
+        if abs(p - check_filling * N_total) > 1.0e-13:
+            raise ValueError(f"check_filling={check_filling:.5f} doesn't fit as integer in p_state.size = {N_total:d}")
         if N_filled * q != N_total * p:  # int-version of N_filled/N_total != p/q
-            raise ValueError("unexpected filling {0:.5f} != check_filling = {1:.5f}".format(
-                N_filled / N_total, check_filling))
+            raise ValueError(f'unexpected filling {N_filled / N_total:.5f} != check_filling = {check_filling:.5f}')
         # done
 
     def fill_where(self):
@@ -7017,22 +7764,24 @@ class InitialStateBuilder:
         - ``"AND(x_ind == 0, y_ind == 0)"``
         - ``"AND(x_ind == 0, IN(y_ind, [0, 2])"``
         - ``"WITHIN(x_ind, 0.25*Lx, 0.75*Lx )"`` # 0.25*Lx <= x <= 0.75&Lx
+
         """
         variables = self.fill_where__get_variables()
         shape = variables['x_ind'].shape
-        condition = self.options["fill_where"]
+        condition = self.options['fill_where']
         full, empty = self.options.get('full_empty', ('full', 'empty'))
         try:
             fill_array = eval(condition, variables)
         except:
-            print("Error in InitialStateBuilder.fill_where condition")
-            print(">>> condition:")
+            print('Error in InitialStateBuilder.fill_where condition')
+            print('>>> condition:')
             print(condition)
-            print(">>> available variables:")
+            print('>>> available variables:')
             print(sorted(variables.keys()))
             raise  # re-throw the error, we just print useful debugging info
-        p_state = np.where(fill_array, to_array([full], shape=shape, dtype=object),
-                           to_array([empty], shape=shape, dtype=object))
+        p_state = np.where(
+            fill_array, to_array([full], shape=shape, dtype=object), to_array([empty], shape=shape, dtype=object)
+        )
         return self.lat_product_state(p_state)
 
     def fill_where__get_variables(self):
@@ -7060,7 +7809,7 @@ class InitialStateBuilder:
             x, y, u = np.mgrid[0:Lx, 0:Ly, 0:Lu]
             variables = {'x_ind': x, 'y_ind': y, 'u_ind': u, 'Lx': Lx, 'Ly': Ly, 'Lu': Lu}
         else:
-            raise NotImplementedError("3D lattice not handled...")
+            raise NotImplementedError('3D lattice not handled...')
 
         def any_(*cond):
             return np.any(cond, axis=0)
@@ -7068,34 +7817,36 @@ class InitialStateBuilder:
         def all_(*cond):
             return np.all(cond, axis=0)
 
-        def close(var, value, *, eps=1.e-12):
+        def close(var, value, *, eps=1.0e-12):
             return np.abs(var - value) < eps
 
-        def oneof(var, values, *, eps=1.e-12):
+        def oneof(var, values, *, eps=1.0e-12):
             if eps:
                 return np.any([close(var, val, eps=eps) for val in values], axis=0)
             return np.any([var == val for val in values], axis=0)
 
-        def within(var, lower, upper, *, eps=1.e-12):
+        def within(var, lower, upper, *, eps=1.0e-12):
             if eps:
                 lower = lower - eps
                 upper = upper + eps
             return np.logical_and(np.less_equal(lower, var), np.less_equal(var, upper))
 
-        variables.update({
-            'np': np,  # numpy
-            'AND': np.logical_and,
-            'OR': np.logical_or,
-            'XOR': np.logical_xor,
-            'NOT': np.logical_not,
-            'ANY': any_,
-            'ALL': all_,
-            'CLOSE': close,
-            'EQUAL': np.equal,
-            'IN': oneof,
-            'WITHIN': within,
-            'eps': 1.e-12,
-        })
+        variables.update(
+            {
+                'np': np,  # numpy
+                'AND': np.logical_and,
+                'OR': np.logical_or,
+                'XOR': np.logical_xor,
+                'NOT': np.logical_not,
+                'ANY': any_,
+                'ALL': all_,
+                'CLOSE': close,
+                'EQUAL': np.equal,
+                'IN': oneof,
+                'WITHIN': within,
+                'eps': 1.0e-12,
+            }
+        )
         return variables
 
     def randomized(self):
@@ -7105,6 +7856,8 @@ class InitialStateBuilder:
         -------
         .. cfg:configoptions :: InitialStateBuilder
 
+            randomize_close_1 : bool
+                Whether to randomize/perturb with unitaries close to the identity.
             randomized_from_method : str
                 Selects another method to initialize the starting state to be randomized,
                 e.g., ``'lat_product_state'`` for :meth:`lat_product_state`.
@@ -7169,8 +7922,8 @@ def build_initial_state(size, states, filling, mode='random', seed=None):
     AssertionError
         If the total filling is not equal to 1, or the length of `filling`
         does not equal the length of `states`.
-    """
 
+    """
     random.seed(seed)
 
     # Do some safety checks
@@ -7180,18 +7933,16 @@ def build_initial_state(size, states, filling, mode='random', seed=None):
     # Get number of sites for each local state
     n_states = np.array(filling) * size
     for num in n_states:
-        if ((num - round(num)) < 1e-12):
+        if (num - round(num)) < 1e-12:
             num = int(round(num))
-        if type(num) != int and not num.is_integer():
-            raise ValueError("Cannot create model of length {} with filling {}".format(
-                size, filling))
+        if type(num) is not int and not num.is_integer():
+            raise ValueError(f'Cannot create model of length {size} with filling {filling}')
 
     # Randomly assign local states
     initial_state = [0] * size
     all_sites = list(range(size))  # To avoid having two types on same site.
     for state, fill in zip(states, filling):
-        sites = random.sample(set(all_sites),
-                              int(fill * size))  # pick fill*size sites to put state
+        sites = random.sample(set(all_sites), int(fill * size))  # pick fill*size sites to put state
         for site in sites:
             initial_state[site] = state
             all_sites.remove(site)

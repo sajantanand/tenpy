@@ -15,13 +15,16 @@ This might be used to obtain the spectrum, the ground state or highly excited st
 """
 # Copyright (C) TeNPy Developers, Apache license
 
-import numpy as np
 import warnings
 
-from ..linalg import np_conserved as npc
-from ..networks.mps import MPS
+import numpy as np
 
-__all__ = ['ExactDiag']
+from ..linalg import np_conserved as npc
+from ..models.model import CouplingModel
+from ..networks.mps import MPS
+from ..tools.misc import inverse_permutation
+
+__all__ = ['ExactDiag', 'get_full_wavefunction', 'get_numpy_Hamiltonian', 'get_scipy_sparse_Hamiltonian']
 
 
 class ExactDiag:
@@ -74,10 +77,12 @@ class ExactDiag:
         Just ``_pipe.conj()``.
     _mask : 1D bool ndarray | ``None``
         Bool mask, which of the indices of the pipe are in the desired `charge_sector`.
+
     """
+
     def __init__(self, model, charge_sector=None, sparse=False, max_size=2e6):
         if model.lat.bc_MPS != 'finite':
-            raise ValueError("Full diagonalization works only on finite systems")
+            raise ValueError('Full diagonalization works only on finite systems')
         self.model = model
         self.chinfo = model.lat.unit_cell[0].leg.chinfo
         self.full_H = None
@@ -94,7 +99,7 @@ class ExactDiag:
             self.charge_sector = self.chinfo.make_valid(charge_sector)
             self._mask = np.all(self._pipe.to_qflat() == self.charge_sector[np.newaxis, :], axis=1)
             if np.sum(self._mask) == 0:
-                raise ValueError("The chosen charge sector is empty.")
+                raise ValueError('The chosen charge sector is empty.')
         else:
             self.charge_sector = None
             self._mask = None
@@ -103,8 +108,7 @@ class ExactDiag:
         return self._pipe.charge_sectors()
 
     @classmethod
-    def from_infinite_model(cls, model, first=0, last=None, enlarge=None,
-                                      **kwargs):
+    def from_infinite_model(cls, model, first=0, last=None, enlarge=None, **kwargs):
         """Initialize by extracting a finite segment from a ``bc_MPS=infinite'`` model.
 
         This method calls :meth:`~tenpy.models.model.Model.extract_segment` on the model and sets
@@ -121,6 +125,7 @@ class ExactDiag:
         ----------
         model : :class:`tenpy.models.model.Model`
             Model with infinite bc and MPO.
+
         """
         model_segment = model.extract_segment(first, last, enlarge)
         model_segment.lat.bc_MPS = 'finite'
@@ -141,9 +146,11 @@ class ExactDiag:
             Further keyword arguments as for the ``__init__`` of the class.
         **kwargs :
             Further keyword arguments as for the ``__init__`` of the class.
+
         """
-        from ..models.model import MPOModel
         from ..models.lattice import TrivialLattice
+        from ..models.model import MPOModel
+
         assert H_MPO.bc == 'finite'
         M = MPOModel(TrivialLattice(H_MPO.sites), H_MPO)
         return cls(M, *args, **kwargs)
@@ -161,9 +168,9 @@ class ExactDiag:
             if i == mpo.L - 1:
                 W = W.take_slice(mpo.get_IdR(mpo.L - 1), 'wR')
             full_H = npc.tensordot(full_H, W, axes=['wR', 'wL'])
-        full_H = full_H.combine_legs([self._labels_p, self._labels_pconj],
-                                     new_axes=[0, 1],
-                                     pipes=[self._pipe, self._pipe_conj])
+        full_H = full_H.combine_legs(
+            [self._labels_p, self._labels_pconj], new_axes=[0, 1], pipes=[self._pipe, self._pipe_conj]
+        )
         if mpo.explicit_plus_hc:
             full_H = full_H + full_H.conj().itranspose(full_H.get_leg_labels())
         self._set_full_H(full_H)
@@ -176,8 +183,7 @@ class ExactDiag:
         H_bond = self.model.H_bond
         L = len(sites)
         Ids = [
-            s.Id.replace_labels(['p', 'p*'], [self._labels_p[i], self._labels_pconj[i]])
-            for i, s in enumerate(sites)
+            s.Id.replace_labels(['p', 'p*'], [self._labels_p[i], self._labels_pconj[i]]) for i, s in enumerate(sites)
         ]
         Ids_L = [Ids[0]]  # Ids_L[j] has identity up to (including) site j
         Ids_R = [Ids[-1]]  # Ids_R[j] is identity starting from (including) site L-1-j
@@ -197,9 +203,9 @@ class ExactDiag:
                 Hb = npc.outer(Ids_L[i - 2], Hb)  # need i-2 == j
             if i < L - 1:
                 Hb = npc.outer(Hb, Ids_R[L - 2 - i])  # need i+1 == L-1-j   =>   j = L-2-i
-            Hb = Hb.combine_legs([self._labels_p, self._labels_pconj],
-                                 new_axes=[0, 1],
-                                 pipes=[self._pipe, self._pipe_conj])
+            Hb = Hb.combine_legs(
+                [self._labels_p, self._labels_pconj], new_axes=[0, 1], pipes=[self._pipe, self._pipe_conj]
+            )
             if full_H is None:
                 full_H = Hb
             else:
@@ -212,7 +218,7 @@ class ExactDiag:
         Arguments are given to :class:`~tenpy.linalg.np_conserved.eigh`.
         """
         if self.full_H is None:
-            raise ValueError("You need to call one of `build_full_H_*` first!")
+            raise ValueError('You need to call one of `build_full_H_*` first!')
         E, V = npc.eigh(self.full_H, *args, **kwargs)
         V.iset_leg_labels(['ps', 'ps*'])
         self.E = E
@@ -233,28 +239,27 @@ class ExactDiag:
             Ground state energy (possibly in the given sector).
         psi0 : :class:`~tenpy.linalg.np_conserved.Array`
             Ground state (possibly in the given sector).
+
         """
         if self.E is None or self.V is None:
-            raise ValueError("You need to call `full_diagonalization` first!")
+            raise ValueError('You need to call `full_diagonalization` first!')
         if charge_sector is None:
             i0 = np.argmin(self.E)
         else:
             if self.charge_sector is not None:
-                raise ValueError("``self.charge_sector`` was specified before.")
+                raise ValueError('``self.charge_sector`` was specified before.')
             charge_sector = self.chinfo.make_valid(charge_sector)
             mask = np.all(self._pipe.to_qflat() == charge_sector[np.newaxis, :], axis=1)
             if np.sum(mask) == 0:
-                raise ValueError("The chosen charge sector is empty.")
-            i0 = np.argmin(np.where(mask, self.E, np.max(self.E) + 1.))
+                raise ValueError('The chosen charge sector is empty.')
+            i0 = np.argmin(np.where(mask, self.E, np.max(self.E) + 1.0))
         return self.E[i0], self.V.take_slice(i0, axes='ps*')
 
     def exp_H(self, dt):
         """Return ``U(dt) := exp(-i H dt)``."""
         if self.E is None or self.V is None:
-            raise ValueError("You need to call `full_diagonalization` first!")
-        return npc.tensordot(self.V.scale_axis(np.exp(-1.j * dt * self.E), 'ps*'),
-                             self.V.conj(),
-                             axes=['ps*', 'ps'])
+            raise ValueError('You need to call `full_diagonalization` first!')
+        return npc.tensordot(self.V.scale_axis(np.exp(-1.0j * dt * self.E), 'ps*'), self.V.conj(), axes=['ps*', 'ps'])
 
     def mps_to_full(self, mps):
         """Contract an MPS along the virtual bonds and combine its legs.
@@ -268,9 +273,10 @@ class ExactDiag:
         -------
         psi : :class:`~tenpy.linalg.np_conserved.Array`
             The MPS contracted along the virtual bonds.
+
         """
         if mps.bc != 'finite':
-            raise ValueError("Full diagonalization works only on finite systems")
+            raise ValueError('Full diagonalization works only on finite systems')
         psi = mps.get_theta(0, mps.L)  # does exactly what we need
         psi = psi.take_slice([0, 0], ['vL', 'vR'])
         psi = psi.combine_legs(range(mps.L))
@@ -293,6 +299,7 @@ class ExactDiag:
         -------
         mps : :class:`~tenpy.networks.mps.MPS`
             An normalized MPS representation in canonical form.
+
         """
         if not isinstance(psi.legs[0], npc.LegPipe):
             # projected onto charge_sector: need to restore the LegPipe.
@@ -301,7 +308,7 @@ class ExactDiag:
             psi = full_psi
         psi.iset_leg_labels(['(' + '.'.join(self._labels_p) + ')'])
         psi = psi.split_legs([0])  # split the combined leg into the physical legs of the sites
-        return MPS.from_full(self._sites, psi, form=canonical_form)
+        return MPS.from_full(self._sites, psi, form=canonical_form, unit_cell_width=self.model.lat.mps_unit_cell_width)
 
     def matvec(self, psi):
         """Allow to use `self` as LinearOperator for lanczos.
@@ -316,16 +323,168 @@ class ExactDiag:
 
     def _set_full_H(self, full_H):
         if self.full_H is not None:
-            warnings.warn("full_H calculated multiple times!?", stacklevel=2)
+            warnings.warn('full_H calculated multiple times!?', stacklevel=2)
         if self.charge_sector is not None:
             full_H.legs = [l.to_LegCharge() for l in full_H.legs]  # avoids warnings of project
             full_H = full_H[self._mask, self._mask]
         self.full_H = full_H
 
     def _exceeds_max_size(self):
-        size = np.prod([float(s.dim) for s in self._sites])**2  # use float to avoid overflow!
+        size = np.prod([float(s.dim) for s in self._sites]) ** 2  # use float to avoid overflow!
         if size > self.max_size:
-            msg = "size {0:.2e} exceeds max_size {1:.2e}".format(size, self.max_size)
+            msg = f'size {size:.2e} exceeds max_size {self.max_size:.2e}'
             warnings.warn(msg, stacklevel=2)
             return True
         return False
+
+
+def get_full_wavefunction(psi: MPS, undo_sort_charge: bool = True):
+    """Get the full wavefunction of a finite MPS as a 1D numpy array.
+
+    Parameters
+    ----------
+    psi : :class:`~tenpy.networks.mps.MPS`
+        The input MPS. Must have ``psi.bc == 'finite'``.
+    undo_sort_charge : bool
+        If we should undo the basis permutation induced by
+        :meth:`~tenpy.networks.site.Site.sort_charge`.
+
+    Returns
+    -------
+    theta : 1D array
+        The wavefunction. Basis order is like for a Kronecker product :func:`numpy.kron` of the
+        local basis order, see `undo_sort_charge`.
+
+    """
+    if psi.bc != 'finite':
+        raise ValueError('psi must have finite boundary conditions')
+    if len(psi._p_label) != 1:
+        # hard-coding standard MPS with a single leg here.
+        raise NotImplementedError
+    p = psi._p_label[0]
+    theta = psi.get_theta(0, psi.L)
+    theta = theta.itranspose(['vL'] + [f'{p}{n}' for n in range(psi.L)] + ['vR'])
+    theta = theta.to_ndarray()
+    theta = np.squeeze(theta, (0, -1))  # squeeze vL, vR
+    if undo_sort_charge:
+        perms = [inverse_permutation(site.perm) for site in psi.sites]
+        theta = theta[np.ix_(*perms)]
+    return np.reshape(theta, -1)
+
+
+def get_numpy_Hamiltonian(model, from_mpo: bool = True, undo_sort_charge: bool = True):
+    """Get the Hamiltonian as a matrix (2D numpy array).
+
+    Parameters
+    ----------
+    model
+        The model that defines the Hamiltonian. The lattice should be finite.
+    from_mpo : bool
+        If we should prioritize using the MPO over ``H_bond`` to build the Hamiltonian.
+    undo_sort_charge : bool
+        If we should undo the basis permutation induced by
+        :meth:`~tenpy.networks.site.Site.sort_charge`.
+
+    Returns
+    -------
+    H : 2D array
+        The Hamiltonian as a matrix. Basis order is like for a Kronecker product :func:`numpy.kron`
+        of the local basis order, see `undo_sort_charge`.
+
+    """
+    if model.lat.bc_MPS != 'finite':
+        raise ValueError('Model must be defined on a finite lattice.')
+    if isinstance(model, CouplingModel):
+        return _get_Hamiltonian_from_couplings(model, sparse=False, undo_sort_charge=undo_sort_charge)
+    return _get_numpy_Hamiltonian_ExactDiag_full_H(model, from_mpo=from_mpo, undo_sort_charge=undo_sort_charge)
+
+
+def get_scipy_sparse_Hamiltonian(model, undo_sort_charge: bool = True):
+    """Get the Hamiltonian as a sparse scipy matrix.
+
+    Parameters
+    ----------
+    model
+        The model that defines the Hamiltonian. The lattice should be finite.
+    undo_sort_charge : bool
+        If we should undo the basis permutation induced by
+        :meth:`~tenpy.networks.site.Site.sort_charge`.
+
+    Returns
+    -------
+    H : CSR matrix
+        The Hamiltonian as a scipy CSR sparse matrix. Basis order is like for a Kronecker product
+        :func:`numpy.kron` of the local basis order, see `undo_sort_charge`.
+
+    """
+    if model.lat.bc_MPS != 'finite':
+        raise ValueError('Model must be defined on a finite lattice.')
+
+    if isinstance(model, CouplingModel):
+        return _get_Hamiltonian_from_couplings(model=model, sparse=True, undo_sort_charge=undo_sort_charge)
+    else:
+        raise NotImplementedError
+
+
+def _get_numpy_Hamiltonian_ExactDiag_full_H(model, from_mpo: bool, undo_sort_charge: bool):
+    ed = ExactDiag(model)
+    if from_mpo and hasattr(model, 'H_MPO'):
+        ed.build_full_H_from_mpo()
+    else:
+        ed.build_full_H_from_bonds()
+    res = ed.full_H.split_legs()
+    n_sites = model.lat.N_sites
+    assert res.rank == 2 * n_sites
+    # [p0, p1, ..., p0*, p1*, ...]
+    res = res.itranspose([f'p{n}{star}' for star in ['', '*'] for n in range(n_sites)])
+    res = res.to_ndarray()
+    if undo_sort_charge:
+        perms = [inverse_permutation(site.perm) for site in model.lat.mps_sites()] * 2
+        res = res[np.ix_(*perms)]
+    dim = np.prod(res.shape[:n_sites])
+    return np.reshape(res, (dim, dim))
+
+
+def _get_Hamiltonian_from_couplings(model, sparse: bool, undo_sort_charge: bool):
+    """Helper to get either dense numpy or sparse scipy matrix of the Hamiltonian."""
+    if not isinstance(model, CouplingModel):
+        raise ValueError('Must be a coupling model.')
+
+    ot = model.all_onsite_terms()
+    ot.remove_zeros()
+    ct = model.all_coupling_terms()
+    ct.remove_zeros()
+    edt = model.exp_decaying_terms
+    term_list = ot.to_TermList() + ct.to_TermList() + edt.to_TermList()
+
+    sites = model.lat.mps_sites()
+    dims = [s.leg.ind_len for s in sites]
+    if sparse:
+        import scipy.sparse as spsp
+
+        H = spsp.csr_matrix((np.prod(dims),) * 2, dtype=float)
+        kron = spsp.kron
+        eye_0 = spsp.eye(1)  # identity on zero sites. starting point for doing kron.
+    else:
+        H = np.zeros((np.prod(dims),) * 2, dtype=float)
+        kron = np.kron
+        eye_0 = np.eye(1)  # identity on zero sites. starting point for doing kron.
+
+    for s, terms in zip(term_list.strength, term_list.terms):
+        last_site = -1
+        t = eye_0
+        for op, i in terms:
+            sites_since_last_op = range(last_site + 1, i)
+            if len(sites_since_last_op) > 0:
+                t = kron(t, np.eye(np.prod([dims[n] for n in sites_since_last_op])))
+            op = sites[i].get_op(op).to_ndarray()
+            if undo_sort_charge:
+                perm = inverse_permutation(sites[i].perm)
+                op = op[np.ix_(perm, perm)]
+            t = kron(t, op)
+            last_site = i
+        sites_since_last_op = range(last_site + 1, len(sites))
+        if len(sites_since_last_op) > 0:
+            t = kron(t, np.eye(np.prod([dims[n] for n in sites_since_last_op])))
+        H = H + s * t
+    return H
