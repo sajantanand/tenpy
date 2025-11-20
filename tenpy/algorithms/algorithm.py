@@ -109,7 +109,7 @@ class Algorithm:
                 N_sites_per_ring,
                 self.options,
                 'max_N_sites_per_ring',
-                18,
+                max_N_sites_per_ring,
                 'Maximum number of sites per ring (``max_N_sites_per_ring``) exceeded.',
             )
 
