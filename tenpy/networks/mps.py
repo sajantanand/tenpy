@@ -218,6 +218,7 @@ class MPSGeometry:
         self.chinfo = self.sites[0].leg.chinfo
         self.bc = bc
         if unit_cell_width is None:
+            """
             msg = (
                 'unit_cell_width is a new argument for MPS and similar classes. '
                 'It is optional for now, but will become mandatory in a future release. '
@@ -226,6 +227,7 @@ class MPSGeometry:
                 'It is used for dipolar charges and correlation_function2.'
             )
             warnings.warn(msg, stacklevel=2)
+            """
             unit_cell_width = len(sites)
         self.unit_cell_width = unit_cell_width
 
@@ -7302,6 +7304,7 @@ class TransferMatrix(sparse.NpcLinearOperator):
         if unit_cell_width is None:
             # TODO: deprecate the default value.
             #       when doing so, remove the default in other __init__, classmethods, ...
+            """
             warnings.warn(
                 'unit_cell_width is a new argument for MPS and similar classes. '
                 'It is optional for now, but will become mandatory in a future release. '
@@ -7309,6 +7312,7 @@ class TransferMatrix(sparse.NpcLinearOperator):
                 'lattice is a Chain. For other lattices, it is incorrect. '
                 'It is used for dipolar charges and correlation_function2.'
             )
+            """
             unit_cell_width = len(bra_N)
         assert isinstance(unit_cell_width, int) and 0 < unit_cell_width <= L and L % unit_cell_width == 0
         self.unit_cell_width = unit_cell_width
