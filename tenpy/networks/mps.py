@@ -6311,10 +6311,10 @@ class BaseEnvironment(MPSGeometry, metaclass=ABCMeta):
 
     """
 
-    def __init__(self, bra, ket, cache=None, **init_env_data):
+    def __init__(self, bra, ket, cache=None, gauge_bra=True, **init_env_data):
         if ket is None:
             ket = bra
-        if ket is not bra:
+        if ket is not bra and gauge_bra:
             bra = ket._gauge_compatible_vL_vR(bra)  # ensure matching charges
         self.bra = bra
         self.ket = ket
@@ -6996,7 +6996,8 @@ class MPSEnvironment(BaseEnvironment, BaseMPSExpectationValue):
 
 
 class NonTrivialMPSEnvironment(BaseEnvironment):
-    """Class storing partial contractions between two different MPS and providing expectation values.
+    """Class storing partial contractions between two different MPS with non-trivial boundaries.
+    
     Crucially, the MPS will have non-trivial virtual boundary conditions on the leftmost and rightmost bonds.
     We do NOT require that the the left (right) virtual leg of bra is compatible to that of the ket; all we require is
     that the left (right) leg of the bra is compatible with that of the ket.
@@ -7038,33 +7039,12 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
     # Functions from "BaseEnvironment"
     def __init__(self, bra, ket, cache=None, **init_env_data):
         """
-        See documentation in "BaseEnvironment"
+        See documentation in "BaseEnvironment". This is essentially the exact same as the
+        initializaiton in "BaseEnvrionment"; all that is different is that we don't gauge
+        the bra based on the ket.
         """
-        if ket is None:
-            ket = bra
-        # Don't want to do this since bra and ket do not have compatible charges; the bond dimensions will be different.
-        #if ket is not bra:
-        #    bra = ket._gauge_compatible_vL_vR(bra)  # ensure matching charges
-        self.bra = bra
-        self.ket = ket
-        self.dtype = np.promote_types(bra.dtype, ket.dtype)
-        self.L = L = lcm(bra.L, ket.L)
-        if hasattr(self, 'H'):
-            self.L = L = lcm(self.H.L, L)
-        self.finite = self.ket.finite  # just for _to_valid_index
-        self.sites = self.ket.sites * (L // self.ket.L)
-        self._LP_keys = ['LP_{0:d}'.format(i) for i in range(L)]
-        self._RP_keys = ['RP_{0:d}'.format(i) for i in range(L)]
-        self._LP_age = [None] * L
-        self._RP_age = [None] * L
-        if cache is None:
-            cache = DictCache.trivial()
-        self.cache = cache
-        if not self.cache.long_term_storage.trivial and L < 8:
-            warnings.warn("non-trivial cache for short-length environment: "
-                          "Much overhead for a little RAM saving. Necessary?")
-        self.init_first_LP_last_RP(**init_env_data)
-        self.test_sanity()
+
+        super().__init__(bra, ket, cache=cache, gauge_bra=False, **init_env_data)
 
     def _check_compatible_legs(self, init_LP, init_RP, start_env_sites):
         """
@@ -7080,20 +7060,32 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
                 vR_ket = self.ket.get_B(self.L - 1 + start_env_sites, 'B').get_leg('vR')
                 vR_bra = self.bra.get_B(self.L - 1 + start_env_sites, 'B').get_leg('vR')
         if init_LP is not None:
-            compatible = (init_LP.get_leg('vR') == vL_ket.conj()
-                          and init_LP.get_leg('vR*') == vL_bra
-                          and init_LP.get_leg('vL') == vR_ket.conj()
-                          and init_LR.get_leg('vL*') == vR_bra)
-            if not compatible:
-                warnings.warn("dropping `init_LP` with incompatible MPS legs")
+            incompatible_legs = []
+            if init_LP.get_leg('vR') == vL_ket.conj():
+                incompatible_legs.append('vR')
+            if init_LP.get_leg('vR*') == vL_bra:
+                incompatible_legs.append('vR*')
+            if init_LP.get_leg('vL') == vR_ket.conj():
+                incompatible_legs.append('vL')
+            if init_LR.get_leg('vL*') == vR_bra:
+                incompatible_legs.append('vL')
+            if incompatible_legs:
+                msg = f'dropping `init_LP` with incompatible virtual legs: {", ".join(incompatible_legs)}'
+                warnings.warn(msg, stacklevel=2)
                 init_LP = None
         if init_RP is not None:
-            compatible = (init_RP.get_leg('vL') == vR_ket.conj()
-                          and init_RP.get_leg('vL*') == vR_bra
-                          and init_RP.get_leg('vR') == vL_ket.conj()
-                          and init_RP.get_leg('vR*') == vL_bra)
-            if not compatible:
-                warnings.warn("dropping `init_RP` with incompatible MPS legs")
+            incompatible_legs = []
+            if init_RP.get_leg('vL') == vR_ket.conj():
+                incompatible_legs.append('vL')
+            if init_RP.get_leg('vL*') == vR_bra:
+                incompatible_legs.append('vL*')
+            if init_RP.get_leg('vR') == vL_ket.conj():
+                incompatible_legs.append('vR')
+            if init_RP.get_leg('vR*') == vL_bra:
+                incompatible_legs.append('vR*')
+            if incompatible_legs:
+                msg = f'dropping `init_RP` with incompatible virtual legs: {", ".join(incompatible_legs)}'
+                warnings.warn(msg, stacklevel=2)
                 init_RP = None
         return init_LP, init_RP
 
@@ -7102,7 +7094,7 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
         See documentation in "BaseEnvironment"
         """
         if self.ket.bc == "segment":
-            raise NotImplementedError("No segements allowed.")
+            raise NotImplementedError("No segements allowed for NonTrivialMPSEnvironment.")
         leg_ket = self.ket.get_B(i - start_env_sites, None).get_leg('vL') # incoming
         leg_bra = self.bra.get_B(i - start_env_sites, None).get_leg('vL') # incoming
         # Won't be true!
@@ -7119,7 +7111,7 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
         See documentation in "BaseEnvironment"
         """
         if self.ket.bc == "segment" and self.bra is not self.ket:
-            raise NotImplementedError("No segements allowed.")
+            raise NotImplementedError("No segements allowed for NonTrivialMPSEnvironment.")
         leg_ket = self.ket.get_B(i + start_env_sites, None).get_leg('vR')
         leg_bra = self.bra.get_B(i + start_env_sites, None).get_leg('vR')
         # Won't be true!
@@ -7130,20 +7122,6 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
         for j in range(i + start_env_sites, i, -1):
             init_RP = self._contract_RP(j, init_RP)
         return init_RP
-
-    def get_initialization_data(self, first=0, last=None, include_bra=False, include_ket=False):
-        raise NotImplementedError("Not sure we need this.")
-
-    # Functions from "BaseMPSExpectationValue"
-    def _to_valid_index(self, i):
-        """Make sure `i` is a valid index (depending on `finite`)."""
-        if not self.finite:
-            return i % self.L
-        if i < 0:
-            i += self.L
-        if i >= self.L or i < 0:
-            raise KeyError("i = {0:d} out of bounds for finite MPS".format(i))
-        return i
 
     # Functions from "MPSEnvironment"
     def full_contraction(self, i0):
@@ -7177,6 +7155,7 @@ class NonTrivialMPSEnvironment(BaseEnvironment):
         RP = npc.tensordot(RP, self.bra.get_B(i, form='B').conj(), axes=axes)
         return RP  # labels 'vL', 'vL*'
 
+    # Copied from MPSEnvironment
     # methods for Expectation values
     def _get_bra_ket(self):
         return self.bra, self.ket

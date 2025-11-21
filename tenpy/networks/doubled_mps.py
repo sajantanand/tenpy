@@ -5,7 +5,7 @@ import numpy as np
 import itertools
 import warnings
 
-from .mps import MPS, MPSEnvironment, BaseEnvironment
+from .mps import MPS, MPSEnvironment, BaseEnvironment, MPSGeometry
 from .site import DoubledSite
 from ..linalg import np_conserved as npc
 from ..linalg.charges import LegPipe
@@ -192,7 +192,7 @@ class DoubledMPS(MPS):
 
     def outer_product(self):
         """
-        Take outer product of each tensor; O \rightarrow O \otimes O;
+        Take outer product of each tensor; O \\rightarrow O \\otimes O;
         No conjugation of tensors.
         """
 
@@ -801,10 +801,11 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
             kets[i] = kets[0]._gauge_compatible_vL_vR(kets[i])  # ensure matching charges
 
         self.dtype = kets[0].dtype
-        self.L = L = kets[0].L
+        L = kets[0].L
         for i in range(1, self.num_kets):
             self.dtype = np.promote_types(self.dtype, kets[i].dtype)
-            self.L = L = lcm(L, kets[i].L)
+            L = lcm(L, kets[i].L)
+        
 
         # We do not allow calculations with a Hamiltonian
 
@@ -814,8 +815,9 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
             assert self.kets[i].finite
             assert self.kets[i].bc == "finite"
 
-        self.finite = self.kets[0].finite  # just for _to_valid_index
-        self.sites = self.kets[0].sites * (L // self.kets[0].L)
+        #self.finite = self.kets[0].finite  # just for _to_valid_index
+        sites = self.kets[0].sites * (L // self.kets[0].L)
+        MPSGeometry.__init__(self, sites=sites, bc='finite', unit_cell_width=self.kets[0].unit_cell_width * (L // self.kets[0].L))
         self._LP_keys = ['LP_{0:d}'.format(i) for i in range(L)]
         self._RP_keys = ['RP_{0:d}'.format(i) for i in range(L)]
         self._LP_age = [None] * L
@@ -824,8 +826,9 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
             cache = DictCache.trivial()
         self.cache = cache
         if not self.cache.long_term_storage.trivial and L < 8:
-            warnings.warn("non-trivial cache for short-length environment: "
-                          "Much overhead for a little RAM saving. Necessary?")
+            warnings.warn(
+                'non-trivial cache for short-length environment: Much overhead for a little RAM saving. Necessary?'
+            )
         self.init_first_LP_last_RP(**init_env_data)
         self.test_sanity()
 
