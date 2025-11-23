@@ -428,6 +428,12 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         charge_zero_inds = list(range(p_leg.slices[qind], p_leg.slices[qind+1]))
         overlaps = npc.tensordot(id_vec.conj(), QR_R[:,charge_zero_inds], axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
         id_ind, = np.where(np.isclose(overlaps,1.0))
+        if len(id_ind) > 1:
+            print("Multiple id_ind?", id_ind)
+            print("Overlaps:", overlaps)
+            # This is an issue since we don't know which one corresponds to the identity due to
+            # possible permutations due to charge.
+            assert False
         id_ind = charge_zero_inds[id_ind.item()]
     else:
         overlaps = npc.tensordot(id_vec.conj(), QR_R, axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
@@ -552,6 +558,12 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         charge_zero_inds = list(range(p_leg.slices[qind], p_leg.slices[qind+1]))
         overlaps = npc.tensordot(id_vec.conj(), QR_L[charge_zero_inds,:], axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
         id_ind, = np.where(np.isclose(overlaps,1.0))
+        if len(id_ind) > 1:
+            print("Multiple id_ind?", id_ind)
+            print("Overlaps:", overlaps)
+            # This is an issue since we don't know which one corresponds to the identity due to
+            # possible permutations due to charge.
+            assert False
         id_ind = charge_zero_inds[id_ind.item()]
     else:
         overlaps = npc.tensordot(id_vec.conj(), QR_L, axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
@@ -559,6 +571,7 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         #id_ind = id_ind.item()
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
+            print("Overlaps:", overlaps)
         id_ind = id_ind[0]
     assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
     return QR_L, keep_L, trace_env, MPO_envs, id_ind
@@ -928,9 +941,11 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
         time2 = time.time()
         print('Truncate M Block Time:', time2 - time1, flush=True)
         time1 = time2
-
-    # SAJANT - Set svd_min to 0 to make sure no SVs are dropped? Or do we need some cutoff to remove the
-    # SVs corresponding to the rank we removed earlier from M_DR
+    
+    # svd_min = 1.e-10 typically (as set in functions.py when building the engine)
+    # chi_max = None, so we keep all Schmidt states with SVs > svd_min.
+    # The bond dimension can be larger than chi_max, which causes some issues.
+    # I don't want to set a chi_max, as this may affect conservation.
     U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
     if len(S) > svd_trunc_params['chi_max']:
         print("Excess SVs:", S[svd_trunc_params['chi_max']:])
