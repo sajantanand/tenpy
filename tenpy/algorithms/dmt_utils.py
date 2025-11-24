@@ -257,7 +257,8 @@ def orthogonalize_rows(vecs):
     Since we may have charges, we must only do Gram-Schmidt within each charge sector.
     Afterwards, the vectors are sorted by charge, so we want to know the index of the initially first vector.
 
-    We call Gram-Schmidt twice since it seems to reduce numerical error.
+    We call Gram-Schmidt repeatedly until all vectors are numerically orthogonal
+    since this seems to reduce numerical error.
     """
     if vecs[0].chinfo != ChargeInfo([], []):    # charges
         v0_charge = vecs[0].qtotal.item()   # should be zero since Id has no charge
@@ -274,11 +275,33 @@ def orthogonalize_rows(vecs):
         new_vecs = []
         v0_index = 0
         for chs in ch_sort:
-            new_vecs.extend(gram_schmidt(gram_schmidt(charged_vecs[charges[chs]])))
+            orthogonal=False
+            new_vecs_charge = deepcopy(charged_vecs[charges[chs]])
+            while not orthogonal:
+                new_vecs_charge = gram_schmidt(new_vecs_charge)
+                dot_prods = np.zeros((len(new_vecs_charge), len(new_vecs_charge)), dtype=float)
+                for i in range(len(new_vecs_charge)):
+                    for j in range(i+1, len(new_vecs_charge)):
+                        dot_prods[i,j] = npc.inner(new_vecs_charge[i], new_vecs_charge[j], 'range', do_conj=True)
+                orthogonal = np.allclose(dot_prods, 0.0)
+
+            #new_vecs.extend(gram_schmidt(gram_schmidt(charged_vecs[charges[chs]])))
+            new_vecs.extend(new_vecs_charge)
             if charges[chs] < v0_charge:
+                # Since negative charges are placed first, we keep track of the number of
+                # vectors that will come before the Id leg.
                 v0_index = len(new_vecs)
     else:
-        new_vecs = gram_schmidt(gram_schmidt(vecs))
+        orthogonal=False
+        new_vecs = deepcopy(vecs)
+        while not orthogonal:
+            #new_vecs = gram_schmidt(gram_schmidt(gram_schmidt(vecs)))
+            new_vecs = gram_schmidt(new_vecs)
+            dot_prods = np.zeros((len(new_vecs), len(new_vecs)), dtype=float)
+            for i in range(len(new_vecs)):
+                for j in range(i+1, len(new_vecs)):
+                    dot_prods[i,j] = npc.inner(new_vecs[i], new_vecs[j], 'range', do_conj=True)
+            orthogonal = np.allclose(dot_prods, 0.0)
         v0_index = 0
     return new_vecs, v0_index
 
@@ -442,6 +465,7 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
             print("Overlaps:", overlaps)
+            assert False
         id_ind = id_ind[0]
     assert QR_R.shape[QR_R.get_leg_index('p')] == keep_R
     return QR_R, keep_R, trace_env, MPO_envs, id_ind
@@ -572,6 +596,7 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
             print("Overlaps:", overlaps)
+            assert False
         id_ind = id_ind[0]
     assert QR_L.shape[QR_L.get_leg_index('p')] == keep_L
     return QR_L, keep_L, trace_env, MPO_envs, id_ind
@@ -789,9 +814,9 @@ def truncate_M(M, svd_trunc_params, connected, keep_L, keep_R, proj_L, proj_R, t
         """
         assert not proj_L[traceful_ind_L] and not proj_R[traceful_ind_R], f"Need to be keeping the element corresponding to the identity.\nIdentity Matrix Element: {orig_M[traceful_ind_L,traceful_ind_R]}."
         # print(traceful_ind_L, traceful_ind_R, orig_M[traceful_ind_L, traceful_ind_R])
-        if np.isclose(orig_M[traceful_ind_L,traceful_ind_R], 0.0): # traceless op
+        if np.isclose(orig_M[traceful_ind_L,traceful_ind_R] / npc.norm(orig_M), 0.0): # traceless op
             print("Tried 'connected=True' on traceless operator; you sure about this?")
-            assert False, (orig_M[traceful_ind_L, traceful_ind_R], traceful_ind_L, traceful_ind_R)
+            assert False, (orig_M[traceful_ind_L, traceful_ind_R], npc.norm(orig_M), traceful_ind_L, traceful_ind_R)
         else:
             M = orig_M - npc.outer(orig_M.take_slice([traceful_ind_R], ['vR']),
                                    orig_M.take_slice([traceful_ind_L], ['vL'])) / orig_M[traceful_ind_L, traceful_ind_R]
@@ -846,7 +871,6 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     form while tensor i+1 should be in right ('B') form. TEBD moves the OC by applying gates, but if we want to
     only truncate a dMPS using this function, we need to explicitly move the OC.
     """
-
     # Sometimes (e.g. in W2) the legs on the bond to the right of site i are not sorted.
     # This causes an issue since the Q_L and Q_R matrices assume a sorted leg_charge.
     # So we first sort these legs.
