@@ -16,6 +16,8 @@ import warnings
 def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True, trivial=False, ds=None, imaginary=False):
     """
     args:
+        H_MPO: TeNPy MPO
+            The one that we will double
         NN: Boolean
             Whether the model only contains NN terms and thus should be made into a `NearestNeighborModel` for TEBD
         doubled: Boolean
@@ -41,8 +43,9 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True
         doubled_MPO = deepcopy(H_MPO)
 
     if conjugate:
+        # s2d : standard to desired basis change
         doubled_MPO.conjugate_MPO([s.s2d for s in doubled_MPO.sites])
-
+    
     doubled_lat = TrivialLattice(doubled_MPO.sites) # Trivial lattice uses the sites of the doubled MPO.
 
     doubled_model = MPOModel(doubled_lat, doubled_MPO)
@@ -244,8 +247,8 @@ def trace_swap_MPS(DMPS):#, traceful_id=None):
 """
 In principle we could combine all DMT methods into just the MPO method and use a different MPO for EACH operator we wish to preserve.
 So at bond `i` for local `(1,1)` DMT, we would need 7 MPOs for the operators (II, IX, IY, IZ, XI, YI, ZI). Redundancy removal would return
-this to 4 operators on each side. The issue is that we cannot reused contracted environments between sites since local operators would require
-new MPOs on each site. This is not desirable. So while we can think about this for pedagongical purposes, we will not implement the code
+this to 4 operators on each side. The issue is that we cannot reuse contracted environments between sites since local operators would require
+new MPOs on each site. This is not desirable. So while we can think about this for pedagogical purposes, we will not implement the code
 this way.
 
 Instead, we should put the MPO to preserve INTO the state $\rho$ we trace against (typically the infinite temperature density matrix).
@@ -279,7 +282,7 @@ def orthogonalize_rows(vecs):
             new_vecs_charge = deepcopy(charged_vecs[charges[chs]])
             while not orthogonal:
                 new_vecs_charge = gram_schmidt(new_vecs_charge)
-                dot_prods = np.zeros((len(new_vecs_charge), len(new_vecs_charge)), dtype=float)
+                dot_prods = np.zeros((len(new_vecs_charge), len(new_vecs_charge)), dtype=complex)
                 for i in range(len(new_vecs_charge)):
                     for j in range(i+1, len(new_vecs_charge)):
                         dot_prods[i,j] = npc.inner(new_vecs_charge[i], new_vecs_charge[j], 'range', do_conj=True)
@@ -297,7 +300,7 @@ def orthogonalize_rows(vecs):
         while not orthogonal:
             #new_vecs = gram_schmidt(gram_schmidt(gram_schmidt(vecs)))
             new_vecs = gram_schmidt(new_vecs)
-            dot_prods = np.zeros((len(new_vecs), len(new_vecs)), dtype=float)
+            dot_prods = np.zeros((len(new_vecs), len(new_vecs)), dtype=complex)
             for i in range(len(new_vecs)):
                 for j in range(i+1, len(new_vecs)):
                     dot_prods[i,j] = npc.inner(new_vecs[i], new_vecs[j], 'range', do_conj=True)
