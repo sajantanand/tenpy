@@ -74,6 +74,10 @@ def generate_pairs(lat, key='nearest_neighbors'):
         key = 'next_nearest_neighbors'
     elif key == 'nnNN':
         key = 'next_next_nearest_neighbors'
+    elif key == 'nnnNN':
+        key = 'next_next_next_nearest_neighbors'
+    elif key == 'nnnnNN':
+        key = 'next_next_next_next_nearest_neighbors'
     if key != 'all':
         idXs, idYs = [], []
         for dx1, dx2, bv in lat.pairs[key]:

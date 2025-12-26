@@ -30,7 +30,9 @@ class SpinModel(CouplingMPOModel):
               (\mathtt{Jx} S^x_i S^x_j + \mathtt{Jy} S^y_i S^y_j + \mathtt{Jz} S^z_i S^z_j
             + \mathtt{muJ} i/2 (S^{-}_i S^{+}_j - S^{+}_i S^{-}_j))  \\
             - \sum_i (\mathtt{hx} S^x_i + \mathtt{hy} S^y_i + \mathtt{hz} S^z_i) \\
-            + \sum_i (\mathtt{D} (S^z_i)^2 + \mathtt{E} ((S^x_i)^2 - (S^y_i)^2))
+            + \sum_i (\mathtt{D} (S^z_i)^2 + \mathtt{E} ((S^x_i)^2 - (S^y_i)^2)) \\
+            + \sum_j j F S^z_j + \sum_j j^2 G S^z_j
+
 
     Here, :math:`\langle i,j \rangle, i< j` denotes nearest neighbor pairs.
     All parameters are collected in a single dictionary `model_params`, which
@@ -85,6 +87,9 @@ class SpinModel(CouplingMPOModel):
         D = model_params.get('D', 0.0, 'real_or_array')
         E = model_params.get('E', 0.0, 'real_or_array')
         muJ = model_params.get('muJ', 0.0, 'real_or_array')
+        F = model_params.get('F', 0., 'real_or_array')
+        G = model_params.get('G', 0., 'real_or_array')
+        L = model_params['L']
 
         # (u is always 0 as we have only one site in the unit cell)
         for u in range(len(self.lat.unit_cell)):
@@ -94,6 +99,15 @@ class SpinModel(CouplingMPOModel):
             self.add_onsite(D, u, 'Sz Sz')
             self.add_onsite(E * 0.5, u, 'Sp Sp')
             self.add_onsite(E * 0.5, u, 'Sm Sm')
+        for i in range(L):
+            # Linearly tilted magnetic field
+            # 0 of magnetic field is at middle site
+            self.add_onsite_term((i - L//2) * F, i, 'Sz')
+
+            # Quadratically tilted magnetic field
+            # 0 of magnetic field is at middle site
+            self.add_onsite_term((i - L//2)**2 * G, i, 'Sz')
+
         # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
         # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
         # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
@@ -484,42 +498,157 @@ class AnisotropicBarberPole(SpinModel):
         # done
 
 class VDWExponentiallyDecayingXXZ(CouplingMPOModel):
-    """
-    f(r) * [X_i X_{i+r} + Y_i Y_{i+r}] + g(r) * [Delta*Z_i Z_{i+r}]
-    f(r), g(r) is approximated by a set of exponentials
-    bond dimension is 3 * num_exponentials + 2
+    r"""Spin-S sites coupled by sum of exponentially-decaying interactions.
 
-    One needs to approximate f(r) prior to initialization of the model.
+    The Hamiltonian reads:
+
+    .. math ::
+        H = \sum_{i < j}
+              f(|i-j|) (\mathtt{Jx} S^x_i S^x_j + \mathtt{Jy} S^y_i S^y_j 
+            + \mathtt{muJ} i/2 (S^{-}_i S^{+}_j - S^{+}_i S^{-}_j))  \\
+            + \sum_{i < j}
+              g(|i-j|) \mathtt{Jz} S^z_i S^z_j \\
+            - \sum_i (\mathtt{hx} S^x_i + \mathtt{hy} S^y_i + \mathtt{hz} S^z_i) \\
+            + \sum_i (\mathtt{D} (S^z_i)^2 + \mathtt{E} ((S^x_i)^2 - (S^y_i)^2)) \\
+            + \sum_j j F S_z_j
+
+    Here, :math:`i< j` denotes all pairs of sites and :math:`f(|i-j|)` is an interaction
+    that depends on the distance between the sites. This interaction is written as a sum
+    of exponentially decaying terms, so we must pass in the prefactor and decay constant
+    for each exponential term.
+    We allow for different interactions for the XY and ZZ terms.
+    All parameters are collected in a single dictionary `model_params`, which
+    is turned into a :class:`~tenpy.tools.params.Config` object.
+
+    Parameters
+    ----------
+    model_params : :class:`~tenpy.tools.params.Config`
+        Parameters for the model. See :cfg:config:`SpinModel` below.
+
+    Options
+    -------
+    .. cfg:config :: SpinModel
+        :include: CouplingMPOModel
+
+        S : {0.5, 1, 1.5, 2, ...}
+            The 2S+1 local states range from m = -S, -S+1, ... +S.
+        conserve : 'best' | 'Sz' | 'parity' | None
+            What should be conserved. See :class:`~tenpy.networks.Site.SpinSite`.
+            For ``'best'``, we check the parameters what can be preserved.
+        sort_charge : bool
+            Whether to sort by charges of physical legs. `True` by default.
+        Jx, Jy, Jz, hx, hy, hz, muJ, D, E  : float | array
+            Coupling as defined for the Hamiltonian above.
+
     """
 
     def init_sites(self, model_params):
-        conserve = model_params.get('conserve', None)
-
-        sort_charge = model_params.get('sort_charge', None)
-        S = model_params.get('S', 0.5)
-
-        site = SpinSite(S=S, conserve=conserve, sort_charge=sort_charge)
+        S = model_params.get('S', 0.5, 'real')
+        conserve = model_params.get('conserve', 'best', str)
+        if conserve == 'best':
+            # check how much we can conserve
+            if not model_params.any_nonzero([('Jx', 'Jy'), 'hx', 'hy', 'E'],
+                                            "check Sz conservation"):
+                conserve = 'Sz'
+            elif not model_params.any_nonzero(['hx', 'hy'], "check parity conservation"):
+                conserve = 'parity'
+            else:
+                conserve = None
+            self.logger.info("%s: set conserve to %s", self.name, conserve)
+        sort_charge = model_params.get('sort_charge', True, bool)
+        site = SpinSite(S, conserve, sort_charge)
         return site
 
     def init_terms(self, model_params):
+        Jx = model_params.get('Jx', 1., 'real_or_array')
+        Jy = model_params.get('Jy', 1., 'real_or_array')
+        Jz = model_params.get('Jz', 1., 'real_or_array')
+        hx = model_params.get('hx', 0., 'real_or_array')
+        hy = model_params.get('hy', 0., 'real_or_array')
+        hz = model_params.get('hz', 0., 'real_or_array')
+        D = model_params.get('D', 0., 'real_or_array')
+        E = model_params.get('E', 0., 'real_or_array')
+        muJ = model_params.get('muJ', 0., 'real_or_array')
+        F = model_params.get('F', 0., 'real_or_array')
+        G = model_params.get('G', 0., 'real_or_array')
+
         lambdas1 = model_params['lambdas1']
         prefactors1 = model_params['prefactors1']
         lambdas2 = model_params['lambdas2']
         prefactors2 = model_params['prefactors2']
-        delta = model_params.get('delta', 1)
+        
+        # We may want to normalize the Hamiltonian once it becomes long range enough.
+        Kac_norm = model_params.get('Kac_norm', False)
+        # If Delta is large, reduce the overall scale of the Hamiltonian.
+        term_norm = model_params.get('term_norm', False)
+        L = model_params['L']
 
+        if term_norm:
+            term_norm = np.sqrt(Jx**2 + Jy**2 + Jz**2)
+            self.logger.info("term_norm: %f", term_norm)
+        else:
+            term_norm = 1
+
+        if Kac_norm:
+            # See Eq. 1 of https://arxiv.org/pdf/1909.01351
+            # We use the approximate interation rather than the exact
+            approximate_interation1 = sum_of_exp(lambdas1, prefactors1, np.arange(1, L//2))
+            Kac_norm1 = np.sqrt(np.sum(approximate_interaction1**2)*2)
+            self.logger.info("Kac_norm1: %f", Kac_norm1)
+            
+            approximate_interation2 = sum_of_exp(lambdas2, prefactors2, np.arange(1, L//2))
+            Kac_norm2 = np.sqrt(np.sum(approximate_interaction2**2)*2)
+            self.logger.info("Kac_norm2: %f", Kac_norm1)
+        else:
+            Kac_norm1 = Kac_norm2 = 1
+
+        # (u is always 0 as we have only one site in the unit cell)
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(-hx, u, 'Sx')
+            self.add_onsite(-hy, u, 'Sy')
+            self.add_onsite(-hz, u, 'Sz')
+            self.add_onsite(D, u, 'Sz Sz')
+            self.add_onsite(E * 0.5, u, 'Sp Sp')
+            self.add_onsite(E * 0.5, u, 'Sm Sm')
+        
+        for i in range(L):
+            # Linearly tilted magnetic field
+            # 0 of magnetic field is at middle site
+            self.add_onsite_term((i - L//2) * F, i, 'Sz')
+
+            # Quadratically tilted magnetic field
+            # 0 of magnetic field is at middle site
+            self.add_onsite_term((i - L//2)**2 * G, i, 'Sz')
+
+        # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+        # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
+        # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
         for lam, pre in zip(lambdas1, prefactors1):
+            # Only include terms if the prefactors are non-zero; else we just add
+            # unnecessary states (bond dimension) to the FSM (MPO).
+            # TODO - fix MPO generation to not do anything if strength == 0.
+
             # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
             # Sp Sm + Sm Sp = 2 (Sx Sx + Sy Sy)
-            self.add_exponentially_decaying_coupling(pre*2, lam, 'Sp', 'Sm', plus_hc=True)
+            if Jx + Jy != 0.0:
+                self.add_exponentially_decaying_coupling(pre * (Jx + Jy) / 4. / Kac_norm1 / term_norm, lam, 'Sp', 'Sm', plus_hc=True)
+            if Jx - Jy != 0.0:
+                self.add_exponentially_decaying_coupling(pre * (Jx - Jy) / 4. / Kac_norm1 / term_norm, lam, 'Sp', 'Sp', plus_hc=True)
+            if muJ != 0.0:
+                self.add_exponentially_decaying_coupling(pre * muJ * 0.5j / Kac_norm1, lam, 'Sm', 'Sp', plus_hc=True)
+
         for lam, pre in zip(lambdas2, prefactors2):
+            # Only include terms if the prefactors are non-zero; else we just add
+            # unnecessary states (bond dimension) to the FSM (MPO).
+            # TODO - fix MPO generation to not do anything if strength == 0.
+
             # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
             # Sp Sm + Sm Sp = 2 (Sx Sx + Sy Sy)
-            self.add_exponentially_decaying_coupling(pre*4*delta, lam, 'Sz', 'Sz')
-        # done
+            if Jz != 0:
+                self.add_exponentially_decaying_coupling(pre * Jz / Kac_norm2 / term_norm, lam, 'Sz', 'Sz')
 
 class ExponentiallyDecayingSpinModel(CouplingMPOModel):
-    r"""Spin-S sites coupled by nearest neighbor interactions.
+    r"""Spin-S sites coupled by sum of exponentially-decaying interactions.
 
     The Hamiltonian reads:
 
@@ -528,10 +657,13 @@ class ExponentiallyDecayingSpinModel(CouplingMPOModel):
               f(|i-j|) (\mathtt{Jx} S^x_i S^x_j + \mathtt{Jy} S^y_i S^y_j + \mathtt{Jz} S^z_i S^z_j
             + \mathtt{muJ} i/2 (S^{-}_i S^{+}_j - S^{+}_i S^{-}_j))  \\
             - \sum_i (\mathtt{hx} S^x_i + \mathtt{hy} S^y_i + \mathtt{hz} S^z_i) \\
-            + \sum_i (\mathtt{D} (S^z_i)^2 + \mathtt{E} ((S^x_i)^2 - (S^y_i)^2))
+            + \sum_i (\mathtt{D} (S^z_i)^2 + \mathtt{E} ((S^x_i)^2 - (S^y_i)^2)) \\
+            + \sum_j j F S_z_j
 
     Here, :math:`i< j` denotes all pairs of sites and :math:`f(|i-j|)` is an interaction
-    that depends on the distance between the sites.
+    that depends on the distance between the sites. This interaction is written as a sum
+    of exponentially decaying terms, so we must pass in the prefactor and decay constant
+    for each exponential term.
     All parameters are collected in a single dictionary `model_params`, which
     is turned into a :class:`~tenpy.tools.params.Config` object.
 
@@ -583,6 +715,8 @@ class ExponentiallyDecayingSpinModel(CouplingMPOModel):
         D = model_params.get('D', 0., 'real_or_array')
         E = model_params.get('E', 0., 'real_or_array')
         muJ = model_params.get('muJ', 0., 'real_or_array')
+        F = model_params.get('F', 0., 'real_or_array')
+        G = model_params.get('G', 0., 'real_or_array')
 
         lambdas = model_params['lambdas']
         prefactors = model_params['prefactors']
@@ -594,7 +728,7 @@ class ExponentiallyDecayingSpinModel(CouplingMPOModel):
         L = model_params['L']
 
         if term_norm:
-            term_norm = np.sqrt(1 + 1 + delta**2)
+            term_norm = np.sqrt(Jx**2 + Jy**2 + Jz**2**2)
             self.logger.info("term_norm: %f", term_norm)
         else:
             term_norm = 1
@@ -604,7 +738,7 @@ class ExponentiallyDecayingSpinModel(CouplingMPOModel):
             # We use the approximate interation rather than the exact
             approximate_interation = sum_of_exp(lambdas, prefactors, np.arange(1, L//2))
             Kac_norm = np.sqrt(np.sum(approximate_interaction**2)*2)
-            self.logger.info("kac_norm: %f", kac_norm)
+            self.logger.info("kac_norm: %f", Kac_norm)
         else:
             Kac_norm = 1
 
@@ -616,6 +750,16 @@ class ExponentiallyDecayingSpinModel(CouplingMPOModel):
             self.add_onsite(D, u, 'Sz Sz')
             self.add_onsite(E * 0.5, u, 'Sp Sp')
             self.add_onsite(E * 0.5, u, 'Sm Sm')
+        
+        for i in range(L):
+            # Linearly tilted magnetic field
+            # 0 of magnetic field is at middle site
+            self.add_onsite_term((i - L//2) * F, i, 'Sz')
+
+            # Quadratically tilted magnetic field
+            # 0 of magnetic field is at middle site
+            self.add_onsite_term((i - L//2)**2 * G, i, 'Sz')
+
         # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
         # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
         # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
@@ -627,9 +771,9 @@ class ExponentiallyDecayingSpinModel(CouplingMPOModel):
             # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
             # Sp Sm + Sm Sp = 2 (Sx Sx + Sy Sy)
             if Jx + Jy != 0.0:
-                self.add_exponentially_decaying_coupling(pre * (Jx + Jy) / 4. / Kac_norm, lam, 'Sp', 'Sm', plus_hc=True)
+                self.add_exponentially_decaying_coupling(pre * (Jx + Jy) / 4. / Kac_norm / term_norm, lam, 'Sp', 'Sm', plus_hc=True)
             if Jx - Jy != 0.0:
-                self.add_exponentially_decaying_coupling(pre * (Jx - Jy) / 4. / Kac_norm, lam, 'Sp', 'Sp', plus_hc=True)
+                self.add_exponentially_decaying_coupling(pre * (Jx - Jy) / 4. / Kac_norm / term_norm, lam, 'Sp', 'Sp', plus_hc=True)
             if muJ != 0.0:
                 self.add_exponentially_decaying_coupling(pre * muJ * 0.5j / Kac_norm, lam, 'Sm', 'Sp', plus_hc=True)
             if Jz != 0:

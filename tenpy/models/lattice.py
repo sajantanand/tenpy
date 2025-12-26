@@ -2918,10 +2918,14 @@ class Square(SimpleLattice):
         NN = [(0, 0, np.array([1, 0])), (0, 0, np.array([0, 1]))]
         nNN = [(0, 0, np.array([1, 1])), (0, 0, np.array([1, -1]))]
         nnNN = [(0, 0, np.array([2, 0])), (0, 0, np.array([0, 2]))]
+        nnnNN = [(0, 0, np.array([2, 1])), (0, 0, np.array([1, 2])), (0, 0, np.array([1,-2])), (0, 0, np.array([2,-1]))]
+        nnnnNN = [(0, 0, np.array([2, 2])), (0, 0, np.array([2, -2]))]
         kwargs.setdefault('pairs', {})
         kwargs['pairs'].setdefault('nearest_neighbors', NN)
         kwargs['pairs'].setdefault('next_nearest_neighbors', nNN)
         kwargs['pairs'].setdefault('next_next_nearest_neighbors', nnNN)
+        kwargs['pairs'].setdefault('next_next_next_nearest_neighbors', nnnNN)
+        kwargs['pairs'].setdefault('next_next_next_next_nearest_neighbors', nnnnNN)
         SimpleLattice.__init__(self, [Lx, Ly], site, **kwargs)
 
 
