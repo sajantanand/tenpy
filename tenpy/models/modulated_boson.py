@@ -5,61 +5,25 @@ import pickle
 from copy import deepcopy
 
 import tenpy
-from .lattice import Site, Chain
 from ..linalg import np_conserved as npc
-from ..networks.site import SpinHalfSite, SpinSite  # if you want to use the predefined site
-from .model import CouplingModel, NearestNeighborModel, MPOModel, CouplingMPOModel
+from ..networks.site import BosonSite
+from .model import NearestNeighborModel, CouplingMPOModel
 from .lattice import TrivialLattice, Chain
 from ..tools.params import asConfig
 
 #from tenpy.networks.site import BosonSite
 
-__all__ = ['PXPChain', 'RydbergSpinHalfSite']
+__all__ = ['ModulatedBosonSite', 'ExponentiallyModulatedBosonChain']
 
-class PXPChain(CouplingMPOModel):
-    """Implementation of spin-1/2 PXP model on a chain using spin-1/2 site
+class ModulatedBosonSite(BosonSite):
+    """Boson site with exponentially modulated charge symmetry.
 
-    Neither Sz nor parity can be conserved as sigma_x violates both.
+    Typically one conserved the number of bosons, a U(1) charge. Here we conserve a generalized
+    version of number symmetry, :math:`\sum_i n_i p**i`. When :math:`p=1`, this is the usual
+    charge symmetry.
 
-    Parameters
-    ----------
-    model_params : dict | :class:`~tenpy.tools.params.Config`
-        Parameters for the model. See :cfg:config:`PXPChain` below.
-
-    Options
-    -------
-    .. cfg:config :: PXPChain
-        :include: CouplingMPOModel
-
-        L : int
-            Length of the chain.
-        Omega : float
-            Strength of the drive; just sets overall scale if no perturbations added.
-        bc_MPS : {'finite' | 'infinite'}
-            MPS boundary conditions. Coupling boundary conditions are chosen appropriately.
-        sort_charge : bool | None
-            Whether to sort by charges of physical legs.
-            See change comment in :class:`~tenpy.networks.site.Site`.
-    """
-    default_lattice = "Chain"
-    force_default_lattice = True
-
-    def init_sites(self, model_params):
-        sort_charge = model_params.get('sort_charge', None)
-        return SpinHalfSite(conserve='None', sort_charge=sort_charge)  # use predefined Site
-
-    def init_terms(self, model_params):
-        # read out parameters
-        Omega = model_params.get('Omega', 1.)
-        # add terms
-        self.add_multi_coupling(Omega, [('P0', 0, 0), ('Sigmax', 1, 0), ('P0', 2, 0)], category='PXP')
-
-
-class RydbergSpinHalfSite(SpinHalfSite):
-    """
-    We want to do two things:
-        (1) Add projectors for the ground and excited state, the first of which is used for the PXP model.
-        (2) Conserve Rydberg charge
+    This was suggested by Kitaev to Mike at some point. Ethan studied related models
+    in https://arxiv.org/abs/2501.13930.
     """
     def __init__(self, ind, Nmax=1, conserve='Exp_N', p=2, PBC=False, L=None):
         conserve2 = deepcopy(conserve)
@@ -93,8 +57,8 @@ class RydbergSpinHalfSite(SpinHalfSite):
     def __repr__(self):
         return "ModulatedBosonSite(Nmax={Nmax!s}, {c!r}, p={p!s}, ops={ops!r})".format(Nmax=self.Nmax, c=self.conserve, p=self.p, ops=self.hc_ops)
 
-class ExponentiallyModulatedBosonModel(CouplingMPOModel):
-    r"""Spinless Bose-Hubbard model with exponential hoppings and chemical potential.
+class ExponentiallyModulatedBosonChain(CouplingMPOModel, NearestNeighborModel):
+    r"""Bose-Hubbard model with exponential hoppings and chemical potential.
 
     The Hamiltonian is:
 
@@ -132,8 +96,11 @@ class ExponentiallyModulatedBosonModel(CouplingMPOModel):
             'across' the periodic boundary are modified such that particles hopping around the
             circumference of the cylinder acquire a phase ``2 pi phi_ext``.
     """
+    default_lattice = "Chain"
+    force_default_lattice = True
+
     def init_sites(self, model_params):
-        Nmax = model_params.get('Nmax', 1)
+        Nmax = model_params.get('Nmax', 2)
         conserve = model_params.get('conserve', 'Exp_N')
         p = model_params.get('p', 2)
         L = model_params['L']
@@ -153,7 +120,8 @@ class ExponentiallyModulatedBosonModel(CouplingMPOModel):
         NNN_pairs = model_params.get('NNN_pairs', [])
         NNNN_pairs = model_params.get('NNNN_pairs', [])
         L = model_params['L']
-
+        
+        # Since the lattice is trivial, pairs are of the form: [(i, i+1, np.array([0])) for i in range(L-1)]
         pairs = {
             'nearest_neighbors': NN_pairs,
             'next_nearest_neighbors': NNN_pairs,
@@ -199,12 +167,3 @@ class ExponentiallyModulatedBosonModel(CouplingMPOModel):
             self.add_coupling(hop_J, u1, op_left, u2, op_right, dx, plus_hc=True)
             self.add_coupling(hop_gamma, u1, 'Bd', u2, 'B', dx, plus_hc=True)
             self.add_coupling(V, u1, 'N', u2, 'N', dx)
-
-class ExponentiallyModulatedBosonChain(ExponentiallyModulatedBosonModel, NearestNeighborModel):
-    """The :class:`ExponentiallyModulatedBosonModel` on a Chain, suitable for TEBD.
-
-    See the :class:`ExponentiallyModulatedBosonModel` for the documentation of parameters.
-    """
-
-    default_lattice = "Chain"
-    force_default_lattice = True
