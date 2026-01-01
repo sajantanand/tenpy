@@ -4712,7 +4712,7 @@ def _partition_W(W, IdL_L, IdR_L, IdL_R, IdR_R):
     return A_npc, B_npc, C_npc, D_npc
 
 
-def _combine_npc(T1, T2, conj=True):
+def _combine_npc(T1, T2, conj=True, trans=False):
     """
     Assume that T1, T2 are (2,2) npc arrays with legs ('p', 'p*'). We want to put them together into a (4,4) npc array with
     legs ('(p0.p1)', '(p0*,p1*)').
@@ -4727,13 +4727,17 @@ def _combine_npc(T1, T2, conj=True):
         T2 = T2.conj().replace_labels(['p', 'p*'],['p1*', 'p1'])
     else:
         T2 = T2.replace_labels(['p', 'p*'],['p1', 'p1*'])
+    
+    # We transpose the second gate for imaginary time evolution.
+    if trans:
+        T2 = T2.replace_labels(['p1', 'p1*'],['p1*', 'p1']).transpose(['p1', 'p1*'])
 
     T = npc.outer(T1, T2)
     T = T.combine_legs([['p0', 'p1'], ['p0*', 'p1*']], qconj=[T.get_leg('p0').qconj, T.get_leg('p0*').qconj]).replace_labels(['(p0.p1)', '(p0*.p1*)'], ['p', 'p*'])
     return T
 
 
-def _combine_npc_two_site(T1, T2, conj=True):
+def _combine_npc_two_site(T1, T2, conj=True, trans=False):
     """
     Assume that T1, T2 are (2,2,2,2) npc arrays with legs ('p0', 'p1', 'p0*', 'p1*'). We want to put them together into a (4,4,4,4) npc array with
     legs ('(p0.q0)', '(p1.q1)', '(p0*,q0*)', '(p1*,q1*)').
@@ -4748,6 +4752,10 @@ def _combine_npc_two_site(T1, T2, conj=True):
         T2 = T2.conj().replace_labels(['p0', 'p1', 'p0*', 'p1*'],['q0*', 'q1*', 'q0', 'q1'])
     else:
         T2 = T2.replace_labels(['p0', 'p1', 'p0*', 'p1*'],['q0', 'q1', 'q0*', 'q1*'])
+
+    # We transpose the second gate for imaginary time evolution.
+    if trans:
+        T2 = T2.replace_labels(['q0', 'q1', 'q0*', 'q1*'],['q0*', 'q1*', 'q0', 'q1']).transpose(['q0', 'q1', 'q0*', 'q1*'])
 
     T = npc.outer(T1, T2)
     T = T.combine_legs([['p0', 'q0'], ['p1', 'q1'], ['p0*', 'q0*'], ['p1*', 'q1*']], qconj=[T.get_leg('p0').qconj, T.get_leg('p1').qconj, T.get_leg('p0*').qconj, T.get_leg('p1*').qconj]).replace_labels(['(p0.q0)', '(p1.q1)', '(p0*.q0*)', '(p1*.q1*)'], ['p0', 'p1', 'p0*', 'p1*'])
