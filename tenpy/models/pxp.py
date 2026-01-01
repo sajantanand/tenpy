@@ -2,12 +2,15 @@
 # Copyright (C) TeNPy Developers, Apache license
 
 import numpy as np
+import scipy as sp
+from collections import defaultdict
+import bisect
 
 from ..networks.site import SpinHalfSite
 from .lattice import Chain
 from .model import CouplingMPOModel
 
-__all__ = ['PXPChain', 'PXXZPChain', 'PExpPChain']
+__all__ = ['PXPChain', 'GeneralizedPXPModel', 'PXXZPChain', 'PExpPChain']
 
 
 class PXPChain(CouplingMPOModel):
@@ -62,6 +65,146 @@ class PXPChain(CouplingMPOModel):
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
             self.add_coupling_term(J_boundary, 0, 1, 'X', 'P0')
             self.add_coupling_term(J_boundary, L - 2, L - 1, 'P0', 'X')
+
+
+class GeneralizedPXPModel(CouplingMPOModel):
+    r"""The PXP model on arbitrary lattices with arbitrary blockade radius.
+
+    The Hamiltonian reads:
+
+    .. math ::
+        H = \mathtt{J} \sum_{i} \sum_{j \in \mathcal{N}(i)} P_{j} X_i
+
+    where the projectors are applied to the neighbors of the current site. The blockade radius
+    is specified by how the neighborhood :math:`\mathcal{N}(i)` is defined. The standard PXP chain
+    uses nearest neighbors on a chain.
+
+    The user MUST define the blockade radius, either by specifying the keys for the neighbors
+    (e.g. "nearest_neighbors" or whatever is defined for the lattice) or by specifying a dictionary
+    of all neighbors for each site in the lattice.
+    
+    Boundaries are included if a dictionary of neighbors is specified. Any coupling that includes
+    less than the max number of site couplings is treated as a boundary.
+
+    `P` is the projector onto the up state (|0>) of the site, which corresponds to the ground state
+    of the atom.
+
+    The model arises from the strong-interaction limit of Rydberg atom chains in the seminal
+    experiment of :doi:`10.1038/nature24622`, which found long oscillations now attributed to
+    quantum many-body scars in the PXP model.
+
+    Options
+    -------
+    .. cfg:config :: GeneralizedPXPModel
+        :include: CouplingMPOModel
+
+        conserve : 'best' | 'parity' | None
+            What should be conserved. See :class:`~tenpy.networks.Site.SpinHalfSite`.
+        J, J_boundary : float | array
+            Couplings as defined for the Hamiltonian above.
+    """
+
+    def init_sites(self, model_params):
+        conserve = model_params.get('conserve', 'best', None)
+        if conserve == 'best':
+            conserve = 'parity'
+        assert conserve != 'Sz'
+        s = SpinHalfSite(conserve=conserve)
+        s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
+        # P is defined as P0, the projector onto the state 0, i.e. the up spin
+        return s
+
+    def init_terms(self, model_params):
+        J = model_params.get('J', 2.0, 'real_or_array')
+        neighbor_dict = model_params.get('neighbor_dict', defaultdict(list), dict)
+        sum_over_lattice_sites = model_params.get('sum_over_lattice_sites', True, bool)
+        neighbor_keys = model_params.get('neighbor_keys', 'nearest_neighbors')
+        neighbor_keys = neighbor_keys.split('-')
+
+        if sum_over_lattice_sites:
+            # Build neighbor_dict based on keys for neighbors
+            
+            neighbor_couplings = []
+            for key in neighbor_keys:
+                if key == 'NN':
+                    key = 'nearest_neighbors'
+                elif key == 'nNN':
+                    key = 'next_nearest_neighbors'
+                elif key == 'nnNN':
+                    key = 'next_next_nearest_neighbors'
+                elif key == 'nnnNN':
+                    key = 'next_next_next_nearest_neighbors'
+                elif key == 'nnnnNN':
+                    key = 'next_next_next_next_nearest_neighbors'
+                neighbor_couplings.extend(self.lat.pairs[key])
+            #u1, u2, dx 
+            nc_count = 0
+
+            # Same unit cell index, different unit cells
+            # i.e. square or triangular lattice; A-A coupling in Honeycomb
+            for (u1, u2, dx) in neighbor_couplings:
+                if u1 == u2:
+                    neighbor_dict[u1].append(('P0', dx, u2))        # coupling to next unit cell in direction dx
+                    neighbor_dict[u1].append(('P0', -1*dx, u2))     # coupling to previous unit cell in direction dx
+                    nc_count += 1
+                    
+            # Same unit cell, different unit cell index
+            # i.e. A-B coupling within unit cell in Honeycomb
+            for (u1, u2, dx) in neighbor_couplings:
+                if u1 != u2 and np.all(dx == np.array([0] * len(dx))):
+                    neighbor_dict[u1].append(('P0', dx, u2))        # coupling within same unit cell, u1 -> u2
+                    neighbor_dict[u2].append(('P0', dx, u1))        # coupling within same unit cell, u2 -> u1
+                    nc_count += 1
+
+            # Different unit cell, different unit cell index
+            # i.e. A-B coupling between unit cells in Honeycomb
+            for (u1, u2, dx) in neighbor_couplings:
+                if u1 != u2 and not np.all(dx == np.array([0] * len(dx))):
+                    neighbor_dict[u1].append(('P0', dx, u2))        # coupling to next unit cell in direction dx, u1 -> u2
+                    neighbor_dict[u2].append(('P0', -1*dx, u1))     # coupling to previous unit cell in direction dx, u2 -> u1
+                    nc_count += 1
+            
+            assert nc_count == len(neighbor_couplings)
+            assert self.lat.Lu == len(neighbor_dict)
+        else:
+            assert model_params['bc_MPS'] != 'infinite', "For infinite MPS, we cannot enumerate pairs between sites."
+            from ..algorithms.dmt_utils import generate_pairs, neighbors_from_pairs
+            pairs = []
+            for nk in neighbor_keys:
+                pairs.extend(generate_pairs(self.lat, nk))
+            neighbor_dict = neighbors_from_pairs(pairs)
+
+        if sum_over_lattice_sites:
+            # We need to add terms using the function that sums over lattice sites.
+            # For each site in the unit cell, we need to the term that is project on all neighbors and X on the site.
+            # NO BOUNDARIES WILL BE INCLUDED
+            for ucs in neighbor_dict.keys():
+                self.add_multi_coupling(J, neighbor_dict[ucs] + [('X', np.array([0] * self.lat.dim), 0)])
+        else:
+            # Add each term separately
+            assert len(neighbor_dict.keys()) == len(self.lat.mps_sites())
+            len_terms = [len(neighbor_dict[ucs]) for ucs in neighbor_dict.keys()]
+            # The max number of neighbors a site couples to defines the bulk coupling.
+            # For any coupling to fewer sites, we use the boundary coupling strength.
+            bulk = np.max(len_terms)
+            
+            J_boundary = model_params.get('J_boundary', J, 'real_or_array')
+            
+            # We need to insert X on the center site to the list of operators.
+            # This must be inserted IN ORDER; so we created a sorted list of sites and operators.
+            for ucs in neighbor_dict.keys():
+                op_inds = neighbor_dict[ucs]
+                op_inds.sort()
+                ops = ['P0'] * len(op_inds)
+                bisect.insort(op_inds, ucs)
+                X_ind = op_inds.index(ucs)
+                ops.insert(X_ind, 'X')
+                if len(ops) == bulk + 1:
+                    # Bulk term
+                    self.add_multi_coupling_term(J, op_inds, ops, ['Id'] * (len(op_inds)-1))
+                else:
+                    # Boundary term
+                    self.add_multi_coupling_term(J_boundary, op_inds, ops, ['Id'] * (len(op_inds)-1))
 
 
 class PXXZPChain(CouplingMPOModel):
