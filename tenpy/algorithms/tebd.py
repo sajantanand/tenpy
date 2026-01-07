@@ -294,7 +294,7 @@ class TEBDEngine(TimeEvolutionAlgorithm):
         raise ValueError(f'Unknown order {order!r} for Suzuki Trotter decomposition')
 
     def prepare_evolve(self, dt):
-        order = self.options.get('order', 2, int)
+        order = self.options.get('order', 2)    # Either int or str.
         E_offset = self.options.get('E_offset', None, 'real')
         self.calc_U(order, dt, type_evo='real', E_offset=E_offset)
 

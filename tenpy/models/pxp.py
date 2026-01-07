@@ -53,6 +53,7 @@ class PXPChain(CouplingMPOModel):
         s = SpinHalfSite(conserve=conserve)
         s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
         # P is defined as P0, the projector onto the state 0, i.e. the up spin
+        # The projector onto the state 1 is P1
         return s
 
     def init_terms(self, model_params):
@@ -225,9 +226,9 @@ class PXXZPChain(CouplingMPOModel):
 
     This model respects both the U(1) magnetization symmetry and the Rydberg blockade. In principle,
     this model can be realized in dipolar Rydberg simulators, where the native interaction is a dipolar
-    XY flip-flop and Van der Wals ZZ; however, due to the long-range dipolar (alpha=3) tails of the interaction, it is not
-    immediately clear how to get a NN model with an infinitely strong blockade. So this model is
-    more of theoretical interest.
+    XY flip-flop and Van der Wals ZZ; however, due to the long-range dipolar (alpha=3) tails of the 
+    interaction, it is not immediately clear how to get a NN model with an infinitely strong blockade. 
+    So this model is more of theoretical interest.
 
     Options
     -------
@@ -247,6 +248,7 @@ class PXXZPChain(CouplingMPOModel):
     def init_sites(self, model_params):
         conserve = model_params.get('conserve', 'best', None)
         if conserve == 'best':
+            # This model has U(1) symmetry.
             conserve = 'Sz'
         s = SpinHalfSite(conserve=conserve)
         # P is defined as P0, the projector onto the state 0, i.e. the up spin
@@ -256,7 +258,7 @@ class PXXZPChain(CouplingMPOModel):
         J = model_params.get('J', 2.0, 'real_or_array')
         Jz = model_params.get('Jz', 0.0, 'real_or_array')
 
-        self.add_multi_coupling(Jz, [('P0', [-1], 0), ('Sigmaz', [0], 0), ('Sigmaz', [1], 0), ('P0', [2], 0)])
+        self.add_multi_coupling(Jz*4.0, [('P0', [-1], 0), ('Sz', [0], 0), ('Sz', [1], 0), ('P0', [2], 0)])
         # Sp = Sx + i Sy; Sx = 1/2 Sigma x
         # Sp Sm + Sm Sp = 2(Sx Sx + Sy Sy) = 1/2 (Sigmax Sigmax + Sigmay Sigmay)
         self.add_multi_coupling(J*2.0, [('P0', [-1], 0), ('Sp', [0], 0), ('Sm', [1], 0), ('P0', [2], 0)], plus_hc=True)
@@ -266,10 +268,10 @@ class PXXZPChain(CouplingMPOModel):
             # If J is an array, I am not sure what J_boundary will do.
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
             J_boundary_z = model_params.get('J_boundary_z', Jz, 'real_or_array')
-            self.add_multi_coupling_term(Jz, [0, 1, 2], ['Sigmaz', 'Sigmaz', 'P0'])
-            self.add_multi_coupling_term(Jz, [L-3, L-2, L-1], ['P0', 'Sigmaz', 'Sigmaz'])
-            self.add_multi_coupling_term(J*2.0, [0, 1, 2], ['Sp', 'Sm', 'P0'], plus_hc=True)
-            self.add_multi_coupling_term(J*2.0, [L-3, L-2, L-1], ['P0', 'Sp', 'Sm'], plus_hc=True)
+            self.add_multi_coupling_term(Jz*4.0, [0, 1, 2], ['Sz', 'Sz', 'P0'], ['Id', 'Id'])
+            self.add_multi_coupling_term(Jz*4.0, [L-3, L-2, L-1], ['P0', 'Sz', 'Sz'], ['Id', 'Id'])
+            self.add_multi_coupling_term(J*2.0, [0, 1, 2], ['Sp', 'Sm', 'P0'], ['Id', 'Id'], plus_hc=True)
+            self.add_multi_coupling_term(J*2.0, [L-3, L-2, L-1], ['P0', 'Sp', 'Sm'], ['Id', 'Id'], plus_hc=True)
 
 
 class PExpPChain(CouplingMPOModel):
