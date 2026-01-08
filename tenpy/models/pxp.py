@@ -107,10 +107,11 @@ class GeneralizedPXPModel(CouplingMPOModel):
 
     def init_sites(self, model_params):
         conserve = model_params.get('conserve', 'best', None)
+        sort_charge = model_params.get('sort_charge', True, bool)
         if conserve == 'best':
             conserve = 'parity'
         assert conserve != 'Sz'
-        s = SpinHalfSite(conserve=conserve)
+        s = SpinHalfSite(conserve=conserve, sort_charge=sort_charge)
         s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
         # P is defined as P0, the projector onto the state 0, i.e. the up spin
         return s
@@ -190,7 +191,10 @@ class GeneralizedPXPModel(CouplingMPOModel):
             bulk = np.max(len_terms)
             
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
-            
+            #Do we want the staggered model, with half of the terms negated.
+            staggered = model_params.get('staggered', False, bool)
+            L = len(self.lat.mps_sites())
+
             # We need to insert X on the center site to the list of operators.
             # This must be inserted IN ORDER; so we created a sorted list of sites and operators.
             for ucs in neighbor_dict.keys():
@@ -202,10 +206,10 @@ class GeneralizedPXPModel(CouplingMPOModel):
                 ops.insert(X_ind, 'X')
                 if len(ops) == bulk + 1:
                     # Bulk term
-                    self.add_multi_coupling_term(J, op_inds, ops, ['Id'] * (len(op_inds)-1))
+                    self.add_multi_coupling_term(J * ((-1)**(ucs >= L // 2) if staggered else 1), op_inds, ops, ['Id'] * (len(op_inds)-1))
                 else:
                     # Boundary term
-                    self.add_multi_coupling_term(J_boundary, op_inds, ops, ['Id'] * (len(op_inds)-1))
+                    self.add_multi_coupling_term(J_boundary * ((-1)**(ucs >= L // 2) if staggered else 1), op_inds, ops, ['Id'] * (len(op_inds)-1))
 
 
 class PXXZPChain(CouplingMPOModel):

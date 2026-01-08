@@ -2308,7 +2308,7 @@ class MPO(MPSGeometry):
 
         """
         if self.bc != 'finite':
-            raise NotImplementedError('MPO.add_identity only works for finite MPO.')
+            raise NotImplementedError('MPO.plus_identity only works for finite MPO.')
         if self.explicit_plus_hc:
             raise NotImplementedError
 

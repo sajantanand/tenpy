@@ -287,6 +287,27 @@ class Lattice:
             elif bc_y == 'ladder':
                 bc_y = 'open'
             return cls(Lx, Ly, sites, order=order, bc=[bc_x, bc_y], bc_MPS=bc_MPS)
+        if cls.dim == 3:
+            # Cubic
+            Lx = model_params.get('Lx', 1, int)
+            Ly = model_params.get('Ly', 4, int)
+            Lz = model_params.get('Lz', 4, int)
+            bc_y = model_params.get('bc_y', 'cylinder', str)
+            bc_z = model_params.get('bc_z', 'cylinder', str)
+            assert bc_y in ['cylinder', 'ladder', 'open', 'periodic']
+            if bc_y == 'cylinder':
+                bc_y = 'periodic'
+            elif bc_y == 'ladder':
+                bc_y = 'open'
+            assert bc_z in ['cylinder', 'ladder', 'open', 'periodic']
+            if bc_z == 'cylinder':
+                bc_z = 'periodic'
+            elif bc_z == 'ladder':
+                bc_z = 'open'
+            return cls(Lx, Ly, Lz, sites, order=order, bc=[bc_x, bc_y, bc_z], bc_MPS=bc_MPS)
+        if cls.dim == -1:
+            # Hypercubic
+            pass
         raise NotImplementedError(f'Subclass {cls.__name__} should overwrite this')
 
     def copy(self):
