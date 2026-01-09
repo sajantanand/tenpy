@@ -1681,6 +1681,7 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                         # Open the first A term, moving from IdL to the first state.
                         print(i, 'IdL', labels[0], ops_i[0])
                         graph.add(i, 'IdL', labels[0], ops_i[0], lambda_[i])
+                    """
                     if not in_subsites[i]:
                         # Add op_string here, even though site i is not in in_subsites
                         # This is for JW purposes.
@@ -1690,6 +1691,17 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                         else:
                             print(i, exp_label, exp_label, 'Id')
                             graph.add(i, exp_label, exp_label, 'Id', 1.0)
+                    """
+                    if not in_subsites[i]:
+                        # Add op_string here, even though site i is not in in_subsites
+                        # This is for JW purposes.
+                        for oi, label in enumerate(labels):
+                            if op_string == 'JW' and oi == exp_ind:
+                                op_str = 'JW'
+                            else:
+                                op_str = 'Id'
+                            print(i, label, label, op_str)
+                            graph.add(i, label, label, op_str, 1.0)
             else:
                 if last_subsite > first_subsite:  # If not, there is no coupling to add.
                     # If lambda_ is not uniform and subsites_start != subsites, one needs to be very careful.
@@ -1762,6 +1774,7 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                         # This is important for fermions.
                         # If op_string is not JW (i.e. for bosonic operators with a non-trivial string), we do not
                         # include it here and instead place the identity.
+                        """
                         if not in_subsites[i]:
                             if visited_state[exp_ind]:
                                 if op_string == 'JW':
@@ -1770,6 +1783,19 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                                 else:
                                     print(i, exp_label, exp_label, 'Id')
                                     graph.add(i, exp_label, exp_label, 'Id', 1.0)
+                        """
+                        if not in_subsites[i]:
+                            for oi, label in enumerate(labels):
+                                if visited_state[oi] and (np.sum(in_subsites[i+1:]) + oi >= states_needed):
+                                     # Exponentially decaying label; potentially add op_string if needed
+                                    if op_string == 'JW' and oi == exp_ind:
+                                        op_str = 'JW'
+                                    else:
+                                        op_str = 'Id'
+                                    print(i, label, label, op_str)
+                                    graph.add(i, label, label, op_str, 1.0)
+
+
                         visited_state = new_visited
                     
                     # Finish the final term
