@@ -1668,6 +1668,14 @@ class CouplingModel(Model):
         Note that the sum over :math:`i, j` is long-range, for infinite systems going beyond the MPS
         unit cell. Site `i` is in `subsites_start`.
 
+        Note that there is one crucial difference from the usual exponentially decaying coupings; if there is a
+        non-trivial op_string that IS NOT a JW string, it is ONLY added on subsites and not on all sites. The
+        usual method adds op_string with decay constant 1 to all sites between A and B. Here, we only do that if
+        op_string is a JW string. Otherwise, we only add op_string to subsites.
+
+        Note that the TermList for usual exponentially decaying couplings do now list the op_string, while we
+        do that for the TermList for the multi exponential couplings.
+
         .. note ::
             The operator :math:`B_j`, given by `op_j` always acts first (relevant only for fermions)
             and to manually add the explicit dagger, you would need to include a sign if the
@@ -1679,8 +1687,8 @@ class CouplingModel(Model):
 
         Parameters
         ----------
-        strength : float
-            Overall prefactor.
+        strength : float | 1D array
+            Overall prefactor. Either a single number, applied uniformly or a sequence of length :attr:`L`.
         lambda_ : float | 1D array
             Decay-rate. Either a single number, applied uniformly or a sequence of length :attr:`L`.
             See notes below for the definition of non-uniform decay rate.

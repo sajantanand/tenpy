@@ -1495,10 +1495,11 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
 
         Parameters
         ----------
-        strength : float
-            Overall prefactor.
+        strength : float | 1D array
+            Overall prefactor. Either a single number, aplied uniformly, or a sequence of length
+            :attr:`L`
         lambda_ : float | 1D array
-            Decay-rate. Either a single number, applied uniformly or a sequence of length :attr:`L`.
+            Decay-rate. Either a single number, applied uniformly, or a sequence of length :attr:`L`.
         ops_i, ops_j : string
             Names for the operators.
         subsites, subsites_start : 1D array, optional
@@ -1509,7 +1510,7 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
 
         """
         assert np.isscalar(lambda_) or len(lambda_) == self.L
-        assert subsites is None
+        assert np.isscalar(strength) or len(strength) == self.L
         if subsites is None:
             subsites = np.arange(self.L)
         else:
@@ -1519,7 +1520,6 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
             assert subsites[0] >= 0
             assert subsites[-1] < self.L
         
-        assert subsites_start is None
         if subsites_start is None:
             subsites_start = subsites
         else:
@@ -1631,6 +1631,8 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
         for strength, lambda_, ops_i, ops_j, subsites, subsites_start, op_string in self.multi_exp_decaying_terms:
             if np.isscalar(lambda_):
                 lambda_ = np.full(self.L, lambda_)
+            if np.isscalar(strength):
+                strength = np.full(self.L, strength)
             while (key_nr, key) in all_states:
                 key_nr += 1
             states_needed = len(ops_i) + len(ops_j) - 1
@@ -1655,29 +1657,39 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                         # Finish the A terms
                         for _ in range(len(ops_i)-1):
                             # Move to the next A term
+                            print(i, labels[oi], labels[oi+1], ops_i[oi+1])
                             graph.add(i, labels[oi], labels[oi+1], ops_i[oi+1], lambda_[i])
                             oi += 1
                         
                         # Exponentially decaying term; As are finished.
                         assert labels[oi] == exp_label
+                        print(i, labels[oi], labels[oi], op_string)
                         graph.add(i, labels[oi], labels[oi], op_string, lambda_[i])
                         
                         # Start the B terms, but don't move to IdR
                         for j in range(len(ops_j)-1):
                             # Move to the next B term
+                            print(i, labels[oi], labels[oi+1], ops_j[j])
                             graph.add(i, labels[oi], labels[oi+1], ops_j[j], lambda_[i])
                             oi += 1
                         
                         # Move to the last B term
                         assert oi == states_needed - 1
-                        graph.add(i, labels[oi], 'IdR', ops_j[-1], strength)
+                        print(i, labels[oi], 'IdR', ops_j[-1])
+                        graph.add(i, labels[oi], 'IdR', ops_j[-1], strength[i])
                     if in_subsites_start[i]:
                         # Open the first A term, moving from IdL to the first state.
+                        print(i, 'IdL', labels[0], ops_i[0])
                         graph.add(i, 'IdL', labels[0], ops_i[0], lambda_[i])
                     if not in_subsites[i]:
                         # Add op_string here, even though site i is not in in_subsites
                         # This is for JW purposes.
-                        graph.add(i, exp_label, exp_label, op_string, 1.0)
+                        if op_string == 'JW':
+                            print(i, exp_label, exp_label, op_string)
+                            graph.add(i, exp_label, exp_label, op_string, 1.0)
+                        else:
+                            print(i, exp_label, exp_label, 'Id')
+                            graph.add(i, exp_label, exp_label, 'Id', 1.0)
             else:
                 if last_subsite > first_subsite:  # If not, there is no coupling to add.
                     # If lambda_ is not uniform and subsites_start != subsites, one needs to be very careful.
@@ -1735,7 +1747,7 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                             if visited_state[oi]:
                                 # Move to the last B term
                                 print(i, labels[oi], 'IdR', ops_j[oi])
-                                graph.add(i, labels[oi], 'IdR', ops_j[oi], strength)
+                                graph.add(i, labels[oi], 'IdR', ops_j[oi], strength[i])
                         
                         # Start a new term
                         if in_subsites_start[i]:
@@ -1748,11 +1760,16 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                         
                         # Exponentially decaying term, out of subsites, so strength 1
                         # This is important for fermions.
+                        # If op_string is not JW (i.e. for bosonic operators with a non-trivial string), we do not
+                        # include it here and instead place the identity.
                         if not in_subsites[i]:
-                            oi = exp_ind
-                            if visited_state[oi]:
-                                print(i, exp_label, exp_label, op_string)
-                                graph.add(i, exp_label, exp_label, op_string, 1.0)
+                            if visited_state[exp_ind]:
+                                if op_string == 'JW':
+                                    print(i, exp_label, exp_label, op_string)
+                                    graph.add(i, exp_label, exp_label, op_string, 1.0)
+                                else:
+                                    print(i, exp_label, exp_label, 'Id')
+                                    graph.add(i, exp_label, exp_label, 'Id', 1.0)
                         visited_state = new_visited
                     
                     # Finish the final term
@@ -1760,7 +1777,7 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                     oi = -1
                     if visited_state[oi]:
                         print(last_subsite, labels[oi], 'IdR', ops_j[oi])
-                        graph.add(last_subsite, labels[oi], 'IdR', ops_j[oi], strength)
+                        graph.add(last_subsite, labels[oi], 'IdR', ops_j[oi], strength[i])
 
         for strength, lambda_, op_i, op_j, i, subsites, op_string in self.centered_terms:
             assert finite
@@ -1864,7 +1881,88 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                         strengths.append(pref)
                     else:
                         raise ValueError('distance of 1000 not enough to reach precision cutoff')
+            else:
+                raise ValueError('unknown boundary conditions: ' + repr(bc))
 
+        for term in self.multi_exp_decaying_terms:
+            strength, lambda_, ops_i, ops_j, subsites, subsites_start, op_string = term
+            if np.isscalar(lambda_):
+                lambda_ = np.full(self.L, lambda_)
+            if np.isscalar(strength):
+                strength = np.full(self.L, strength)
+            min_ops = len(ops_i) + len(ops_j)
+            N1 = len(subsites)
+            if bc == 'finite':
+                for i2, i in enumerate(subsites_start):
+                    # Find indices of all terms in subsites larger than subsites_start[i2]
+                    i3 = np.where(subsites > i)[0]
+                    if len(i3) >= min_ops - 1:  # there are enough sites to the right to finish a term
+                        i3s = i3[min_ops - 2]  # Get index (in subsites) of leftmost site where a term can terminate successfully
+                        #Loop over all term endpoints including and to the right of this.
+                        for d, j in enumerate(subsites[i3s:]):
+                            #j is the site where the term ends
+                            # First decay term is from subsites_start[i2].
+                            # Then we go to subsites[i3[0]:i3s+d]
+                            pref = strength[j] * np.prod(
+                                    [lambda_[i]] + list(lambda_[subsites[i3[0]:i3s+d]])
+                            )
+                            if abs(pref) < cutoff:
+                                break
+                            curr_term = []
+                            # First term
+                            curr_term.append((ops_i[0], i))
+                            # Remainder of A terms; only on subsites
+                            for oi in range(1, len(ops_i)):
+                                curr_term.append((ops_i[oi], subsites[i3[oi-1]]))
+                            
+                            # Exponential term on all subsites until B terms, provided op_string is non-trivial
+                            if op_string != 'Id':
+                                for oi in subsites[i3[len(ops_i)-1]:i3s+d-len(ops_j)+1]:
+                                    curr_term.append((op_string, oi))
+
+                            # All B terms
+                            for oi, jj in enumerate(subsites[i3s+d-len(ops_j)+1: i3s+d+1]):
+                                curr_term.append((ops_j[oi], jj))
+
+                            terms.append(curr_term)
+                            strengths.append(pref)
+            elif bc == 'infinite':
+                for i2, i in enumerate(subsites_start):
+                    # Get index of first subsite to the right of the start, inside the MPS unit cell
+                    i3 = np.where(subsites > i)[0]
+                    if len(i3) == 0:  # No subsites in the first unit MPS cell are to the right of i
+                        i3 = N1  # Shift one unit cell over
+                    else:
+                        i3 = i3[0]
+                    for d in range(min_ops-2, 1000):  # run over subsites INDICES
+                        j2 = i3 + d
+                        j = subsites[j2 % N1] + (j2 // N1) * L
+                        # See finite case for reasoning about decay constants
+                        pref = strength[j % N1] * np.prod(
+                            [lambda_[i]] + list(lambda_[subsites[np.arange(i3, j2) % N1]])
+                        )
+                        if abs(pref) < cutoff:
+                            break
+                        curr_term = []
+                        # First term
+                        curr_term.append((ops_i[0], i))
+                        # Remainder of A term; only on subsites
+                        for oi in range(1, len(ops_i)):
+                            curr_term.append((ops_i[oi], subsites[(i3+oi-1) % N1] + ((i3+oi-1) // N1) * L))
+                        
+                        # Exponential term on all subsites until B terms, provided op_string is non-trivial
+                        if op_string != 'Id':
+                            for oi in range(i3+len(ops_i)-1, j2-len(ops_j)+1):
+                                curr_term.append((op_string, subsites[oi % N1] + + (oi // N1) * L))
+
+                        # All B terms
+                        for oi, jj in enumerate(range(j2-len(ops_j)+1, j2+1)):
+                            curr_term.append((ops_j[oi], subsites[jj % N1] + (jj // N1) * L))
+
+                        terms.append(curr_term)
+                        strengths.append(pref)
+                    else:
+                        raise ValueError('distance of 1000 not enough to reach precision cutoff')
             else:
                 raise ValueError('unknown boundary conditions: ' + repr(bc))
 
