@@ -11,6 +11,7 @@ import itertools
 import warnings
 
 import numpy as np
+import copy
 
 from ..linalg import np_conserved as npc
 from ..tools.hdf5_io import Hdf5Exportable
@@ -1400,6 +1401,10 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
         Each tuple ``(strength, opname_i, opname_j, lambda, subsites, subsites_start, opname_string)`` represents
         one of the terms as described above; see :meth:`add_exponentially_decaying_coupling` for
         more details.
+    multi_exp_decaying_terms : list of tuples
+        Each tuple ``(strength, opnames_i, opnames_j, lambda, subsites, subsites_start, opname_string)`` represents
+        one of the terms as described above; see :meth:`add_multi_exponentially_decaying_coupling` for
+        more details.
     centered_terms : list of tuples
         Each tuple ``(strength, opname_i, opname_j, lambda_, subsites, opname_string)`` represents
         one of the centered terms as described in :meth:`add_centered_exponentially_decaying_term`.
@@ -1410,6 +1415,7 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
         assert L > 0
         self.L = L
         self.exp_decaying_terms = []
+        self.multi_exp_decaying_terms = []
         self.centered_terms = []
 
     @property
@@ -1465,6 +1471,65 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
             assert subsites_start[-1] < self.L
 
         self.exp_decaying_terms.append((strength, lambda_, op_i, op_j, subsites, subsites_start, op_string))
+
+    def add_multi_exponentially_decaying_coupling(
+        self, strength, lambda_, ops_i, ops_j, subsites=None, subsites_start=None, op_string='Id'
+    ):
+        r"""Add a multiterm exponentially decaying long-range coupling.
+
+        .. math ::
+            \mathtt{strength} \sum_{j} \sum_{k > j} \lambda^{|k-j-1 + l-k + j-i+1|} A_{i,...j} op_{j+1,...k-1)} B_{k,...l}
+
+        Where the operators `A` is given by `ops_i`, and `B` is given by `ops_j`. Unlike in the
+        usual exponentially decaying terms, we now allow for operators `A` and `B` to act on an
+        arbitrary number of sites (instead of 1).
+
+        The exponential decaying factor is applied to all `A` sites, all sites in-between `A` and `B`, and all
+        but the last `B` sites (where the prefactor `strength` is applied). This reproduces the behavior of the usual
+        exponentially decaying terms, where `|A| = |B| = 1`.
+        
+        Note that the sum over i,j is long-range, for infinite systems beyond the MPS unit cell.
+
+        They can be generalized in several ways, see `lambda_`, `subsites`, `subsites_start`, as
+        well as the notes below.
+
+        Parameters
+        ----------
+        strength : float
+            Overall prefactor.
+        lambda_ : float | 1D array
+            Decay-rate. Either a single number, applied uniformly or a sequence of length :attr:`L`.
+        ops_i, ops_j : string
+            Names for the operators.
+        subsites, subsites_start : 1D array, optional
+            Selects a subset of sites within the MPS unit cell on which the operators act. See docs
+            in :class:`~tenpy.models.model.CouplingModel.add_multi_exponentially_decaying_coupling`.
+        op_string : string
+            The operator to be inserted between `A` and `B`; for Fermions this should be ``"JW"``.
+
+        """
+        assert np.isscalar(lambda_) or len(lambda_) == self.L
+        assert subsites is None
+        if subsites is None:
+            subsites = np.arange(self.L)
+        else:
+            subsites = np.array(subsites)
+            if len(subsites) > 1 and np.any(subsites[1:] < subsites[:-1]):
+                raise ValueError('subsites needs to be sorted; choose a different MPS ordering!')
+            assert subsites[0] >= 0
+            assert subsites[-1] < self.L
+        
+        assert subsites_start is None
+        if subsites_start is None:
+            subsites_start = subsites
+        else:
+            subsites_start = np.array(subsites_start)
+            if len(subsites_start) > 1 and np.any(subsites_start[1:] < subsites_start[:-1]):
+                raise ValueError('subsites needs to be sorted; choose a different MPS ordering!')
+            assert subsites_start[0] >= 0
+            assert subsites_start[-1] < self.L
+
+        self.multi_exp_decaying_terms.append((strength, lambda_, ops_i, ops_j, subsites, subsites_start, op_string))
 
     def add_centered_exponentially_decaying_term(self, strength, lambda_, op_i, op_j, i, subsites=None, op_string='Id'):
         """Add exponentially decaying terms centered around a single site.
@@ -1560,6 +1625,142 @@ class ExponentiallyDecayingTerms(Hdf5Exportable):
                         if not in_subsites[i]:
                             graph.add(i, label, label, op_string, 1.0)
                     graph.add(last_subsite, label, 'IdR', op_j, strength)
+       
+        # Each term will require |ops_i| + |ops_j| - 1 states in the graph; 1 for the exponentially decaying term,
+        # and the remaining for the first and last static terms.
+        for strength, lambda_, ops_i, ops_j, subsites, subsites_start, op_string in self.multi_exp_decaying_terms:
+            if np.isscalar(lambda_):
+                lambda_ = np.full(self.L, lambda_)
+            while (key_nr, key) in all_states:
+                key_nr += 1
+            states_needed = len(ops_i) + len(ops_j) - 1
+            labels = [(key_nr+i, key) for i in range(states_needed)]
+            #label = (key_nr, key)
+            exp_ind = len(ops_i) - 1
+            exp_label = labels[exp_ind]     # This is the label of the exp term; for |A| = |B| = 1, then there is only 1 label.
+            for label in labels:
+                all_states.add(label)
+            in_subsites = np.zeros(self.L, dtype=np.bool_)
+            in_subsites[subsites] = True
+            in_subsites_start = np.zeros(self.L, dtype=np.bool_)
+            in_subsites_start[subsites_start] = True
+            first_subsite = subsites_start[0]
+            last_subsite = subsites[-1]
+            assert first_subsite >= 0
+            assert last_subsite < self.L
+            if not finite:
+                for i in range(self.L):
+                    if in_subsites[i]:
+                        oi = 0          # Opened a term from IdL to the first label already
+                        # Finish the A terms
+                        for _ in range(len(ops_i)-1):
+                            # Move to the next A term
+                            graph.add(i, labels[oi], labels[oi+1], ops_i[oi+1], lambda_[i])
+                            oi += 1
+                        
+                        # Exponentially decaying term; As are finished.
+                        assert labels[oi] == exp_label
+                        graph.add(i, labels[oi], labels[oi], op_string, lambda_[i])
+                        
+                        # Start the B terms, but don't move to IdR
+                        for j in range(len(ops_j)-1):
+                            # Move to the next B term
+                            graph.add(i, labels[oi], labels[oi+1], ops_j[j], lambda_[i])
+                            oi += 1
+                        
+                        # Move to the last B term
+                        assert oi == states_needed - 1
+                        graph.add(i, labels[oi], 'IdR', ops_j[-1], strength)
+                    if in_subsites_start[i]:
+                        # Open the first A term, moving from IdL to the first state.
+                        graph.add(i, 'IdL', labels[0], ops_i[0], lambda_[i])
+                    if not in_subsites[i]:
+                        # Add op_string here, even though site i is not in in_subsites
+                        # This is for JW purposes.
+                        graph.add(i, exp_label, exp_label, op_string, 1.0)
+            else:
+                if last_subsite > first_subsite:  # If not, there is no coupling to add.
+                    # If lambda_ is not uniform and subsites_start != subsites, one needs to be very careful.
+                    # Let jj be the index of the first subsite such that subsites > subsites>subsites_start[i].
+                    # The interaction will be pref * lambda[subsites_start[i]] * lambda[jj:jj+r]
+                    # up to desired interaction range r. So the first term is just pref * lambda[subsites_start[i]]
+                    # since we only pick up a lambda on op_i and op_string. When we close a term,
+                    # there is no lambda decay.
+
+                    # Keep track if we have already visited a state; then, we should add the terms that move out of this state.
+                    visited_state = [False] * (states_needed)
+                    edge_reached = False
+
+                    # first subsite
+                    print(first_subsite, 'IdL', labels[0], ops_i[0])
+                    graph.add(first_subsite, 'IdL', labels[0], ops_i[0], lambda_[first_subsite])
+                    visited_state[0] = True
+                    for i in range(first_subsite + 1, last_subsite):
+                        new_visited = copy.deepcopy(visited_state)
+                        
+                        # Continue a term
+                        if in_subsites[i]:
+                            # A terms, except the first
+                            for oi in range(len(ops_i)-1):
+                                if visited_state[oi]:
+                                    if np.sum(in_subsites[i+1:]) + oi + 1 < states_needed:
+                                        # Not enough sites left to finish the term, so don't continue it with ops_i[oi+1]
+                                        pass
+                                    else:
+                                        print(i, labels[oi], labels[oi+1], ops_i[oi+1])
+                                        graph.add(i, labels[oi], labels[oi+1], ops_i[oi+1], lambda_[i])
+                                        new_visited[oi+1] = True
+                            
+                            # Exponential decaying terms
+                            oi = exp_ind
+                            if visited_state[oi]:
+                                if np.sum(in_subsites[i+1:]) + oi < states_needed:
+                                    pass
+                                else:
+                                    print(i, labels[oi], labels[oi], op_string)
+                                    graph.add(i, labels[oi], labels[oi], op_string, lambda_[i])
+
+                            # B terms, except the last
+                            for j in range(len(ops_j)-1):
+                                if visited_state[oi]:
+                                    if np.sum(in_subsites[i+1:]) + oi + j + 1 < states_needed:
+                                        pass
+                                    else:
+                                        print(i, labels[oi+j], labels[oi+j+1], ops_j[j])
+                                        graph.add(i, labels[oi+j], labels[oi+j+1], ops_j[j], lambda_[i])
+                                        new_visited[oi+j+1] = True
+                            
+                            # Finish a term
+                            oi = -1
+                            if visited_state[oi]:
+                                # Move to the last B term
+                                print(i, labels[oi], 'IdR', ops_j[oi])
+                                graph.add(i, labels[oi], 'IdR', ops_j[oi], strength)
+                        
+                        # Start a new term
+                        if in_subsites_start[i]:
+                            if np.sum(in_subsites[i+1:]) >= states_needed:
+                                # Only open a new term if there are enough sites left to finish it.
+                                print(i, 'IdL', labels[0], ops_i[0])
+                                graph.add(i, 'IdL', labels[0], ops_i[0], lambda_[i])
+                            else:
+                                edge_reached=True
+                        
+                        # Exponentially decaying term, out of subsites, so strength 1
+                        # This is important for fermions.
+                        if not in_subsites[i]:
+                            oi = exp_ind
+                            if visited_state[oi]:
+                                print(i, exp_label, exp_label, op_string)
+                                graph.add(i, exp_label, exp_label, op_string, 1.0)
+                        visited_state = new_visited
+                    
+                    # Finish the final term
+                    assert visited_state[oi]
+                    oi = -1
+                    if visited_state[oi]:
+                        print(last_subsite, labels[oi], 'IdR', ops_j[oi])
+                        graph.add(last_subsite, labels[oi], 'IdR', ops_j[oi], strength)
 
         for strength, lambda_, op_i, op_j, i, subsites, op_string in self.centered_terms:
             assert finite

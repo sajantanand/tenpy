@@ -1656,6 +1656,202 @@ class CouplingModel(Model):
                 np.conj(strength), np.conj(lambda_), hc_op_i, hc_op_j, subsites, subsites_start, hc_opstr
             )
 
+    def add_multi_exponentially_decaying_coupling(
+        self, strength, lambda_, ops_i, ops_j, subsites=None, subsites_start=None, op_string=None, plus_hc=False
+    ):
+        r"""Add an exponentially decaying long-range coupling.
+
+        .. math ::
+            \mathtt{strength} \sum_{j} \sum_{k > j} \lambda^{|k-j-1 + l-k + j-i+1|} A_{i,...j} op_{j+1,...k-1)} B_{k,...l}
+
+        where the operator :math:`A` is given by `ops_i`, and :math:`B` is given by `ops_j`.
+        Note that the sum over :math:`i, j` is long-range, for infinite systems going beyond the MPS
+        unit cell. Site `i` is in `subsites_start`.
+
+        .. note ::
+            The operator :math:`B_j`, given by `op_j` always acts first (relevant only for fermions)
+            and to manually add the explicit dagger, you would need to include a sign if the
+            operators anti-commute, e.g. for :math:`A_i B_j = c^\dagger_i c_j`.
+            In practice, you should use `plus_hc`.
+
+        This can be generalized in several ways, see `lambda_`, `subsites`, `subsites_start`, as
+        well as the notes below.
+
+        Parameters
+        ----------
+        strength : float
+            Overall prefactor.
+        lambda_ : float | 1D array
+            Decay-rate. Either a single number, applied uniformly or a sequence of length :attr:`L`.
+            See notes below for the definition of non-uniform decay rate.
+        ops_i, ops_j : lists of strings
+            Names for the operators, see :meth:`~tenpy.networks.site.Site.get_op`.
+        subsites : 1D array, optional
+            Selects a subset of sites within the MPS unit cell on which the operators act.
+            Must be sorted. By default (``None``), acts on all sites. See notes below.
+        subsites_start : 1D array, optional
+            Selects a subset of sites within the MPS unit cell where the couplings are started,
+            that is where the first operator :math:`A` a.k.a. `op_i` acts on. Must be sorted.
+            By default (``None``), we use the same `subsites` for both operators.
+            If given, couplings "start" on `subsites_start` and "end" on `subsites`, i.e the
+            operators are :math:`A_\mathtt{subsites_start[i]} B_\mathtt{subsites[j]}` and are only
+            added if ``subsites[j] > subsites_start[i]``. See notes below.
+        op_string : None | str
+            The operator to be inserted between `A` and `B`;
+            If ``None``, this function checks whether a fermionic ``"JW"`` string is needed for the
+            given operators; in this case the right `op_j` acts first.
+        plus_hc : bool
+            If `True`, the hermitian conjugate of the term is added automatically.
+
+        Notes
+        -----
+        The simple form in the main docstring can be generalized in several ways.
+
+        First, we can have a non-uniform decay rate `lambda_`, which modifies the added terms to
+
+        .. math ::
+            \mathtt{strength} \sum_{i} \sum_{j > i} ( \prod_{i <= n < j} \lambda_n ) A_i B_j
+
+        Secondly, we can generalize s.t. only a subset of sites, given by :math:`S` =`subsites`,
+        participates
+
+        .. math ::
+            \mathtt{strength} \sum_{i \in S} \sum_{j \in S, j > i} \Lambda_{i, j} A_i B_j
+
+        For an infinite system, the sums are extensive, i.e. the sum over :math:`i` goes over all
+        infinitely many unit cells, and all `subsites` within each unit cell.
+        The prefactor is
+
+        .. math ::
+            \Lambda_{i, j} := \prod_{n \in S, i <= n < j} \lambda_n
+
+        With a uniform decay rates, this decays only with the distance *within the subsites*,
+        e.g. we get contributions of the form :math:`\lambda^k A_{S_i} B_{S_{i + k}}`, with the
+        exponent :math:`k`, *not* :math:`|S_{i + k} - S_i|`.
+        With non-uniform decay rates, this means that only the ``lambda_[subsites]`` are used, but
+        we still require a length :attr:`L` sequence.
+
+        Lastly, in addition to `subsites`, we can specify :math:`S_\text{start}` = `subsites_start`,
+        such that :math:`A` and :math:`B` are constrained to *independent* subsets of the unit cell.
+        We then get
+
+        .. math ::
+            \mathtt{strength} \sum_{i \in S_\text{start}} \sum{j \in S, j > i} \Lambda'_{i, j} A_i B_j
+            \\
+            \Lambda'_{i, j} := \lambda_i \prod_{n \in S, i < n < j} \lambda_n
+
+        such that the prefactor starts with a :math:`\lambda_i` from the "start" site, but then
+        collects factors only from the `subsites`, not the `subsites_start`.
+
+        Examples
+        --------
+        At least for simple enough 1D chains (or ladders), you can use
+        :func:`~tenpy.tools.fit.fit_with_sum_of_exp` to approximate a long-range function
+        with a few sum of exponentials and then add them with this function.
+
+        .. testsetup :: add_exponentially_decaying_coupling
+
+            self = tenpy.models.spins.SpinChain(dict(L=30))
+            self.manually_call_init_H = True
+
+        .. doctest :: add_exponentially_decaying_coupling
+
+            >>> def decay(x):
+            ...     return np.exp(-0.1*x) / x**2
+            >>> from tenpy.tools.fit import fit_with_sum_of_exp, sum_of_exp
+            >>> n_exp = 5
+            >>> fit_range = 50
+            >>> lam, pref = fit_with_sum_of_exp(decay, n_exp, fit_range)
+            >>> x = np.arange(1, fit_range + 1)
+            >>> print('error in fit: {0:.3e}'.format(np.sum(np.abs(decay(x) - sum_of_exp(lam, pref, x)))))
+            error in fit: 1.073e-04
+            >>> for pr, la in zip(pref, lam):
+            ...     self.add_exponentially_decaying_coupling(pr, la, 'N', 'N')
+
+        See Also
+        --------
+        add_exponentially_decaying_centered_terms
+            Similar terms, but with fixed :math:`i` instead over summing over :math:`i`.
+
+        """
+        # Convert ops to a list if not list
+        if np.isscalar(ops_i):
+            ops_i = [ops_i]
+        if np.isscalar(ops_j):
+            ops_j = [ops_j]
+
+        if not np.any(np.asarray(strength) != 0.):
+            return  # nothing to do: can even accept non-defined onsite operators
+        if self.explicit_plus_hc:
+            if plus_hc:
+                plus_hc = False  # explicitly add the h.c. later; don't do it here.
+            else:
+                strength /= 2  # avoid double-counting this term: add the h.c. explicitly later on
+
+        if subsites is None:
+            example_site_j = self.lat.unit_cell[0]
+        else:
+            example_site_j = self.lat.mps_sites()[subsites[0]]
+
+        # For backwards compatibility; if subsites_start is not set, we use the same set to begin
+        # and end exponentially decaying terms
+        if subsites_start is None:
+            subsites_start = subsites
+            example_site_i = example_site_j
+        else:
+            example_site_i = self.lat.mps_sites()[subsites_start[0]]
+
+        if op_string is None:
+            # A and B can be multiple sites, so we need to track which ops need JW strings.
+            needs_JW_i = [example_site_i.op_needs_JW(op_i) for op_i in ops_i]
+            needs_JW_j = [example_site_j.op_needs_JW(op_j) for op_j in ops_j]
+            assert np.sum(needs_JW_i + needs_JW_j) % 2 == 0, "Cannot require an odd number of JW strings; this leads to non-locality!"
+
+            op_string_counter = 0
+            
+            # For each site in ops_j, we apply JW to the sites in the left of ops_j
+            # We also track how the parity of sites in ops_j that need a JW string to determine
+            # the op_string
+            for j in range(len(ops_j)-1, -1, -1):
+                if needs_JW_j[j]:   # Need a JW string for ops_j[j]
+                    op_string_counter += 1
+
+                    for i in range(0, j):   # Loop over other sites in ops_j
+                        ops_j[i] = example_site_j.multiply_op_names([ops_j[i], 'JW'])
+                    
+                    for i in range(0, len(ops_i)):   # Loop over all sites in ops_i
+                        if i != 0:
+                            ops_i[i] = example_site_j.multiply_op_names([ops_i[i], 'JW'])
+                        else:
+                            # i=0 is on subsites_start
+                            ops_i[i] = example_site_i.multiply_op_names([ops_i[i], 'JW'])
+            
+            # For each site in ops_j, we apply JW to the sites in the left of ops_i
+            for j in range(len(ops_i)-1, -1, -1):
+                if needs_JW_i[j]:   # Need a JW string for ops_i[j]
+                    for i in range(0, j):   # Loop over other sites in ops_i
+                        if i != 0:
+                            ops_i[i] = example_site_j.multiply_op_names([ops_i[i], 'JW'])
+                        else:
+                            # i=0 is on subsites_start
+                            ops_i[i] = example_site_i.multiply_op_names([ops_i[i], 'JW'])
+
+
+            if op_string_counter % 2 == 1:
+                op_string = 'JW'
+            else:
+                op_string = 'Id'
+        self.exp_decaying_terms.add_multi_exponentially_decaying_coupling(
+            strength, lambda_, ops_i, ops_j, subsites, subsites_start, op_string
+        )
+        if plus_hc:
+            hc_ops_i = [example_site_i.get_hc_op_name(op_i) for op_i in ops_i]
+            hc_ops_j = [example_site_j.get_hc_op_name(op_j) for op_j in ops_j]
+            hc_opstr = example_site_j.get_hc_op_name(op_string)
+            self.exp_decaying_terms.add_multi_exponentially_decaying_coupling(
+                np.conj(strength), np.conj(lambda_), hc_ops_i, hc_ops_j, subsites, subsites_start, hc_opstr
+            )
+
     def add_exponentially_decaying_centered_terms(
         self, strength, lambda_, op_i, op_j, i, subsites=None, op_string=None, plus_hc=False
     ):
