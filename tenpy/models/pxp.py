@@ -323,19 +323,41 @@ class PExpPChain(CouplingMPOModel):
         conserve = model_params.get('conserve', 'best', None)
         if conserve == 'best':
             # check how much we can conserve
-            if not model_params.any_nonzero([J], "check Sz conservation"):
+            if not model_params.any_nonzero(['Jx'], "check Sz conservation"):
                 conserve = 'Sz'
             else:
                 conserve = 'parity'
             self.logger.info("%s: set conserve to %s", self.name, conserve)
         s = SpinHalfSite(conserve=conserve)
+        s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
         # P is defined as P0, the projector onto the state 0, i.e. the up spin
         return s
 
     def init_terms(self, model_params):
-        raise NotImplementedError("Not implemented yet. See comment in code.")
-        """
-        Implementing P X N^k Y P interactions requires generalization of the `add_exponentially_decaying_coupling`. \\
-                                   N will be the `op_string` placed between operators `A` and `B`, but now, the end point operators act on TWO \\
-                                   sites. This then generates all possible P X Y P, P X N Y P, etc. operators.")
-        """
+        #Do we want the staggered model, with half of the terms negated.
+        staggered = model_params.get('staggered', False, bool)
+        L = len(self.lat.mps_sites())
+        sign = (-1 if staggered else 1)**(np.arange(L) >= L//2)
+
+        # PXP Part
+        Jx = model_params.get('Jx', 2.0, 'real_or_array')
+        if np.any(np.asarray(Jx) != 0):
+            self.add_multi_coupling(Jx * sign[1:-1], [('P0', [-1], 0), ('X', [0], 0), ('P0', [1], 0)])
+        
+        # PXNYP part
+        Jxy = model_params.get('Jxy', 2.0, 'real_or_array')
+        Jz = model_params.get('Jz', 0.0, 'real_or_array')
+
+        prefactors = model_params.get('prefactors', [0], 'real_or_array')
+        lambdas = model_params.get('lambdas', [0], 'real_or_array')
+        if np.isscalar(prefactors):
+            prefactors = np.full(1, prefactors)
+        if np.isscalar(lambdas):
+            lambdas = np.full(1, lambdas)
+        
+        for lam, pre in zip(lambdas, prefactors):
+            print(lam, pre)
+            self.add_multi_exponentially_decaying_coupling(Jxy*2.0*pre * sign, lambda_=lam, ops_i=['P0', 'Sp'], ops_j=['Sm', 'P0'], 
+                    subsites=None, subsites_start=None, op_string='P1', plus_hc=True)
+            self.add_multi_exponentially_decaying_coupling(Jz*4.0*pre * sign, lambda_=lam, ops_i=['P0', 'Sz'], ops_j=['Sz', 'P0'], 
+                    subsites=None, subsites_start=None, op_string='P1', plus_hc=False)
