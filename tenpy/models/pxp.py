@@ -329,7 +329,8 @@ class PExpPChain(CouplingMPOModel):
                 conserve = 'parity'
             self.logger.info("%s: set conserve to %s", self.name, conserve)
         s = SpinHalfSite(conserve=conserve)
-        s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
+        if conserve != 'Sz':
+            s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
         # P is defined as P0, the projector onto the state 0, i.e. the up spin
         return s
 
@@ -342,7 +343,8 @@ class PExpPChain(CouplingMPOModel):
         # PXP Part
         Jx = model_params.get('Jx', 2.0, 'real_or_array')
         if np.any(np.asarray(Jx) != 0):
-            self.add_multi_coupling(Jx * sign[1:-1], [('P0', [-1], 0), ('X', [0], 0), ('P0', [1], 0)])
+            # If staggered, we want a minus sign on all terms that END on the latter half of the chain.
+            self.add_multi_coupling(Jx * sign[2:], [('P0', [-1], 0), ('X', [0], 0), ('P0', [1], 0)])
         
         # PXNYP part
         Jxy = model_params.get('Jxy', 2.0, 'real_or_array')
@@ -356,7 +358,6 @@ class PExpPChain(CouplingMPOModel):
             lambdas = np.full(1, lambdas)
         
         for lam, pre in zip(lambdas, prefactors):
-            print(lam, pre)
             self.add_multi_exponentially_decaying_coupling(Jxy*2.0*pre * sign, lambda_=lam, ops_i=['P0', 'Sp'], ops_j=['Sm', 'P0'], 
                     subsites=None, subsites_start=None, op_string='P1', plus_hc=True)
             self.add_multi_exponentially_decaying_coupling(Jz*4.0*pre * sign, lambda_=lam, ops_i=['P0', 'Sz'], ops_j=['Sz', 'P0'], 
