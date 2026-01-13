@@ -92,7 +92,7 @@ def generate_pairs(lat, key='nearest_neighbors'):
         pairs = [sorted((i,j)) for i in range(L) for j in range(i+1, L)]
     return pairs
 
-def neighbors_from_pairs(pairs):
+def neighbors_from_pairs(pairs, symmetric=True):
     """
     Given a list of pairs, build a dictionary of the neighbors of each site.
     """
@@ -101,8 +101,10 @@ def neighbors_from_pairs(pairs):
     neighbor_dict = defaultdict(list)
 
     for p in pairs:
+        # pairs are sorted, so p[0] < p[1]
         neighbor_dict[p[0]].append(p[1])
-        neighbor_dict[p[1]].append(p[0])
+        if symmetric:
+            neighbor_dict[p[1]].append(p[0])
 
     for key in neighbor_dict.keys():
         neighbor_dict[key].sort()
