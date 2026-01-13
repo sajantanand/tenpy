@@ -162,7 +162,7 @@ class GeneralizedPXPModel(CouplingMPOModel):
             bulk = np.max(len_terms)
             
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
-            #Do we want the staggered model, with half of the terms negated.
+            # Do we want the staggered model, with half of the terms negated.
             staggered = model_params.get('staggered', False, bool)
             L = len(self.lat.mps_sites())
 
@@ -306,7 +306,6 @@ class GeneralizedPXXZPModel(CouplingMPOModel):
             # Build neighbor_dict and interaction_couplings based on keys for neighbors
             neighbor_dict = _build_neighbor_dict_via_couplings(neighbor_keys, self.lat)
             interaction_coupling = _neighbor_couplings_from_keys(interaction_keys, self.lat)
-            #interaction_dict = _build_neighbor_dict_via_couplings(interaction_keys, self.lat.Lu)
         else:
             assert model_params['bc_MPS'] != 'infinite', "For infinite MPS, we cannot enumerate pairs between sites."
             from ..algorithms.dmt_utils import generate_pairs, neighbors_from_pairs
@@ -327,42 +326,26 @@ class GeneralizedPXXZPModel(CouplingMPOModel):
             # projectors on all neighbors of (i,j).
             # NO BOUNDARIES WILL BE INCLUDED
             for (u1, u2, dx) in interaction_coupling:
-                print(u1, u2, dx)
                 # Get neighbors of i and j, making copy of list
                 projectors1 = [] + neighbor_dict[u1]
                 projectors2 = [] + neighbor_dict[u2]
-
-                print('p1:', projectors1)
-                print('p2:', projectors2)
 
                 # Remove j from neighbors of i                
                 for k, (tag, disp, site) in enumerate(projectors1):
                     if tag == 'P0' and site == u2 and np.array_equal(disp, dx):
                         projectors1.pop(k)
-                        print(f"removed: ('P0', {dx}, {u2}).")
                         break
-                else:
-                    print(f"dx={dx}, u2={u2} is not a neighbor of dx={np.array([0] * self.lat.dim)}, u1={u1}.")
-
-                print('p1 after removal:', projectors1)
 
                 # Shift neighbors of j by dx
                 for pj in range(len(projectors2)):
                     proj = projectors2[pj]
                     projectors2[pj] = (proj[0], proj[1] + dx, proj[2])
 
-                print('p2 after shifting:', projectors2)
-
                 # Remove i from neighbors of j
                 for k, (tag, disp, site) in enumerate(projectors2):
                     if tag == 'P0' and site == u1 and np.array_equal(disp, np.array([0] * self.lat.dim)):
                         projectors2.pop(k)
-                        print(f"removed: ('P0', {np.array([0] * self.lat.dim)}, {u1}).")
                         break
-                else:
-                    print(f"dx={np.array([0] * self.lat.dim)}, u1={u1} is not a neighbor of dx={dx}, u2={u2}.")
-
-                print('p2 after removal:', projectors2)
 
                 projectors = projectors1 + projectors2
                 # Convert np.array (unhashable) into tuple (hashable)
@@ -383,8 +366,6 @@ class GeneralizedPXXZPModel(CouplingMPOModel):
             for u1 in interaction_dict.keys():
                 for u2 in interaction_dict[u1]:
                     len_terms.append(len(set(neighbor_dict[u1] + neighbor_dict[u2]) - {u1, u2}))
-            print(len_terms)
-            print(neighbor_dict)
             # The max number of neighbors a site couples to defines the bulk coupling.
             # For any coupling to fewer sites, we use the boundary coupling strength.
             bulk = np.max(len_terms)
@@ -414,7 +395,6 @@ class GeneralizedPXXZPModel(CouplingMPOModel):
                     XY_ops.insert(u2_ind, 'Sm')
                     ZZ_ops.insert(u1_ind, 'Sz')
                     ZZ_ops.insert(u2_ind, 'Sz')
-                    print(op_inds, XY_ops)
                     
                     J_term = J if len(op_inds) == (bulk + 2) else J_boundary
                     Jz_term = Jz if len(op_inds) == (bulk + 2) else Jz_boundary
