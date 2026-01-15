@@ -17,7 +17,8 @@ from ..linalg.charges import LegCharge, ChargeInfo
 __all__ = ['SpinModel', 'SpinChain', 'DipolarSpinChain',
            'XXXChain', 
            'AnisotropicSpinModel', 'AnisotropicBarberPole', 
-           'FiniteRangeSpinChain', 'VDWExponentiallyDecayingXXZ', 'ExponentiallyDecayingSpinModel']
+           'FiniteRangeSpinChain', 'DisorderedFiniteRangeSpinChain',
+           'VDWExponentiallyDecayingXXZ', 'ExponentiallyDecayingSpinModel']
 
 
 class SpinModel(CouplingMPOModel):
@@ -779,7 +780,7 @@ class ExponentiallyDecayingSpinModel(CouplingMPOModel):
             if Jz != 0:
                 self.add_exponentially_decaying_coupling(pre * Jz / Kac_norm / term_norm, lam, 'Sz', 'Sz')
 
-class FiniteRangeSpinChain(SpinChain):
+class FiniteRangeSpinChain(SpinModel):
     r"""Spin-S chain coupled by finite-range interactions.
 
     Suppose we have a long-range f(r) interaction that we truncate after some r. Here we explicitly
@@ -787,6 +788,8 @@ class FiniteRangeSpinChain(SpinChain):
     by `interaction`.
 
     """
+    default_lattice = Chain
+    force_default_lattice = True
 
     def init_terms(self, model_params):
         Jx = model_params.get('Jx', 1., 'real_or_array')
@@ -820,6 +823,55 @@ class FiniteRangeSpinChain(SpinChain):
             self.add_coupling(Jz * coup, u1, 'Sz', u2, 'Sz', dx)
             self.add_coupling(muJ * 0.5j * coup, u1, 'Sm', u2, 'Sp', dx, plus_hc=True)
         # done
+
+class DisorderedFiniteRangeSpinChain(SpinModel):
+    r"""Spin-S chain coupled by finite-range interactions with disordered positions.
+
+    Based on user provided real-space positions of the spins and an interaction FUNCTION (with
+    specified cutoff), we explicitly add all 1D non-local connections.
+
+    """
+    default_lattice = Chain
+    force_default_lattice = True
+
+    def init_terms(self, model_params):
+        L =len(self.lat.mps_sites())
+        Jx = model_params.get('Jx', 1., 'real_or_array')
+        Jy = model_params.get('Jy', 1., 'real_or_array')
+        Jz = model_params.get('Jz', 1., 'real_or_array')
+        hx = model_params.get('hx', 0., 'real_or_array')
+        hy = model_params.get('hy', 0., 'real_or_array')
+        hz = model_params.get('hz', 0., 'real_or_array')
+        D = model_params.get('D', 0., 'real_or_array')
+        E = model_params.get('E', 0., 'real_or_array')
+        muJ = model_params.get('muJ', 0., 'real_or_array')
+        positions = model_params.get('positions', np.arange(0, L), 'array')
+        interaction_func = model_params.get('interaction_func', lambda x: 1 if x <= 1 else 0)
+        cutoff = model_params.get('cutoff', 1.e-3, 'real')
+
+        # (u is always 0 as we have only one site in the unit cell)
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(-hx, u, 'Sx')
+            self.add_onsite(-hy, u, 'Sy')
+            self.add_onsite(-hz, u, 'Sz')
+            self.add_onsite(D, u, 'Sz Sz')
+            self.add_onsite(E * 0.5, u, 'Sp Sp')
+            self.add_onsite(E * 0.5, u, 'Sm Sm')
+        # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+        # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
+        # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
+        u1 = u2 = 0
+        for i in range(L):
+            for j in range(i+1, L):
+                r = positions[j] - positions[i]
+                interaction = interaction_func(r)
+                if interaction > cutoff:
+                    self.add_coupling_term((Jx + Jy) / 4. * interaction, i, j, 'Sp', 'Sm', plus_hc=True)
+                    self.add_coupling_term((Jx - Jy) / 4. * interaction, i, j, 'Sp', 'Sp', plus_hc=True)
+                    self.add_coupling_term(Jz * interaction, i, j, 'Sz', 'Sz', plus_hc=False)
+                    self.add_coupling_term(muJ * 0.5j * interaction, i, j, 'Sm', 'Sp', plus_hc=True)
+        # done
+
 
 class DipolarSpinChain(CouplingMPOModel):
     r"""Dipole conserving H3-H4 spin-S chain.
