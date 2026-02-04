@@ -57,16 +57,57 @@ class PXPChain(CouplingMPOModel):
         return s
 
     def init_terms(self, model_params):
-        J = model_params.get('J', 2.0, 'real_or_array')
+        J = model_params.get('J', 2.0, 'real_or_array')             # PXP
+        delta = model_params.get('delta', 0.0, 'real_or_array')     # PNP
+        xi = model_params.get('xi', 0.0, 'real_or_array')           # PNPNP
+        alpha = model_params.get('alpha', 0.0, 'real_or_array')     # PPP
+        beta = model_params.get('beta', 0.0, 'real_or_array')       # PXXP
+        h = model_params.get('h', 0.0, 'real_or_array')             # Z
+
+        # PXP
         self.add_multi_coupling(J, [('P0', [-1], 0), ('X', [0], 0), ('P0', [1], 0)])
+        # PNP
+        self.add_multi_coupling(delta, [('P0', [-1], 0), ('P1', [0], 0), ('P0', [1], 0)])
+        # PNPNP
+        self.add_multi_coupling(xi, [('P0', [-2], 0), ('P1', [-1], 0), ('P0', [0], 0), ('P1', [1], 0), ('P0', [2], 0)])
+        # PPP
+        self.add_multi_coupling(alpha, [('P0', [-1], 0), ('P0', [0], 0), ('P0', [1], 0)])
+        # PXXP
+        self.add_multi_coupling(beta, [('P0', [-1], 0), ('X', [0], 0), ('X', [1], 0), ('P0', [2], 0)])
+        # Z
+        self.add_onsite(h, 0, 'Sigmaz')
 
         if model_params['bc_x'] == 'open':
             L = model_params['L']
             # If J is an array, I am not sure what J_boundary will do.
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
+            delta_boundary = model_params.get('delta_boundary', delta, 'real_or_array')
+            xi_boundary = model_params.get('xi_boundary', xi, 'real_or_array')
+            alpha_boundary = model_params.get('alpha_boundary', alpha, 'real_or_array')
+            beta_boundary = model_params.get('beta_boundary', beta, 'real_or_array')
+            
+            # J - XP and PX
             self.add_coupling_term(J_boundary, 0, 1, 'X', 'P0')
             self.add_coupling_term(J_boundary, L - 2, L - 1, 'P0', 'X')
 
+            # delta - NP and PN
+            self.add_coupling_term(delta_boundary, 0, 1, 'P1', 'P0')
+            self.add_coupling_term(delta_boundary, L - 2, L - 1, 'P0', 'P1')
+
+            # xi - PNP (0), NPNP (1) and PNPN (L-2), PNP (L-1)
+            self.add_multi_coupling_term(xi_boundary, [0, 1, 2], ['P0', 'P1', 'P0'], ['Id', 'Id'], category='PNPNP')
+            self.add_multi_coupling_term(xi_boundary, [0, 1, 2, 3], ['P1', 'P0', 'P1', 'P0'], ['Id', 'Id', 'Id'], category='PNPNP')
+            
+            self.add_multi_coupling_term(xi_boundary, [L-3, L-2, L-1], ['P1', 'P0', 'P1'], ['Id', 'Id'], category='PNPNP')
+            self.add_multi_coupling_term(xi_boundary, [L-4, L-3, L-2, L-1], ['P0', 'P1', 'P0', 'P1'], ['Id', 'Id', 'Id'], category='PNPNP')
+
+            # alpha - PP and PP
+            self.add_coupling_term(alpha_boundary, 0, 1, 'P0', 'P0')
+            self.add_coupling_term(alpha_boundary, L - 2, L - 1, 'P0', 'P0')
+
+            # beta - XXP and PXX
+            self.add_multi_coupling_term(beta_boundary, [0, 1, 2], ['X', 'X', 'P0'], ['Id', 'Id'], category='PXXP')
+            self.add_multi_coupling_term(beta_boundary, [L-3, L-2, L-1], ['P0', 'X', 'X'], ['Id', 'Id'], category='PXXP')
 
 class GeneralizedPXPModel(CouplingMPOModel):
     r"""The PXP model on arbitrary lattices with arbitrary blockade radius.
