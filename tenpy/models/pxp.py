@@ -72,7 +72,8 @@ class PXPChain(CouplingMPOModel):
         self.add_multi_coupling(xi, [('P0', [-2], 0), ('P1', [-1], 0), ('P0', [0], 0), ('P1', [1], 0), ('P0', [2], 0)])
         # PPP
         self.add_multi_coupling(alpha, [('P0', [-1], 0), ('P0', [0], 0), ('P0', [1], 0)])
-        # PXXP
+        # PXXP - Note that this VIOLATES the Rydberg blockade constraint. It becomes a XY constraint if we
+        # want to stay in the no blockade sector.
         self.add_multi_coupling(beta, [('P0', [-1], 0), ('X', [0], 0), ('X', [1], 0), ('P0', [2], 0)])
         # Z
         self.add_onsite(h, 0, 'Sigmaz')
@@ -98,8 +99,8 @@ class PXPChain(CouplingMPOModel):
             self.add_multi_coupling_term(xi_boundary, [0, 1, 2], ['P0', 'P1', 'P0'], ['Id', 'Id'], category='PNPNP')
             self.add_multi_coupling_term(xi_boundary, [0, 1, 2, 3], ['P1', 'P0', 'P1', 'P0'], ['Id', 'Id', 'Id'], category='PNPNP')
             
-            self.add_multi_coupling_term(xi_boundary, [L-3, L-2, L-1], ['P1', 'P0', 'P1'], ['Id', 'Id'], category='PNPNP')
             self.add_multi_coupling_term(xi_boundary, [L-4, L-3, L-2, L-1], ['P0', 'P1', 'P0', 'P1'], ['Id', 'Id', 'Id'], category='PNPNP')
+            self.add_multi_coupling_term(xi_boundary, [L-3, L-2, L-1], ['P0', 'P1', 'P0'], ['Id', 'Id'], category='PNPNP')
 
             # alpha - PP and PP
             self.add_coupling_term(alpha_boundary, 0, 1, 'P0', 'P0')
