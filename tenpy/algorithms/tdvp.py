@@ -39,6 +39,7 @@ import warnings
 
 from ..linalg import np_conserved as npc
 from ..linalg.krylov_based import LanczosEvolution
+from ..linalg.sparse import SumNpcLinearOperator
 from ..linalg.truncation import TruncationError, svd_theta, _machine_prec_trunc_par
 from ..tools.misc import consistency_check
 from ..tools.params import asConfig
@@ -312,6 +313,8 @@ class TwoSiteTDVPEngine(TDVPEngine):
 
     def one_site_update(self, i, dt):
         H1 = OneSiteH(self.env, i, combine=False)
+        if hasattr(self.env, 'H') and self.env.H.explicit_plus_hc:
+            H1 = SumNpcLinearOperator(H1, H1.adjoint())
         theta = self.psi.get_theta(i, n=1, cutoff=self.S_inv_cutoff)
         theta = H1.combine_theta(theta)
         theta, _ = LanczosEvolution(H1, theta, self.lanczos_params).run(dt)
@@ -539,6 +542,8 @@ class SingleSiteTDVPEngine(TDVPEngine):
     def zero_site_update(self, i, theta, dt):
         """Zero-site update on the left of site `i`."""
         H0 = ZeroSiteH(self.env, i)
+        if hasattr(self.env, 'H') and self.env.H.explicit_plus_hc:
+            H0 = SumNpcLinearOperator(H0, H0.adjoint())
         theta, _ = LanczosEvolution(H0, theta, self.lanczos_params).run(dt)
         return theta, H0
 
