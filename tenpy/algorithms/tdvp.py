@@ -182,7 +182,7 @@ class TDVPEngine(TimeEvolutionAlgorithm, Sweep):
                 # Cast to list to allow for multiple mpos (i.e. W2 with order > 1)
                 Krylov_mpo = [Krylov_mpo] if not isinstance(Krylov_mpo, list) else Krylov_mpo
                 # First generate Krylov basis
-                Krylov_apply_mpo_options = self.Krylov_options.subconfig('apply_mpo_options')
+                Krylov_apply_mpo_options = self.Krylov_params.subconfig('apply_mpo_options')
                 Krylov_apply_mpo_options.update({'trace_env': trace_env,
                                                  'MPO_envs': MPO_envs})
                 # Needs to contain 'compression_method' and options for doing the MPO application
