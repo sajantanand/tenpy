@@ -5159,7 +5159,7 @@ class MPS(BaseMPSExpectationValue):
 
         current_Cs = []
         for i in range(len(psis)):
-            current_Cs.append(psis[i].get_theta(L - 1, n=1).replace_label('p0', 'p')).transpose(self._B_labels)
+            current_Cs.append(psis[i].get_theta(L - 1, n=1).replace_label('p0', 'p').transpose(self._B_labels))
 
         for j in reversed(range(1, L)):
             current_vL_dim = current_Cs[0].get_leg('vL').ind_len
