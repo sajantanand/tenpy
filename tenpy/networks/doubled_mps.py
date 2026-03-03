@@ -358,7 +358,7 @@ class DoubledMPS(MPS):
         if len(segment) > 6:
             warnings.warn("{0:d} sites in the segment, that's much!".format(len(segment)),
                           stacklevel=2)
-        if len(segment) > 10:
+        if len(segment) > 12:
             raise ValueError("too large segment; this is exponentially expensive!")
         segment = np.sort(segment)
         # We don't get any benefit from the canonical form here since we are not working with
