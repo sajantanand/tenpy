@@ -172,7 +172,11 @@ class GeneralizedPXPModel(CouplingMPOModel):
         return s
 
     def init_terms(self, model_params):
-        J = model_params.get('J', 2.0, 'real_or_array')
+        J = model_params.get('J', 2.0, 'real_or_array')             # PXP
+        delta = model_params.get('delta', 0.0, 'real_or_array')     # PNP
+        alpha = model_params.get('alpha', 0.0, 'real_or_array')     # PPP
+        h = model_params.get('h', 0.0, 'real_or_array')             # Z
+        
         sum_over_lattice_sites = model_params.get('sum_over_lattice_sites', True, bool)
         neighbor_keys = model_params.get('neighbor_keys', 'nearest_neighbors')
         neighbor_keys = neighbor_keys.split('-')
@@ -190,12 +194,17 @@ class GeneralizedPXPModel(CouplingMPOModel):
                 pairs.extend(generate_pairs(self.lat, nk))
             neighbor_dict = neighbors_from_pairs(pairs)
 
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(h, u, 'Sigmaz')
+
         if sum_over_lattice_sites:
             # We need to add terms using the function that sums over lattice sites.
             # For each site in the unit cell, we need to the term that is projector on all neighbors and X on the site.
             # NO BOUNDARIES WILL BE INCLUDED
             for ucs in neighbor_dict.keys():
                 self.add_multi_coupling(J, neighbor_dict[ucs] + [('X', np.array([0] * self.lat.dim), ucs)])
+                self.add_multi_coupling(delta, neighbor_dict[ucs] + [('P1', np.array([0] * self.lat.dim), ucs)])
+                self.add_multi_coupling(alpha, neighbor_dict[ucs] + [('P0', np.array([0] * self.lat.dim), ucs)])
         else:
             # Add each term separately
             len_terms = [len(neighbor_dict[ucs]) for ucs in neighbor_dict.keys()]
@@ -204,6 +213,8 @@ class GeneralizedPXPModel(CouplingMPOModel):
             bulk = np.max(len_terms)
             
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
+            delta_boundary = model_params.get('delta_boundary', delta, 'real_or_array')
+            alpha_boundary = model_params.get('alpha_boundary', alpha, 'real_or_array')
             # Do we want the staggered model, with half of the terms negated.
             staggered = model_params.get('staggered', False, bool)
             L = len(self.lat.mps_sites())
@@ -216,10 +227,21 @@ class GeneralizedPXPModel(CouplingMPOModel):
                 ops = ['P0'] * len(op_inds)
                 bisect.insort(op_inds, ucs)
                 X_ind = op_inds.index(ucs)
-                ops.insert(X_ind, 'X')
+
+                opsX = ops.copy()
+                opsX.insert(X_ind, 'X')
                 J_term = J if len(op_inds) == (bulk + 1) else J_boundary
-                self.add_multi_coupling_term(J_term * ((-1)**(ucs >= L // 2) if staggered else 1), op_inds, ops, ['Id'] * (len(op_inds)-1))
+                self.add_multi_coupling_term(J_term * ((-1)**(ucs >= L // 2) if staggered else 1), op_inds, opsX, ['Id'] * (len(op_inds)-1))
                 
+                opsN = ops.copy()
+                opsN.insert(X_ind, 'P1')
+                delta_term = delta if len(op_inds) == (bulk + 1) else delta_boundary
+                self.add_multi_coupling_term(delta_term * ((-1)**(ucs >= L // 2) if staggered else 1), op_inds, opsN, ['Id'] * (len(op_inds)-1))
+                
+                opsP = ops.copy()
+                opsP.insert(X_ind, 'P0')
+                alpha_term = alpha if len(op_inds) == (bulk + 1) else alpha_boundary
+                self.add_multi_coupling_term(alpha_term * ((-1)**(ucs >= L // 2) if staggered else 1), op_inds, opsP, ['Id'] * (len(op_inds)-1))
 
 class PXXZPChain(CouplingMPOModel):
     r"""The PXXZP model, i.e. a chain of Rydberg-blockaded atoms with a U(1) symmetric XXZ interaction.
@@ -229,9 +251,11 @@ class PXXZPChain(CouplingMPOModel):
     .. math ::
         H =  \mathtt{J} \sum_{i} P_{i-1} (X_i X_{i+1} + Y_{i} Y_{i+1} + Z_{i} Z_{i+1}) P_{i+1}
             + \mathtt{J_z} \sum_{i} P_{i-1} Z_{i} Z_{i+1} P_{i+1}
+            + \mathtt{J_{zzp}} \sum_{i} P_{i-1} Z_{i} Z_{i+2} P_{i+3}
             + \mathtt{J_boundary} (X_0 X_1 + Y_0 Y_1 ) P_2 
             + P_{L-3} (X_{L-2} X_{L-1} + Y_{L-2} Y_{L-1})
             + \mathtt{J_boundaryz} Z_0 Z_1 P_2 + P_{L-3} Z_{L-2} Z_{L-1}
+            + \mathtt{J_boundaryzzp} Z_0 Z_2 P_3 + P_{L-4} Z_{L-3} Z_{L-1}
 
     where we only add the boundary terms for open boundaries with `J_boundary` defaulting to `J`.
     `P` is the projector onto the up state of the site, which corresponds to the ground state
@@ -245,7 +269,7 @@ class PXXZPChain(CouplingMPOModel):
 
     Options
     -------
-    .. cfg:config :: PXYPChain
+    .. cfg:config :: PXXZPChain
         :include: CouplingMPOModel
 
         conserve : 'best' | 'parity' | None
@@ -268,10 +292,12 @@ class PXXZPChain(CouplingMPOModel):
         return s
 
     def init_terms(self, model_params):
-        J = model_params.get('J', 2.0, 'real_or_array')
-        Jz = model_params.get('Jz', 0.0, 'real_or_array')
+        J = model_params.get('J', 2.0, 'real_or_array')         # P(XX+YY)P
+        Jz = model_params.get('Jz', 0.0, 'real_or_array')       # PZZP; non-integrable anisotropic perturbation
+        Jzzp = model_params.get('Jzzp', 0.0, 'real_or_array')   # PZIZP; integrable anisotropic perturbation
 
         self.add_multi_coupling(Jz*4.0, [('P0', [-1], 0), ('Sz', [0], 0), ('Sz', [1], 0), ('P0', [2], 0)])
+        self.add_multi_coupling(Jzzp*4.0, [('P0', [-1], 0), ('Sz', [0], 0), ('Sz', [2], 0), ('P0', [3], 0)])
         # Sp = Sx + i Sy; Sx = 1/2 Sigma x
         # Sp Sm + Sm Sp = 2(Sx Sx + Sy Sy) = 1/2 (Sigmax Sigmax + Sigmay Sigmay)
         self.add_multi_coupling(J*2.0, [('P0', [-1], 0), ('Sp', [0], 0), ('Sm', [1], 0), ('P0', [2], 0)], plus_hc=True)
@@ -281,8 +307,11 @@ class PXXZPChain(CouplingMPOModel):
             # If J is an array, I am not sure what J_boundary will do.
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
             Jz_boundary = model_params.get('Jz_boundary', Jz, 'real_or_array')
+            Jzzp_boundary = model_params.get('Jzzp_boundary', Jzzp, 'real_or_array')
             self.add_multi_coupling_term(Jz_boundary*4.0, [0, 1, 2], ['Sz', 'Sz', 'P0'], ['Id', 'Id'])
             self.add_multi_coupling_term(Jz_boundary*4.0, [L-3, L-2, L-1], ['P0', 'Sz', 'Sz'], ['Id', 'Id'])
+            self.add_multi_coupling_term(Jzzp_boundary*4.0, [0, 2, 3], ['Sz', 'Sz', 'P0'], ['Id', 'Id'])
+            self.add_multi_coupling_term(Jzzp_boundary*4.0, [L-4, L-3, L-1], ['P0', 'Sz', 'Sz'], ['Id', 'Id'])
             self.add_multi_coupling_term(J_boundary*2.0, [0, 1, 2], ['Sp', 'Sm', 'P0'], ['Id', 'Id'], plus_hc=True)
             self.add_multi_coupling_term(J_boundary*2.0, [L-3, L-2, L-1], ['P0', 'Sp', 'Sm'], ['Id', 'Id'], plus_hc=True)
 
@@ -301,7 +330,7 @@ class GeneralizedPXXZPModel(CouplingMPOModel):
 
     Options
     -------
-    .. cfg:config :: GeneralizedPXYPModel
+    .. cfg:config :: GeneralizedPXXZPModel
         :include: CouplingMPOModel
 
         conserve : 'best' | 'Sz' | None
