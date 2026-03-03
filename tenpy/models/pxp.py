@@ -175,7 +175,8 @@ class GeneralizedPXPModel(CouplingMPOModel):
         J = model_params.get('J', 2.0, 'real_or_array')             # PXP
         delta = model_params.get('delta', 0.0, 'real_or_array')     # PNP
         alpha = model_params.get('alpha', 0.0, 'real_or_array')     # PPP
-        h = model_params.get('h', 0.0, 'real_or_array')             # Z
+        # We don't add a Z field since we would need to stagger it; if in the no-blockade sector, just use PNP.
+        # If not in no-blockade sector, well. . .
         
         sum_over_lattice_sites = model_params.get('sum_over_lattice_sites', True, bool)
         neighbor_keys = model_params.get('neighbor_keys', 'nearest_neighbors')
@@ -193,9 +194,6 @@ class GeneralizedPXPModel(CouplingMPOModel):
             for nk in neighbor_keys:
                 pairs.extend(generate_pairs(self.lat, nk))
             neighbor_dict = neighbors_from_pairs(pairs)
-
-        for u in range(len(self.lat.unit_cell)):
-            self.add_onsite(h, u, 'Sigmaz')
 
         if sum_over_lattice_sites:
             # We need to add terms using the function that sums over lattice sites.
@@ -251,11 +249,12 @@ class PXXZPChain(CouplingMPOModel):
     .. math ::
         H =  \mathtt{J} \sum_{i} P_{i-1} (X_i X_{i+1} + Y_{i} Y_{i+1} + Z_{i} Z_{i+1}) P_{i+1}
             + \mathtt{J_z} \sum_{i} P_{i-1} Z_{i} Z_{i+1} P_{i+1}
-            + \mathtt{J_{zzp}} \sum_{i} P_{i-1} Z_{i} Z_{i+2} P_{i+3}
+            + \mathtt{J_{zz}} \sum_{i} P_{i-1} Z_{i} Z_{i+2} P_{i+3}
+            + \mathtt{J_{zz-np}} \sum_{i} Z_{i} Z_{i+2} 
             + \mathtt{J_boundary} (X_0 X_1 + Y_0 Y_1 ) P_2 
             + P_{L-3} (X_{L-2} X_{L-1} + Y_{L-2} Y_{L-1})
             + \mathtt{J_boundaryz} Z_0 Z_1 P_2 + P_{L-3} Z_{L-2} Z_{L-1}
-            + \mathtt{J_boundaryzzp} Z_0 Z_2 P_3 + P_{L-4} Z_{L-3} Z_{L-1}
+            + \mathtt{J_boundaryzz} Z_0 Z_2 P_3 + P_{L-4} Z_{L-3} Z_{L-1}
 
     where we only add the boundary terms for open boundaries with `J_boundary` defaulting to `J`.
     `P` is the projector onto the up state of the site, which corresponds to the ground state
@@ -274,7 +273,7 @@ class PXXZPChain(CouplingMPOModel):
 
         conserve : 'best' | 'parity' | None
             What should be conserved. See :class:`~tenpy.networks.Site.SpinHalfSite`.
-        J, J_z, J_boundary J_boundary_z : float | array
+        J, Jz, Jzz, Jzz_np, J_boundary Jz_boundary, Jzz_boundary, Jzz_np_boundary : float | array
             Couplings as defined for the Hamiltonian above.
     """
 
@@ -294,10 +293,12 @@ class PXXZPChain(CouplingMPOModel):
     def init_terms(self, model_params):
         J = model_params.get('J', 2.0, 'real_or_array')         # P(XX+YY)P
         Jz = model_params.get('Jz', 0.0, 'real_or_array')       # PZZP; non-integrable anisotropic perturbation
-        Jzzp = model_params.get('Jzzp', 0.0, 'real_or_array')   # PZIZP; integrable anisotropic perturbation
-
+        Jzz = model_params.get('Jzz', 0.0, 'real_or_array')   # PZIZP; (non-)integrable anisotropic perturbation
+        Jzz_np = model_params.get('Jzz_np', 0.0, 'real_or_array')     # ZIZ; integrable anisotropic perturbation
+        
         self.add_multi_coupling(Jz*4.0, [('P0', [-1], 0), ('Sz', [0], 0), ('Sz', [1], 0), ('P0', [2], 0)])
-        self.add_multi_coupling(Jzzp*4.0, [('P0', [-1], 0), ('Sz', [0], 0), ('Sz', [2], 0), ('P0', [3], 0)])
+        self.add_multi_coupling(Jzz*4.0, [('P0', [-1], 0), ('Sz', [0], 0), ('Sz', [2], 0), ('P0', [3], 0)])
+        self.add_multi_coupling(Jzz_np*4.0, [('Sz', [0], 0), ('Sz', [2], 0)])
         # Sp = Sx + i Sy; Sx = 1/2 Sigma x
         # Sp Sm + Sm Sp = 2(Sx Sx + Sy Sy) = 1/2 (Sigmax Sigmax + Sigmay Sigmay)
         self.add_multi_coupling(J*2.0, [('P0', [-1], 0), ('Sp', [0], 0), ('Sm', [1], 0), ('P0', [2], 0)], plus_hc=True)
@@ -307,15 +308,16 @@ class PXXZPChain(CouplingMPOModel):
             # If J is an array, I am not sure what J_boundary will do.
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
             Jz_boundary = model_params.get('Jz_boundary', Jz, 'real_or_array')
-            Jzzp_boundary = model_params.get('Jzzp_boundary', Jzzp, 'real_or_array')
+            Jzz_boundary = model_params.get('Jzz_boundary', Jzz, 'real_or_array')
             self.add_multi_coupling_term(Jz_boundary*4.0, [0, 1, 2], ['Sz', 'Sz', 'P0'], ['Id', 'Id'])
             self.add_multi_coupling_term(Jz_boundary*4.0, [L-3, L-2, L-1], ['P0', 'Sz', 'Sz'], ['Id', 'Id'])
-            self.add_multi_coupling_term(Jzzp_boundary*4.0, [0, 2, 3], ['Sz', 'Sz', 'P0'], ['Id', 'Id'])
-            self.add_multi_coupling_term(Jzzp_boundary*4.0, [L-4, L-3, L-1], ['P0', 'Sz', 'Sz'], ['Id', 'Id'])
+            self.add_multi_coupling_term(Jzz_boundary*4.0, [0, 2, 3], ['Sz', 'Sz', 'P0'], ['Id', 'Id'])
+            self.add_multi_coupling_term(Jzz_boundary*4.0, [L-4, L-3, L-1], ['P0', 'Sz', 'Sz'], ['Id', 'Id'])
             self.add_multi_coupling_term(J_boundary*2.0, [0, 1, 2], ['Sp', 'Sm', 'P0'], ['Id', 'Id'], plus_hc=True)
             self.add_multi_coupling_term(J_boundary*2.0, [L-3, L-2, L-1], ['P0', 'Sp', 'Sm'], ['Id', 'Id'], plus_hc=True)
 
-
+            # Don't need Jzz_np boundary since the term is 2-body.
+            
 class GeneralizedPXXZPModel(CouplingMPOModel):
     r"""The PXXZP model on arbitrary lattices with arbitrary blockade radius.
 
@@ -445,7 +447,7 @@ class GeneralizedPXXZPModel(CouplingMPOModel):
             J_boundary = model_params.get('J_boundary', J, 'real_or_array')
             Jz_boundary = model_params.get('Jz_boundary', Jz, 'real_or_array')
             
-            #Do we want the staggered model, with half of the terms negated.
+            # Do we want the staggered model, with half of the terms negated.
             staggered = model_params.get('staggered', False, bool)
             L = len(self.lat.mps_sites())
 
@@ -505,11 +507,16 @@ class PExpPChain(CouplingMPOModel):
     .. cfg:config :: PExpPChain
         :include: CouplingMPOModel
 
-        conserve : 'best' | 'parity' | None
+        conserve : 'best' | 'parity' | 'Sz' | None
             What should be conserved. See :class:`~tenpy.networks.Site.SpinHalfSite`.
+        staggered : bool
+            Do we generate the staggered Hamiltonian, where a minus sign is placed on
+            all terms with the first non-projector on the right half of the lattice?
+            Note that the staggering is slightly different than in PExpPChain.
         J, J_z, J_boundary J_boundary_z, lambdas, prefactors : float | array
             Couplings as defined for the Hamiltonian above.
-    """
+
+"""
 
     default_lattice = Chain
     force_default_lattice = True  # we implicitly assume a 1D chain,
