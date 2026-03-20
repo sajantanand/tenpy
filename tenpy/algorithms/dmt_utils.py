@@ -477,7 +477,9 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         qind = p_leg.get_qindex_of_charges([0])
         charge_zero_inds = list(range(p_leg.slices[qind], p_leg.slices[qind+1]))
         overlaps = npc.tensordot(id_vec.conj(), QR_R[:,charge_zero_inds], axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
-        id_ind, = np.where(np.isclose(overlaps,1.0))
+        #id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind, = np.where(np.isclose(np.atleast_1d(overlaps), 1.0))
+
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
             print("Overlaps:", overlaps)
@@ -487,7 +489,8 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         id_ind = charge_zero_inds[id_ind.item()]
     else:
         overlaps = npc.tensordot(id_vec.conj(), QR_R, axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
-        id_ind, = np.where(np.isclose(overlaps,1.0))
+        #id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind, = np.where(np.isclose(np.atleast_1d(overlaps), 1.0))
         #id_ind = id_ind.item()
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
@@ -608,7 +611,8 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         qind = p_leg.get_qindex_of_charges([0])
         charge_zero_inds = list(range(p_leg.slices[qind], p_leg.slices[qind+1]))
         overlaps = npc.tensordot(id_vec.conj(), QR_L[charge_zero_inds,:], axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
-        id_ind, = np.where(np.isclose(overlaps,1.0))
+        #id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind, = np.where(np.isclose(np.atleast_1d(overlaps), 1.0))
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
             print("Overlaps:", overlaps)
@@ -618,7 +622,8 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         id_ind = charge_zero_inds[id_ind.item()]
     else:
         overlaps = npc.tensordot(id_vec.conj(), QR_L, axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
-        id_ind, = np.where(np.isclose(overlaps,1.0))
+        #id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind, = np.where(np.isclose(np.atleast_1d(overlaps), 1.0))
         #id_ind = id_ind.item()
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
@@ -998,7 +1003,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     # The bond dimension can be larger than chi_max, which causes some issues.
     # I don't want to set a chi_max, as this may affect conservation.
     U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
-    if len(S) > svd_trunc_params['chi_max']:
+    if len(S) > svd_trunc_params['chi_max'] and svd_trunc_params['chi_max'] > 0:
         print("Excess SVs:", S[svd_trunc_params['chi_max']:])
         assert False
 
