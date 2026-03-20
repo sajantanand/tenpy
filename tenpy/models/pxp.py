@@ -52,6 +52,7 @@ class PXPChain(CouplingMPOModel):
         assert conserve != 'Sz'
         s = SpinHalfSite(conserve=conserve)
         s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
+        s.add_op('Z', s.get_op('Sigmaz'), hc='Z')  # Z is already defined under other name
         # P is defined as P0, the projector onto the state 0, i.e. the up spin
         # The projector onto the state 1 is P1
         return s
@@ -62,7 +63,10 @@ class PXPChain(CouplingMPOModel):
         xi = model_params.get('xi', 0.0, 'real_or_array')           # PNPNP
         alpha = model_params.get('alpha', 0.0, 'real_or_array')     # PPP
         beta = model_params.get('beta', 0.0, 'real_or_array')       # PXXP
+        beta_p = model_params.get('beta_p', 0.0, 'real_or_array')   # PXYP
         h = model_params.get('h', 0.0, 'real_or_array')             # Z
+        h_p = model_params.get('h_p', 0.0, 'real_or_array')         # PZP
+        lambda_ = model_params.get('lambda_', 0.0, 'real_or_array')   # -ZPXP - PXPZ
 
         # PXP
         self.add_multi_coupling(J, [('P0', [-1], 0), ('X', [0], 0), ('P0', [1], 0)])
@@ -75,8 +79,15 @@ class PXPChain(CouplingMPOModel):
         # PXXP - Note that this VIOLATES the Rydberg blockade constraint. It becomes a XY constraint if we
         # want to stay in the no blockade sector.
         self.add_multi_coupling(beta, [('P0', [-1], 0), ('X', [0], 0), ('X', [1], 0), ('P0', [2], 0)])
+        # PXYP
+        self.add_multi_coupling(beta_p/2, [('P0', [-1], 0), ('Sp', [0], 0), ('Sm', [1], 0), ('P0', [2], 0)], plus_hc=True)
         # Z
-        self.add_onsite(h, 0, 'Sigmaz')
+        self.add_onsite(h, 0, 'Z')
+        # PZP
+        self.add_multi_coupling(h_p, [('P0', [-1], 0), ('Z', [0], 0), ('P0', [1], 0)])
+        # -ZPXP - PXPZ
+        self.add_multi_coupling(-lambda_, [('P0', [-1], 0), ('X', [0], 0), ('P0', [1], 0), ('Z', [2], 0)])
+        self.add_multi_coupling(-lambda_, [('Z', [-1], 0), ('P0', [0], 0), ('X', [1], 0), ('P0', [2], 0)])
 
         if model_params['bc_x'] == 'open':
             L = model_params['L']
@@ -86,7 +97,10 @@ class PXPChain(CouplingMPOModel):
             xi_boundary = model_params.get('xi_boundary', xi, 'real_or_array')
             alpha_boundary = model_params.get('alpha_boundary', alpha, 'real_or_array')
             beta_boundary = model_params.get('beta_boundary', beta, 'real_or_array')
-            
+            beta_p_boundary = model_params.get('beta_p_boundary', beta_p, 'real_or_array')
+            h_p_boundary = model_params.get('h_p_boundary', h_p, 'real_or_array')
+            lambda_boundary = model_params.get('lambda_boundary', lambda_, 'real_or_array')
+
             # J - XP and PX
             self.add_coupling_term(J_boundary, 0, 1, 'X', 'P0')
             self.add_coupling_term(J_boundary, L - 2, L - 1, 'P0', 'X')
@@ -109,6 +123,18 @@ class PXPChain(CouplingMPOModel):
             # beta - XXP and PXX
             self.add_multi_coupling_term(beta_boundary, [0, 1, 2], ['X', 'X', 'P0'], ['Id', 'Id'], category='PXXP')
             self.add_multi_coupling_term(beta_boundary, [L-3, L-2, L-1], ['P0', 'X', 'X'], ['Id', 'Id'], category='PXXP')
+            
+            # beta_p - XXP, YYP and PXX, PYY
+            self.add_multi_coupling_term(beta_p_boundary/2, [0, 1, 2], ['Sp', 'Sm', 'P0'], ['Id', 'Id'], category='PXYP', plus_hc=True)
+            self.add_multi_coupling_term(beta_p_boundary/2, [L-3, L-2, L-1], ['P0', 'Sp', 'Sm'], ['Id', 'Id'], category='PXYP', plus_hc=True)
+
+            # h_p - ZP and PZ
+            self.add_coupling_term(h_p_boundary, 0, 1, 'Z', 'P0')
+            self.add_coupling_term(h_p_boundary, L - 2, L - 1, 'P0', 'Z')
+
+            # lambda - ZPX (right) and XPZ (left)
+            self.add_multi_coupling_term(-lambda_boundary, [0, 1, 2], ['X', 'P0', 'Z'], ['Id', 'Id'], category='PXPZ')
+            self.add_multi_coupling_term(-lambda_boundary, [L-3, L-2, L-1], ['Z', 'P0', 'X'], ['Id', 'Id'], category='ZPXP')
 
 class GeneralizedPXPModel(CouplingMPOModel):
     r"""The PXP model on arbitrary lattices with arbitrary blockade radius.
