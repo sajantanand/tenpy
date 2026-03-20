@@ -55,7 +55,7 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True
 
     return doubled_model
 
-def generate_pairs(lat, key='nearest_neighbors'):
+def generate_pairs(lat, key='nearest_neighbors', which=-1):
     """
     Generate pairs of couplings for 2D lattice with k-local conservation
 
@@ -81,7 +81,10 @@ def generate_pairs(lat, key='nearest_neighbors'):
         key = 'next_next_next_next_nearest_neighbors'
     if key != 'all':
         idXs, idYs = [], []
-        for dx1, dx2, bv in lat.pairs[key]:
+        cons = lat.pairs[key]
+        if which != -1:
+            cons = [cons[which]]
+        for dx1, dx2, bv in cons:
             idX, idY = lat.possible_couplings(dx1,dx2,bv)[:2]
             if len(idX):    # if the lattice is not big enough for a certain type of coupling (say vertical nnNN on ladder) to exist, we don't want to add an empty list.
                 idXs.append(idX)
@@ -640,7 +643,6 @@ def build_QR_matrices(dMPS, i, dmt_params, trace_env, MPO_envs):
 
     QR_L, keep_L, trace_env, MPO_envs, id_ind_L = build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs)
     QR_R, keep_R, trace_env, MPO_envs, id_ind_R = build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs)
-
     return QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, trace_env, MPO_envs
 
 def remove_redundancy_QR(QR_L, QR_R, keep_L, keep_R, id_ind_L, id_ind_R, R_cutoff):
@@ -1003,7 +1005,7 @@ def dmt_theta(dMPS, i, svd_trunc_params, dmt_params,
     # The bond dimension can be larger than chi_max, which causes some issues.
     # I don't want to set a chi_max, as this may affect conservation.
     U, S, VH, err2, renormalization2 = svd_theta(M_trunc, svd_trunc_params_2, renormalize=True)
-    if len(S) > svd_trunc_params['chi_max'] and svd_trunc_params['chi_max'] > 0:
+    if len(S) > svd_trunc_params['chi_max'] and keep_L + keep_R < svd_trunc_params['chi_max']:
         print("Excess SVs:", S[svd_trunc_params['chi_max']:])
         assert False
 

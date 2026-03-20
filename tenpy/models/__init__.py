@@ -34,6 +34,7 @@ All other modules in this folder contain model classes derived from these base c
     mixed_xk
     clock
     pxp
+    kitaev
 """
 # Copyright (C) TeNPy Developers, Apache license
 
@@ -54,6 +55,7 @@ from . import (
     tj_model,
     toric_code,
     xxz_chain,
+    kitaev,
 )
 from .aklt import *
 from .clock import *
@@ -72,6 +74,7 @@ from .tf_ising import *
 from .tj_model import *
 from .toric_code import *
 from .xxz_chain import *
+from .kitaev import *
 
 __all__ = [
     *lattice.__all__,
@@ -91,4 +94,5 @@ __all__ = [
     *mixed_xk.__all__,
     *clock.__all__,
     *pxp.__all__,
+    *kitaev.__all__,
 ]

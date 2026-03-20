@@ -415,6 +415,17 @@ class AnisotropicSpinModel(SpinModel):
 
     Two-body coupling parameters are now tuples, one entry for eavh Bravais lattice vector.
     """
+    def init_sites(self, model_params):
+        site = super().init_sites(model_params)
+        d = site.dim
+        try:
+            # I don't remember why I added this. . .
+            # Doesn't work with Sz conservation.
+            site.add_op('Sigmax', site.get_op('Sx') * d, hc='Sigmax')
+            site.add_op('Sigmaz', site.get_op('Sz') * d, hc='Sigmaz')
+        except ValueError as e:
+            print(e)
+        return site
 
     def init_terms(self, model_params):
         BVs = len(self.lat.pairs['nearest_neighbors'])
