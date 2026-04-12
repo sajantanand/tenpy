@@ -194,15 +194,15 @@ class GeneralizedPXPModel(CouplingMPOModel):
         assert conserve != 'Sz'
         s = SpinHalfSite(conserve=conserve, sort_charge=sort_charge)
         s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
+        s.add_op('Z', s.get_op('Sigmaz'), hc='Z')  # Z is already defined under other name
         # P is defined as P0, the projector onto the state 0, i.e. the up spin
         return s
 
     def init_terms(self, model_params):
-        J = model_params.get('J', 2.0, 'real_or_array')             # PXP
-        delta = model_params.get('delta', 0.0, 'real_or_array')     # PNP
-        alpha = model_params.get('alpha', 0.0, 'real_or_array')     # PPP
-        # We don't add a Z field since we would need to stagger it; if in the no-blockade sector, just use PNP.
-        # If not in no-blockade sector, well. . .
+        J = model_params.get('J', 2.0, 'real_or_array')             # ...PXP...
+        delta = model_params.get('delta', 0.0, 'real_or_array')     # ...PNP...
+        alpha = model_params.get('alpha', 0.0, 'real_or_array')     # ...PPP...
+        h = model_params.get('h', 0.0, 'real_or_array')             # Z
         
         sum_over_lattice_sites = model_params.get('sum_over_lattice_sites', True, bool)
         neighbor_keys = model_params.get('neighbor_keys', 'nearest_neighbors')
@@ -220,8 +220,12 @@ class GeneralizedPXPModel(CouplingMPOModel):
             for nk in neighbor_keys:
                 pairs.extend(generate_pairs(self.lat, nk))
             neighbor_dict = neighbors_from_pairs(pairs)
-
+        
+        staggered = model_params.get('staggered', False, bool)
         if sum_over_lattice_sites:
+            #Staggered better be false here, since we could do an infinite model.
+            assert staggered == False
+
             # We need to add terms using the function that sums over lattice sites.
             # For each site in the unit cell, we need to the term that is projector on all neighbors and X on the site.
             # NO BOUNDARIES WILL BE INCLUDED
@@ -229,6 +233,8 @@ class GeneralizedPXPModel(CouplingMPOModel):
                 self.add_multi_coupling(J, neighbor_dict[ucs] + [('X', np.array([0] * self.lat.dim), ucs)])
                 self.add_multi_coupling(delta, neighbor_dict[ucs] + [('P1', np.array([0] * self.lat.dim), ucs)])
                 self.add_multi_coupling(alpha, neighbor_dict[ucs] + [('P0', np.array([0] * self.lat.dim), ucs)])
+            # Z
+            self.add_onsite(h, 0, 'Z')
         else:
             # Add each term separately
             len_terms = [len(neighbor_dict[ucs]) for ucs in neighbor_dict.keys()]
@@ -240,9 +246,8 @@ class GeneralizedPXPModel(CouplingMPOModel):
             delta_boundary = model_params.get('delta_boundary', delta, 'real_or_array')
             alpha_boundary = model_params.get('alpha_boundary', alpha, 'real_or_array')
             # Do we want the staggered model, with half of the terms negated.
-            staggered = model_params.get('staggered', False, bool)
             L = len(self.lat.mps_sites())
-
+            
             # We need to insert X on the center site to the list of operators.
             # This must be inserted IN ORDER; so we created a sorted list of sites and operators.
             for ucs in neighbor_dict.keys():
@@ -266,6 +271,9 @@ class GeneralizedPXPModel(CouplingMPOModel):
                 opsP.insert(X_ind, 'P0')
                 alpha_term = alpha if len(op_inds) == (bulk + 1) else alpha_boundary
                 self.add_multi_coupling_term(alpha_term * ((-1)**(ucs >= L // 2) if staggered else 1), op_inds, opsP, ['Id'] * (len(op_inds)-1))
+                
+                # Z
+                self.add_onsite_term(h * ((-1)**(ucs >= L // 2) if staggered else 1), ucs, 'Z')
 
 class PXXZPChain(CouplingMPOModel):
     r"""The PXXZP model, i.e. a chain of Rydberg-blockaded atoms with a U(1) symmetric XXZ interaction.
@@ -394,6 +402,9 @@ class GeneralizedPXXZPModel(CouplingMPOModel):
 
     def init_terms(self, model_params):
         J = model_params.get('J', 2.0, 'real_or_array')
+        # On the chain, this is PZZP, which is NOT the integrable interaction ZIZ in the no-blockade space.
+        # It is less clear what the generalization of ZIZ would be in higher dimensions.
+        # For larger radius, it would be ZIIZ, ZIIIZ, etc.
         Jz = model_params.get('Jz', 0.0, 'real_or_array')
         sum_over_lattice_sites = model_params.get('sum_over_lattice_sites', True, bool)
         neighbor_keys = model_params.get('neighbor_keys', 'nearest_neighbors')

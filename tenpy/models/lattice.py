@@ -2573,6 +2573,7 @@ class Chain(SimpleLattice):
         kwargs['pairs'].setdefault('nearest_neighbors', [(0, 0, np.array([1]))])
         kwargs['pairs'].setdefault('next_nearest_neighbors', [(0, 0, np.array([2]))])
         kwargs['pairs'].setdefault('next_next_nearest_neighbors', [(0, 0, np.array([3]))])
+        kwargs['pairs'].setdefault('next_next_next_nearest_neighbors', [(0, 0, np.array([4]))])
         # and otherwise default values.
         SimpleLattice.__init__(self, [L], site, **kwargs)
 
