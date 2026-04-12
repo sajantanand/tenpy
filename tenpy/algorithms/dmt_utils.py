@@ -480,7 +480,9 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         qind = p_leg.get_qindex_of_charges([0])
         charge_zero_inds = list(range(p_leg.slices[qind], p_leg.slices[qind+1]))
         overlaps = npc.tensordot(id_vec.conj(), QR_R[:,charge_zero_inds], axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
-        id_ind, = np.where(np.isclose(overlaps,1.0))
+        #id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind, = np.where(np.isclose(np.atleast_1d(overlaps), 1.0))
+
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
             print("Overlaps:", overlaps)
@@ -490,7 +492,8 @@ def build_QR_matrix_R(dMPS, i, dmt_params, trace_env, MPO_envs):
         id_ind = charge_zero_inds[id_ind.item()]
     else:
         overlaps = npc.tensordot(id_vec.conj(), QR_R, axes=(['vL*'], ['vL'])).to_ndarray().squeeze()
-        id_ind, = np.where(np.isclose(overlaps,1.0))
+        #id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind, = np.where(np.isclose(np.atleast_1d(overlaps), 1.0))
         #id_ind = id_ind.item()
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
@@ -611,7 +614,8 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         qind = p_leg.get_qindex_of_charges([0])
         charge_zero_inds = list(range(p_leg.slices[qind], p_leg.slices[qind+1]))
         overlaps = npc.tensordot(id_vec.conj(), QR_L[charge_zero_inds,:], axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
-        id_ind, = np.where(np.isclose(overlaps,1.0))
+        #id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind, = np.where(np.isclose(np.atleast_1d(overlaps), 1.0))
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)
             print("Overlaps:", overlaps)
@@ -621,7 +625,8 @@ def build_QR_matrix_L(dMPS, i, dmt_params, trace_env, MPO_envs):
         id_ind = charge_zero_inds[id_ind.item()]
     else:
         overlaps = npc.tensordot(id_vec.conj(), QR_L, axes=(['vR*'], ['vR'])).to_ndarray().squeeze()
-        id_ind, = np.where(np.isclose(overlaps,1.0))
+        #id_ind, = np.where(np.isclose(overlaps,1.0))
+        id_ind, = np.where(np.isclose(np.atleast_1d(overlaps), 1.0))
         #id_ind = id_ind.item()
         if len(id_ind) > 1:
             print("Multiple id_ind?", id_ind)

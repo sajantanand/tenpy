@@ -782,6 +782,10 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
         we never call `conj()` on the matrices directly.
         Stored in place, without making copies.
         If necessary to match charges, we call :meth:`~tenpy.networks.mps.MPS.gauge_total_charge`.
+    perms : list of lists
+        On each site, in which order do we contract the physical legs. An `identity` permutataion
+        on 4 legs would be [1,2,3,0], indicating that we connect each ket to the next.
+        The permutation [1,0,3,2] is the product of two cycles.
     cache : :class:`~tenpy.tools.cache.DictCache` | None
         Cache in which the tensors should be saved. If ``None``, a new `DictCache` is generated.
     **init_env_data :
@@ -793,7 +797,7 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
     ----------
     """
 
-    def __init__(self, kets, cache=None, **init_env_data):
+    def __init__(self, kets, perms = [], cache=None, **init_env_data):
         self.num_kets = len(kets)
         self.kets = kets
         #assert self.num_kets > 1
@@ -806,6 +810,17 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
             self.dtype = np.promote_types(self.dtype, kets[i].dtype)
             L = lcm(L, kets[i].L)
         
+        if len(perms) == 0:
+            # connect each ket to the next and the last to the first
+            id_perm = list(range(1, self.num_kets)) + [0]
+            perms = [id_perm] * L
+        else:
+            for pe in perms:
+                # Each permutation needs to be the proper length.
+                assert len(pe) == self.num_kets
+            assert L % len(perms) == 0
+            perms = perms * (L // len(perms))
+        self.perms = perms
 
         # We do not allow calculations with a Hamiltonian
 
@@ -1062,7 +1077,34 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
         return self._normalize_exp_val(contr)
 
     def _contract_LP(self, i, LP):
-        LP = npc.tensordot(LP, self.kets[0].get_B(i, form='A'), axes=('vR0', 'vL')).replace_label('vR', 'vR0')
+        perm = self.perms[i]
+        attached = [False] * self.num_kets
+        q_legs = [False] * self.num_kets
+        for j in range(self.num_kets):
+            axes = [['vR' + str(j)], ['vL']]
+            raxes = [['vR', 'q'], ['vR' + str(j), 'q' + str(perm[j])]]
+            if q_legs[j]:
+                # LP has qj leg
+                axes[0].append('q' + str(j))
+                axes[1].append('p')
+            else:
+                raxes[0].append('p')
+                raxes[1].append('p' + str(j))
+            LP = npc.tensordot(LP, self.kets[j].get_B(i, form='A'), axes=axes).replace_labels(raxes[0], raxes[1])
+            q_legs[perm[j]] = True
+
+            if perm[j] == j:
+                # Connect ket to itself -> trace
+                LP = npc.trace(LP, leg1='p' + str(j), leg2='q' + str(j))
+            elif perm[j] < j:
+                # Cycle
+                # Connect ket to previous ket -> trace over legs that already exist.
+                LP = npc.trace(LP, leg1='p' + str(perm[j]), leg2='q' + str(perm[j]))
+        assert LP.ndim == self.num_kets * 2
+        
+        return LP
+
+        """
         if self.num_kets > 1:
             for j in range(1, self.num_kets-1):
                 axes = (['q', 'vR' + str(j)], ['p', 'vL'])
@@ -1073,8 +1115,37 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
         else:
             LP = npc.trace(LP, leg1='p', leg2='q')
         return LP
+        """
 
     def _contract_RP(self, i, RP):
+        perm = self.perms[i]
+        attached = [False] * self.num_kets
+        q_legs = [False] * self.num_kets
+        for j in range(self.num_kets):
+            axes = [['vR'], ['vL' + str(j)]]
+            raxes = [['vL', 'q'], ['vL' + str(j), 'q' + str(perm[j])]]
+            if q_legs[j]:
+                # RP has qj leg
+                axes[1].append('q' + str(j))
+                axes[0].append('p')
+            else:
+                raxes[0].append('p')
+                raxes[1].append('p' + str(j))
+            RP = npc.tensordot(self.kets[j].get_B(i, form='B'), RP, axes=axes).replace_labels(raxes[0], raxes[1])
+            q_legs[perm[j]] = True
+
+            if perm[j] == j:
+                # Connect ket to itself -> trace
+                RP = npc.trace(RP, leg1='p' + str(j), leg2='q' + str(j))
+            elif perm[j] < j:
+                # Cycle
+                # Connect ket to previous ket -> trace over legs that already exist.
+                RP = npc.trace(RP, leg1='p' + str(perm[j]), leg2='q' + str(perm[j]))
+        assert RP.ndim == self.num_kets * 2
+        
+        return RP
+        
+        """ 
         RP = npc.tensordot(self.kets[0].get_B(i, form='B'), RP, axes=('vR', 'vL0')).replace_label('vL', 'vL0')
         if self.num_kets > 1:
             for j in range(1, self.num_kets-1):
@@ -1086,6 +1157,7 @@ class NonTrivialStackedDoubledMPSEnvironment(BaseEnvironment):
         else:
             RP = npc.trace(RP, leg1='p', leg2='q')
         return RP
+        """
 
     # methods for Expectation values
     def _get_bra_ket(self):
