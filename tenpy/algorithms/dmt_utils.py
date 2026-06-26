@@ -69,12 +69,29 @@ def generate_pairs(lat, key='nearest_neighbors', which=-1):
         pairs: list
             list of couplings we wish to preserve with DMT
     """
+    start = 0
+    if key[0] == 'v' and key[1].isdigit():
+        key = 'vert_' + key[1:]
+        start = 5
+
+    if key[start].isdigit():
+        if int(key[start]) < 5:
+            key = key[:start] + "next_"*int(key[start]) + "nearest_neighbors"
+        else:
+            key = key[:start] + "n"*int(key[start]) + "NN"
+
+        print(key)
+
     if key == 'NN':
         key = 'nearest_neighbors'
     elif key == 'nNN':
         key = 'next_nearest_neighbors'
+    elif key == 'vnnNN':
+        key = 'vert_next_next_nearest_neighbors'
     elif key == 'nnNN':
         key = 'next_next_nearest_neighbors'
+    elif key == 'vnnnNN':
+        key = 'vert_next_next_next_nearest_neighbors'
     elif key == 'nnnNN':
         key = 'next_next_next_nearest_neighbors'
     elif key == 'nnnnNN':

@@ -2936,18 +2936,41 @@ class Square(SimpleLattice):
 
     dim = 2  #: the dimension of the lattice
 
-    def __init__(self, Lx, Ly, site, **kwargs):
+    def __init__(self, Lx, Ly, site, **kwargs): 
+        # This is getting unwieldy. . .
         NN = [(0, 0, np.array([1, 0])), (0, 0, np.array([0, 1]))]
         nNN = [(0, 0, np.array([1, 1])), (0, 0, np.array([1, -1]))]
+        vnnNN = [(0, 0, np.array([0, 2]))]                              # Only tall couplings of distance 2
         nnNN = [(0, 0, np.array([2, 0])), (0, 0, np.array([0, 2]))]
+        vnnnNN = [(0, 0, np.array([1, 2])), (0, 0, np.array([1,-2]))]   # Only tall couplings of distance sqrt(5)
         nnnNN = [(0, 0, np.array([2, 1])), (0, 0, np.array([1, 2])), (0, 0, np.array([1,-2])), (0, 0, np.array([2,-1]))]
         nnnnNN = [(0, 0, np.array([2, 2])), (0, 0, np.array([2, -2]))]
+        # Too many. . .
+        vnnnnnNN = [(0, 0, np.array([0, 3]))]                           # Only tall couplings of distance 3
+        nnnnnNN = [(0, 0, np.array([3, 0])), (0, 0, np.array([0, 3]))]
+        vnnnnnnNN = [(0, 0, np.array([1, 3])), (0, 0, np.array([1, -3]))]   # Only tall couplings of distance sqrt(10)
+        nnnnnnNN = [(0, 0, np.array([3, 1])), (0, 0, np.array([1, 3])), (0, 0, np.array([1, -3])), (0, 0, np.array([3, -1]))]
+        vnnnnnnnNN = [(0, 0, np.array([2, 3])), (0, 0, np.array([2, -3]))]  # Only tall couplings of distance sqrt(13)
+        nnnnnnnNN = [(0, 0, np.array([3, 2])), (0, 0, np.array([2, 3])), (0, 0, np.array([2, -3])), (0, 0, np.array([3, -2]))]
+        nnnnnnnnNN = [(0, 0, np.array([4, 0])), (0, 0, np.array([0, 4]))]
+        nnnnnnnnnNN = [(0, 0, np.array([3, 3])), (0, 0, np.array([3, -3]))]
         kwargs.setdefault('pairs', {})
         kwargs['pairs'].setdefault('nearest_neighbors', NN)
         kwargs['pairs'].setdefault('next_nearest_neighbors', nNN)
+        kwargs['pairs'].setdefault('vert_next_next_nearest_neighbors', vnnNN)
         kwargs['pairs'].setdefault('next_next_nearest_neighbors', nnNN)
+        kwargs['pairs'].setdefault('vert_next_next_next_nearest_neighbors', vnnnNN)
         kwargs['pairs'].setdefault('next_next_next_nearest_neighbors', nnnNN)
         kwargs['pairs'].setdefault('next_next_next_next_nearest_neighbors', nnnnNN)
+        # Too many. . .
+        kwargs['pairs'].setdefault('vnnnnnNN', vnnnnnNN)
+        kwargs['pairs'].setdefault('nnnnnNN', nnnnnNN)
+        kwargs['pairs'].setdefault('vnnnnnnNN', vnnnnnnNN)
+        kwargs['pairs'].setdefault('nnnnnnNN', nnnnnnNN)
+        kwargs['pairs'].setdefault('vnnnnnnnNN', vnnnnnnnNN)
+        kwargs['pairs'].setdefault('nnnnnnnNN', nnnnnnnNN)
+        kwargs['pairs'].setdefault('nnnnnnnnNN', nnnnnnnnNN)
+        kwargs['pairs'].setdefault('nnnnnnnnnNN', nnnnnnnnnNN)
         SimpleLattice.__init__(self, [Lx, Ly], site, **kwargs)
 
 
