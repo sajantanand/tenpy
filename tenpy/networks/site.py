@@ -1218,6 +1218,7 @@ class SpinHalfSite(Site):
                                 equal to half the Pauli matrices.
     ``Sigmax, Sigmay, Sigmaz``  Pauli matrices :math:`\sigma^{x,y,z}`
     ``Sp, Sm``                  Spin flips :math:`S^{\pm} = S^{x} \pm i S^{y}`
+    ``P0, P1``                  Projectors onto 0 (up) and 1 (down)
     =========================== ================================================
 
     ============== ====  ============================
@@ -2204,6 +2205,10 @@ class DoubledSite(Site):
             # perm = array([0, 5, 1, 6, 2, 7, 3, 8, 4]) for d=3, 'parity'
             # We order the indices as [0, 2, 4, 6, 8, 1, 3, 5, 7]
             # charges (below) are [0, 1, 0, 1, 0, 1, 0, 1, 0]
+        else:
+            self.perm = None
+        # Set the default as we need it for the SWAP gate
+        inverted_perm = np.arange(d**2)
         if trivial:
             # Don't rotate the basis at all. The basis is simply |i><j|
 
@@ -2216,9 +2221,9 @@ class DoubledSite(Site):
                 if conserve != 'None':
                     charges.append(OP_ops[-1].qtotal.item())
             if conserve != 'None' and conserve != 'phony':
-                inverted_perm = np.argsort(leg1._perm)
-                # This will cause an error since there is ambiguity in ordering indices correspondong to the same charge.
-                assert np.all(inverted_perm == np.argsort(charges))
+                # To fix the ambiguity in ordering indices corresponding to operators with the same charge, we use a stable sort.
+                inverted_perm = np.argsort(leg1._perm, kind='stable')
+                assert np.all(inverted_perm == np.argsort(charges, kind='stable')), (inverted_perm, np.argsort(charges, kind='stable'), charges)
             else:
                 inverted_perm = np.arange(d**2)
             self.identity_ind = [j+j*d for j in range(d)]   # multiple operators with trace; d of them in fact.
@@ -2252,9 +2257,9 @@ class DoubledSite(Site):
                     if conserve != 'None':
                         charges.append(OP_ops[-1].qtotal.item())
                 if conserve != 'None' and conserve != 'phony':
-                    inverted_perm = np.argsort(leg1._perm)
-                    # This will cause an error since there is ambiguity in ordering indices correspondong to the same charge.
-                    assert np.all(inverted_perm == np.argsort(charges))
+                    # To fix the ambiguity in ordering indices corresponding to operators with the same charge, we use a stable sort.
+                    inverted_perm = np.argsort(leg1._perm, kind='stable')
+                    assert np.all(inverted_perm == np.argsort(charges, kind='stable')), (inverted_perm, np.argsort(charges, kind='stable'), charges)
                 else:
                     inverted_perm = np.arange(d**2)
                 self.identity_ind = 0   # this might be moved by the permutation
@@ -2295,6 +2300,14 @@ class DoubledSite(Site):
 
                 OP_ops_augmented = np.column_stack([op.combine_legs(['p', 'p*']).to_ndarray() for op in OP_ops])
                 self.OP = npc.Array.from_ndarray(OP_ops_augmented, [leg1, leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
+        
+        # 05/27/2026 - using inverted perm to reorder tensor assignment
+        # for spin-1/2 (with conserve='Sz' where this matters), inverted_perm == perm
+        # Since we use inverted perm to make ndarrays of OP, I think this is right.
+        self.inverted_perm = inverted_perm
+        self.orig_perm = self.perm
+        self.perm = self.inverted_perm
+
         # Turn original OP basis into orthogonal Q basis
         self.Q, self.R = npc.qr(self.OP, inner_labels=['p*', 'p'], mode='complete', pos_diag_R=True)
         self.Q.legs[1] = leg1.conj() # Need second leg of Q to be a LegPipe
@@ -2368,6 +2381,24 @@ class DoubledSite(Site):
             #self.traceful_ind = self.identity_ind = -1
 
         # We already checked that the basis is hermitian if `hermitian==True`.
+
+        # When we Hermitian conjguate each operator, to which operator does it map?
+        # This is needed to construct the SWAP operator, which doesn't include conjugation.
+        dag_mat = np.zeros((d**2, d**2), dtype=np.complex128)
+        for i in range(d**2):
+            for j in range(d**2):
+                # The operators are orthogonal at this point.
+                # So Tr (O_i^\dag O_j) = delta_{ij}
+                # Tr (O_i O_j) tells us which operator O_i becomes when daggered.
+                dag_mat[i,j] = npc.trace(npc.tensordot(self.new_ops[i], self.new_ops[j], axes=(['p*'], ['p'])))
+        # swap_mat should be a permutation matrix, symmetric, and real.
+        assert np.isclose(np.linalg.norm(dag_mat - dag_mat.T), 0.0)
+        assert np.isclose(np.linalg.norm(dag_mat.imag), 0.0)
+        dag_mat = dag_mat.real
+        assert np.isclose(np.linalg.norm(dag_mat.T @ dag_mat - np.eye(d**2)), 0.0)
+        # leg1 contains a permutation, so we need to undo it first.
+        # We want both legs to be conjugated since we will follow this up with a conjugation of each tensor in practice.
+        self.SWAP = npc.Array.from_ndarray(dag_mat[inverted_perm[:,None],inverted_perm[None,:]], [leg1.conj(), leg1.conj()], dtype=np.complex128, qtotal=None, labels=['p', 'p*'])
 
         ops = dict()
         self.conserve = conserve
