@@ -18,7 +18,8 @@ __all__ = ['SpinModel', 'SpinChain', 'DipolarSpinChain',
            'XXXChain', 
            'AnisotropicSpinModel', 'AnisotropicBarberPole', 
            'FiniteRangeSpinChain', 'DisorderedFiniteRangeSpinChain',
-           'VDWExponentiallyDecayingXXZ', 'ExponentiallyDecayingSpinModel']
+           'VDWExponentiallyDecayingXXZ', 'ExponentiallyDecayingSpinModel',
+           'RandomlyDistributedSpinModel']
 
 
 class SpinModel(CouplingMPOModel):
@@ -940,3 +941,54 @@ class DipolarSpinChain(CouplingMPOModel):
         J4 = model_params.get('J4', 0)
         self.add_multi_coupling(-J3, [('Sp', 0, 0), ('Sm', 1, 0), ('Sm', 1, 0), ('Sp', 2, 0)], plus_hc=True)
         self.add_multi_coupling(-J4, [('Sp', 0, 0), ('Sm', 1, 0), ('Sm', 2, 0), ('Sp', 3, 0)], plus_hc=True)
+
+class RandomlyDistributedSpinModel(SpinModel):
+    default_lattice = Chain
+    force_default_lattice = True
+
+    def init_terms(self, model_params):
+        # distance_matrix is N x N matrix of Euclidean distances between each pair of points
+        distance_matrix = model_params['distance_matrix']
+        N = distance_matrix.shape[0]
+        assert distance_matrix.shape[1] == N
+        
+        alpha = model_params.get('alpha', 3.0, float)
+        cutoff = model_params.get('cutoff', 0.1, float)
+
+        Jx = model_params.get('Jx', 1., 'real_or_array')
+        Jy = model_params.get('Jy', 1., 'real_or_array')
+        Jz = model_params.get('Jz', 1., 'real_or_array')
+        hx = model_params.get('hx', 0., 'real_or_array')
+        hy = model_params.get('hy', 0., 'real_or_array')
+        hz = model_params.get('hz', 0., 'real_or_array')
+
+        # (u is always 0 as we have only one site in the unit cell)
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(-hx, u, 'Sx')
+            self.add_onsite(-hy, u, 'Sy')
+            self.add_onsite(-hz, u, 'Sz')
+        
+        # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
+        # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
+        # Sy.Sy = 0.25 ( Sp.Sm + Sm.Sp - Sp.Sp - Sm.Sm )
+        u1, u2 = 0, 0 # Only one site in square lattice unit cell
+        for i in range(N):
+            min_site = np.argmin(distance_matrix[i,:][~np.eye(N, dtype=bool)[i]])
+            min_site += 1 if min_site >= i else 0
+
+            min_dist = distance_matrix[i,min_site]
+            loop = list(range(i+1, N))
+            if 1/min_dist**alpha <= cutoff:
+                # Nearest site is beyond cutoff; include it here so that there are no disconnected sites.
+                loop += [min_site]
+            
+            for j in loop:
+                if 1/distance_matrix[i,j]**alpha > cutoff or j == min_site:
+                    if j < i:
+                        assert j == min_site
+                        ii, jj = j, i
+                    else:
+                        ii, jj = i, j
+                    self.add_coupling_term((Jx + Jy) / 4. / distance_matrix[i,j]**alpha, ii, jj, 'Sp', 'Sm', plus_hc=True)
+                    self.add_coupling_term((Jx - Jy) / 4. / distance_matrix[i,j]**alpha, ii, jj, 'Sp', 'Sp', plus_hc=True)
+                    self.add_coupling_term(Jz / distance_matrix[i,j]**alpha, ii, jj, 'Sz', 'Sz')

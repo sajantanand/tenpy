@@ -277,6 +277,22 @@ class TwoSiteTDVPEngine(TDVPEngine):
         if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
+        if hasattr(self.psi.get_site(i0), 'SWAP') and hasattr(self.psi.get_site(i0+1), 'SWAP') and self.hermitize:
+            # Both sites have a SWAP gate defined, so they are doubled.
+            # In princple, we can apply the swap gates to theta and conjugate to get theta^\dag.
+            # Then theta <- (theta + theta^\dag)/2 to locally enforce hermiticity.
+            # Only hermitize if flag is set
+            """
+            SWAP_L = self.psi.get_site(i0).SWAP.replace_label('p', 'p0*')
+            SWAP_R = self.psi.get_site(i0+1).SWAP.replace_label('p', 'p1*')
+            theta_dag = npc.tensordot(SWAP_L, npc.tensordot(SWAP_R, theta, axes=(['p*', 'p1'])), axes=(['p*', 'p0'])).conj()
+            theta = (theta + theta_dag)/2
+            """
+            # If we are in a Hermitian basis, than we simply want to make this real.
+            theta_norm = npc.norm(theta)
+            theta.iunary_blockwise(np.real)
+            theta *= theta_norm / npc.norm(theta)
+
         if self.combine:
             theta.itranspose(['(vL.p0)', '(p1.vR)'])  # shouldn't do anything
         else:
@@ -321,6 +337,10 @@ class TwoSiteTDVPEngine(TDVPEngine):
         if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
+        if hasattr(self.psi.get_site(i), 'SWAP') and self.hermitize:
+            theta_norm = npc.norm(theta)
+            theta.iunary_blockwise(np.real)
+            theta *= theta_norm / npc.norm(theta)
         self.psi.set_B(i, theta.replace_label('p0', 'p'), form='Th')
 
 
@@ -374,6 +394,10 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
+        if hasattr(self.psi.get_site(i0), 'SWAP') and hasattr(self.psi.get_site(i0+1), 'SWAP') and self.hermitize:
+            theta_norm = npc.norm(theta)
+            theta.iunary_blockwise(np.real)
+            theta *= theta_norm / npc.norm(theta)
         if self.combine:
             theta.itranspose(['(vL.p0)', '(p1.vR)'])  # shouldn't do anything
         else:
@@ -440,6 +464,10 @@ class DMTTwoSiteTDVPEngine(TwoSiteTDVPEngine):
         if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
+        if hasattr(self.psi.get_site(i), 'SWAP') and self.hermitize:
+            theta_norm = npc.norm(theta)
+            theta.iunary_blockwise(np.real)
+            theta *= theta_norm / npc.norm(theta)
         self.psi.set_B(i, theta.replace_label('p0', 'p'), form='Th')
 
 class SingleSiteTDVPEngine(TDVPEngine):
@@ -483,6 +511,10 @@ class SingleSiteTDVPEngine(TDVPEngine):
         if npc.norm(theta.unary_blockwise(np.imag)) < self.imaginary_cutoff: # Remove small imaginary part
             # Needed for Lindblad evolution in Hermitian basis where density matrix / operator must be real
             theta.iunary_blockwise(np.real)
+        if hasattr(self.psi.get_site(i0), 'SWAP') and self.hermitize:
+            theta_norm = npc.norm(theta)
+            theta.iunary_blockwise(np.real)
+            theta *= theta_norm / npc.norm(theta)
         if self.move_right:
             self.right_moving_update(i0, theta)
         else:

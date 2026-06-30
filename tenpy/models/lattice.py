@@ -48,6 +48,7 @@ __all__ = [
     'Triangular',
     'Honeycomb',
     'Kagome',
+    'RefinedIcosahedron',
     'SimpleBZ',
     'get_lattice',
     'get_order',
@@ -3344,6 +3345,128 @@ class Kagome(Lattice):
                 return order
         return super().ordering(order)
 
+
+class RefinedIcosahedron(Lattice):
+    """A Icosahedron refined by triangularization.
+
+    The Icosahedron has 12 vertices, 20 faces, and 30 edges. It retains full icosahedral symmetry, which
+    is the largest finite point group symmetry in 3D Euclidean space. To allow for more vertices,
+    we allow for refinement, where each triangular face is split into f^2 triangles. The original 12
+    vertices will be degree 5 whlie the newly generated ones will be degree 6.
+
+    We use some helper functions (provided by ChatGPT) to list the locations of the each 
+
+    .. plot ::
+
+        import matplotlib.pyplot as plt
+        from tenpy.models import lattice
+        plt.figure(figsize=(5, 4))
+        ax = plt.gca()
+        lat = lattice.Kagome(4, 4, None, bc='periodic')
+        lat.plot_coupling(ax, linewidth=3.)
+        lat.plot_order(ax, linestyle=':', linewidth=2)
+        lat.plot_sites(ax)
+        lat.plot_basis(ax, origin=-0.25*(lat.basis[0] + lat.basis[1]))
+        ax.set_aspect('equal')
+        ax.set_xlim(-1)
+        ax.set_ylim(-1)
+        plt.show()
+
+    .. plot ::
+
+        import matplotlib.pyplot as plt
+        from tenpy.models import lattice
+        fig, axes = plt.subplots(1, 2, sharex=True, sharey=True, figsize=(8, 4))
+        lat = lattice.Kagome(3, 3, None, bc='periodic')
+        order_names=['default', 'rings']
+        for order_name, ax in zip(order_names, axes.flatten()):
+            lat.plot_coupling(ax, linestyle='-', linewidth=1)
+            lat.order = lat.ordering(order_name)
+            lat.plot_order(ax, linestyle=':', linewidth=2)
+            lat.plot_sites(ax)
+            lat.plot_basis(ax, origin=(-0.5, -0.5))
+            ax.set_title(f"order={order_name!r}")
+            ax.set_aspect('equal')
+        axes[0].set_title("order='default'='Cstyle'")
+        plt.show()
+
+    Parameters
+    ----------
+    Lx, Ly : int
+        The length in each direction.
+    sites : (list of) :class:`~tenpy.networks.site.Site`
+        The two local lattice sites making the `unit_cell` of the :class:`Lattice`.
+        If only a single :class:`~tenpy.networks.site.Site` is given, it is used for both sites.
+    **kwargs :
+        Additional keyword arguments given to the :class:`Lattice`.
+        `basis`, `pos` and `pairs` are set accordingly.
+
+    """
+
+    dim = 2  #: the dimension of the lattice
+    Lu = 3  #: the (expected) number of sites in the unit cell, ``len(unit_cell)``.
+
+    def __init__(self, Lx, Ly, sites, **kwargs):
+        sites = _parse_sites(sites, 3)
+        #   \   /
+        #    \ /
+        #     2
+        #    / \
+        #   /   \
+        #  0-----1-----
+        pos = np.array([[0, 0], [1, 0], [0.5, 0.5 * 3**0.5]])
+        basis = [2 * pos[1], 2 * pos[2]]
+        kwargs.setdefault('basis', basis)
+        kwargs.setdefault('positions', pos)
+        NN = [
+            (0, 1, np.array([0, 0])),
+            (0, 2, np.array([0, 0])),
+            (1, 2, np.array([0, 0])),
+            (1, 0, np.array([1, 0])),
+            (2, 0, np.array([0, 1])),
+            (2, 1, np.array([-1, 1])),
+        ]
+        nNN = [
+            (0, 1, np.array([0, -1])),
+            (0, 2, np.array([1, -1])),
+            (1, 0, np.array([1, -1])),
+            (1, 2, np.array([1, 0])),
+            (2, 0, np.array([1, 0])),
+            (2, 1, np.array([0, 1])),
+        ]
+        nnNN = [
+            (0, 0, np.array([1, -1])),
+            (0, 0, np.array([0, 1])),
+            (0, 0, np.array([1, 0])),
+            (1, 1, np.array([1, -1])),
+            (1, 1, np.array([0, 1])),
+            (1, 1, np.array([1, 0])),
+            (2, 2, np.array([1, -1])),
+            (2, 2, np.array([0, 1])),
+            (2, 2, np.array([1, 0])),
+        ]
+        kwargs.setdefault('pairs', {})
+        kwargs['pairs'].setdefault('nearest_neighbors', NN)
+        kwargs['pairs'].setdefault('next_nearest_neighbors', nNN)
+        kwargs['pairs'].setdefault('next_next_nearest_neighbors', nnNN)
+        Lattice.__init__(self, [Lx, Ly], sites, **kwargs)
+
+    def ordering(self, order):
+        """Provide possible orderings of the `N` lattice sites.
+
+        Depending on your couplings and states, the ``'default'``  (defined as ``'Cstyle'``),
+        or the new ``'rings'`` order along the triangles might be better.
+        The following orders are defined here in addition to :meth:`Lattice.ordering`:
+
+        ``'rings', 'default'`` :
+            Along y first for sites (0, 2) on the left of the triangles, then one ring for site 1.
+
+        """
+        if isinstance(order, str):
+            if order == 'rings':
+                order = get_order_grouped(self.shape, [(0, 2), (1,)])
+                return order
+        return super().ordering(order)
 
 class SimpleBZ:
     r"""Helper class to provide an interface for the Brillouin Zone of a given lattice.

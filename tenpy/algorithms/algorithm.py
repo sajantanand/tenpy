@@ -390,6 +390,7 @@ class TimeEvolutionAlgorithm(Algorithm):
         super().__init__(psi, model, options, **kwargs)
         self.evolved_time = self.options.get('start_time', 0.0, 'real')
         self.imaginary_cutoff = self.options.get('imag_cutoff', 0.0, 'real')
+        self.hermitize = self.options.get('hermitize', False, bool)
         self.trunc_err = self.options.get('start_trunc_err', TruncationError(), TruncationError)
         self.force_prepare_evolve = False
         if self.resume_data:
