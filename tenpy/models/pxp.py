@@ -10,7 +10,7 @@ from ..networks.site import SpinHalfSite
 from .lattice import Chain
 from .model import CouplingMPOModel
 
-__all__ = ['PXPChain', 'GeneralizedPXPModel', 'PXXZPChain', 'GeneralizedPXXZPModel', 'PExpPChain']
+__all__ = ['PXPChain', 'GeneralizedPXPModel', 'PXXZPChain', 'GeneralizedPXXZPModel', 'PExpPChain', 'VdWRydbergModel']
 
 
 class PXPChain(CouplingMPOModel):
@@ -656,3 +656,53 @@ def _build_neighbor_dict_via_couplings(neighbor_keys, lat):
     assert lat.Lu == len(neighbor_dict)
     
     return neighbor_dict
+
+
+class VdWRydbergModel(CouplingMPOModel):
+    # Only works for finite systems (interactions added by pair)
+    # Only works for open boundary conditions (interactions added by distance in flat space)
+    def init_sites(self, model_params):
+        conserve = model_params.get('conserve', 'best', None)
+        if conserve == 'best':
+            conserve = 'None'
+        assert conserve == 'None'
+        s = SpinHalfSite(conserve=conserve)
+        s.add_op('X', s.get_op('Sigmax'), hc='X')  # X is already defined under other name
+        s.add_op('Z', s.get_op('Sigmaz'), hc='Z')  # Z is already defined under other name
+        # P is defined as P0, the projector onto the state 0, i.e. the up spin
+        # The projector onto the state 1 is P1
+        return s
+
+    def init_terms(self, model_params):
+        lat = self.lat
+        assert lat.bc_MPS == 'finite'
+        assert 'periodic' not in lat.boundary_conditions
+
+        # In the Bernien 2017 Nature paper, Omega = 2pi * 2 MHz
+        # We will simply set this to 1 and use this as the units.
+        # V will include information about lattice spacing.
+        # Rb = 1 -> V = 2pi * 24 MHz, 5.74 um
+        # Rb = 2 -> V = 2pi * 414.3 MHz, 3.57 um
+        # Rb = 3 -> V = 2pi * 1536 MHz, 2.87 um
+        # Rubidium 87, |r> = |70s>
+        Omega = model_params.get('Omega', 1.0, 'real_or_array')     # Omega / 2 X_i
+        Delta = model_params.get('Delta', 0.0, 'real_or_array')     # -Delta n_i
+        V = model_params.get('V', 1.0, 'real')                      # V n_i n_{i+1}
+        cutoff = model_params.get('cutoff', 0.1, 'real')
+        staggered = model_params.get('staggered', False, bool)
+        L = len(self.lat.mps_sites())
+        sign = (-1 if staggered else 1)**(np.arange(L) >= L//2)
+        
+        for u in range(L):
+            self.add_onsite_term(Omega / 2 * sign[u], u, 'X')
+            self.add_onsite_term(-Delta * sign[u], u, 'P1')
+        
+        for i in range(L):
+            for j in range(i+1, L):
+                pos_i = lat.position(lat.mps2lat_idx(i))
+                pos_j = lat.position(lat.mps2lat_idx(j))
+                distance = np.linalg.norm(pos_i - pos_j)
+                if V / distance**6 > cutoff:
+                    # We add half of the pair with the sign of i and half with the sign of j
+                    self.add_coupling_term(V/2 / distance**6 * sign[i], i, j, 'P1', 'P1')
+                    self.add_coupling_term(V/2 / distance**6 * sign[j], i, j, 'P1', 'P1')
