@@ -63,16 +63,23 @@ class CircuitEvolution(TimeEvolutionAlgorithm):
     def __init__(self, psi, model, options, **kwargs):
         super().__init__(psi, None, options, **kwargs)
         options = self.options
-        self._U = model
+        if callable(model):
+            # model is a function that generates the MPOs, time dependent!
+            self.func = model
+        else:
+            self.func = None
+            self._U = model
 
     # run from TimeEvolutionAlgorithm
 
     def prepare_evolve(self, dt):
         # Nothing to do here. MPOs are already made.
-        pass
+        if self.func is not None:
+            self._U = self.func(self.evolved_time + dt)
 
     def evolve_step(self, dt):
         trunc_err = TruncationError()
+
         for U in self._U:
             if isinstance(U, npc.Array):
                 self.psi.apply_product_op([U])
@@ -331,7 +338,8 @@ def build_MPOs(site, pairs, U, L, crossing_limit=0, crossing_aware=True, verbose
     # At the moment, breaks will be after each MPO (supposing disjoint_endpoints=True), as we haven't worried
     # about crossings. We simply separate the pairs into sets where each site is active in at most 1 gate.
     breaks = list(range(len(pairs) - 1))    # Empty if only 1 list of pairs
-    print("Original breaks and crossings:", breaks, [int(np.max(count_crossings(p, L))) for p in pairs])
+    if verbose:
+        print("Original breaks and crossings:", breaks, [int(np.max(count_crossings(p, L))) for p in pairs])
     if crossing_limit > 0:
         # We have separated the pairs into disjoint sets, but we have paid little 
         # attention to how many of the pairs cross one another, which leads to
@@ -348,10 +356,12 @@ def build_MPOs(site, pairs, U, L, crossing_limit=0, crossing_aware=True, verbose
                 # So if we wanted to insert single qubit gates between non-commuting layers,
                 # breaks gives us the information necessary.
                 breaks[i] = len(new_pairs) - 1
-        print("Old # pairs: %d, New # pairs: %d" % (len(pairs), len(new_pairs)))
+        if verbose:
+            print("Old # pairs: %d, New # pairs: %d" % (len(pairs), len(new_pairs)))
         pairs = new_pairs
         lonely_sites = new_lonely
-    print("Modified breaks:", breaks, flush=True)
+    if verbose:
+        print("Modified breaks:", breaks, flush=True)
     
     MPOs = []
     for dp, ls in zip(pairs, lonely_sites):
