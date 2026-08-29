@@ -7,7 +7,7 @@ Uniform lattice of spin-S sites, coupled by nearest-neighbor interactions.
 import numpy as np
 from scipy.special import comb
 
-from ..networks.site import SpinSite
+from ..networks.site import SpinSite, SpinHalfSite
 from .model import CouplingMPOModel, NearestNeighborModel
 from .lattice import Chain, Square
 from ..tools.params import asConfig
@@ -19,7 +19,8 @@ __all__ = ['SpinModel', 'SpinChain', 'DipolarSpinChain',
            'AnisotropicSpinModel', 'AnisotropicBarberPole', 
            'FiniteRangeSpinChain', 'DisorderedFiniteRangeSpinChain',
            'VDWExponentiallyDecayingXXZ', 'ExponentiallyDecayingSpinModel',
-           'RandomlyDistributedSpinModel']
+           'RandomlyDistributedSpinModel',
+           'QGXXZChain']
 
 
 class SpinModel(CouplingMPOModel):
@@ -992,3 +993,107 @@ class RandomlyDistributedSpinModel(SpinModel):
                     self.add_coupling_term((Jx + Jy) / 4. / distance_matrix[i,j]**alpha, ii, jj, 'Sp', 'Sm', plus_hc=True)
                     self.add_coupling_term((Jx - Jy) / 4. / distance_matrix[i,j]**alpha, ii, jj, 'Sp', 'Sp', plus_hc=True)
                     self.add_coupling_term(Jz / distance_matrix[i,j]**alpha, ii, jj, 'Sz', 'Sz')
+
+
+class QGXXZChain(CouplingMPOModel):
+    r"""Spin-1/2 NNN XXZ chain with Uq(sl2) quantum group symmetry.
+
+    We implement the model from arXiv 2606.20850. This is a next-nearest-neighbor (NNN)
+    XXZ chain with integrability breaking perturbation that respects a quantum group
+    symmetry U_q(sl_2)
+    
+    The Hamiltonian reads:
+
+    .. math ::
+        H = \sum_{i}^{L-2}
+              (Sp_i Sm_{i+1} + Sm_i Sp_{i+1} 
+              + \frac{1}{2}(\mathtt{q} + \mathtt{q}^{-1}) Z_i Z_{i+1}) \\
+            - \frac{1}{2}(\mathtt{q} - \mathtt{q}^{-1})(Z_1 - Z_{L-1}) \\
+            + \mathtt{lambda} \sum_{i}^{L-2} \mathtt{stag}^{i} V_i^{QG} \\
+        V_i^{QG} = V_i^{nnn} + A_i + B_i \\
+        V_i^{nnn} = X_i X_{i+2} + Y_i Y_{i+2} + Z_i Z_{i+2} \\
+        A_i = \frac{1}{4}(\mathtt{q} - \mathtt{q}^{-1})^2(Z_i Z_{i+1} + Z_{i+1} Z_{i+2})
+              - \frac{1}{4}(\mathtt{q}^2 - \mathtt{q}^{-2})(Z_i - Z_{i+2}) \\
+        B_i = \frac{1}{2}(\mathtt{q} - \mathtt{q}^{-1})(X_i X_{i+1} Z_{i+2} + Y_i Y_{i+1} Z_{i+2} - Z_i X_{i+1} X_{i+2} - Z_i Y_{i+1} Y_{i+2})
+  
+    
+    Here, :math:`X, Y, Z` are the Pauli matrices and :math:`\mathtt{stag}=\pm 1`.
+    All parameters are collected in a single dictionary `model_params`, which
+    is turned into a :class:`~tenpy.tools.params.Config` object.
+
+    Parameters
+    ----------
+    model_params : :class:`~tenpy.tools.params.Config`
+        Parameters for the model. See :cfg:config:`SpinModel` below.
+
+    Options
+    -------
+    .. cfg:config :: SpinModel
+        :include: CouplingMPOModel
+
+        conserve : 'best' | 'Sz' | 'parity' | None
+            What should be conserved. See :class:`~tenpy.networks.Site.SpinSite`.
+            For ``'best'``, we check the parameters what can be preserved.
+        sort_charge : bool
+            Whether to sort by charges of physical legs. `True` by default.
+        q, lamb, stab, : float | array
+            Coupling as defined for the Hamiltonian above.
+            Defaults to Heisenberg ``q=lamb=stab=1.``
+
+    """
+    default_lattice = Chain
+    force_default_lattice = True
+
+    def init_sites(self, model_params):
+        conserve = None
+        sort_charge = model_params.get('sort_charge', True, bool)
+        site = SpinHalfSite(conserve, sort_charge)
+        return site
+
+    def init_terms(self, model_params):
+        q = model_params.get('q', 1.0, 'real_or_array')
+        lamb = model_params.get('lambda', 1.0, 'real_or_array')
+        stag = model_params.get('stag', False)
+        L = model_params['L']
+        assert model_params['bc_x'] == 'open', "This model isn't implemented for infinite MPS."
+        if stag == True:
+            stag = -1
+        else:
+            stag = 1
+        
+        # NN XXZ
+        NN1 = 1/2*(q + q**(-1))
+        NN2 = -1/2*(q - q**(-1))
+        for i in range(L-1):
+            self.add_coupling_term(1, i, i+1, 'Sigmax', 'Sigmax')
+            self.add_coupling_term(1, i, i+1, 'Sigmay', 'Sigmay')
+            self.add_coupling_term(NN1, i, i+1, 'Sigmaz', 'Sigmaz')
+        
+        self.add_onsite_term(NN2, 0, 'Sigmaz')
+        self.add_onsite_term(-NN2, L-1, 'Sigmaz')
+
+
+        # NNN - Vi
+        for i in range(L-2):
+            self.add_coupling_term(lamb * stag**i, i, i+2, 'Sigmax', 'Sigmax')
+            self.add_coupling_term(lamb * stag**i, i, i+2, 'Sigmay', 'Sigmay')
+            self.add_coupling_term(lamb * stag**i, i, i+2,  'Sigmaz', 'Sigmaz')
+
+        # NNN - A
+        A1 = 1/4*(q - q**(-1))**2
+        A2 = -1/4*(q**2 - q**(-2))
+        for i in range(L-2):
+            self.add_coupling_term(lamb * stag**i * A1, i, i+1, 'Sigmaz', 'Sigmaz')
+            self.add_coupling_term(lamb * stag**i * A1, i+1, i+2, 'Sigmaz', 'Sigmaz')
+            self.add_onsite_term(lamb * stag**i * A2, i, 'Sigmaz')
+            self.add_onsite_term(-lamb * stag**i * A2, i+2, 'Sigmaz')
+
+        # NNN - B
+        B1 = -1*NN2
+        for i in range(L-2):
+            self.add_multi_coupling_term(lamb * stag**i * B1, [i, i+1, i+2], ['Sigmax', 'Sigmax', 'Sigmaz'], ['Id', 'Id'], category='B')
+            self.add_multi_coupling_term(lamb * stag**i * B1, [i, i+1, i+2], ['Sigmay', 'Sigmay', 'Sigmaz'], ['Id', 'Id'], category='B')
+            self.add_multi_coupling_term(-lamb * stag**i * B1, [i, i+1, i+2], ['Sigmaz', 'Sigmax', 'Sigmax'], ['Id', 'Id'], category='B')
+            self.add_multi_coupling_term(-lamb * stag**i * B1, [i, i+1, i+2], ['Sigmaz', 'Sigmay', 'Sigmay'], ['Id', 'Id'], category='B')
+        # done
+
