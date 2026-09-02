@@ -5557,6 +5557,8 @@ class MPS(BaseMPSExpectationValue):
             if unitary is None:
                 op_op_dagger = npc.tensordot(op, op.conj(), axes=['p*', 'p'])
                 if npc.norm(op_op_dagger - npc.eye_like(op_op_dagger)) > 1.0e-14:
+                    # This is dangerous; if the last operator is unitary while the rest aren't,
+                    # then there won't be canonicalization.
                     unitary = False
             # actually apply the operator at site i
             self._B[i] = npc.tensordot(op, self._B[i], axes=['p*', 'p'])
@@ -6029,7 +6031,7 @@ class MPS(BaseMPSExpectationValue):
                 B = B.combine_legs(['vL'] + self._p_label) # SAJANT - modify to work for multiple physical legs
                 q, r = npc.qr(B, inner_labels=['vR', 'vL'])
                 B = q.split_legs()
-                self.set_B(i, B, form=None)
+                self.set_B(i, B, form=None)         # Don't set in A form since the SVs are wrong.
                 B = self.get_B(i + 1, form='B')
                 B = npc.tensordot(r, B, axes=('vR', 'vL'))
             # Do SVD from right to left & truncate
@@ -6082,13 +6084,16 @@ class MPS(BaseMPSExpectationValue):
         trunc_par : dict
             Parameters for truncation, see :cfg:config:`truncation`.
         """
-        assert np.alltrue([type(s) == DoubledSite for s in self.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
+        assert np.all([type(s) == DoubledSite for s in self.sites]), "MPS needs to be a doubled MPS (with doubled sites) to use DMT."
 
         from ..algorithms import dmt_utils as dmt
         trunc_err = TruncationError()
         if self.bc == 'finite':
             # Do QR starting from the left
             B = self.get_B(0, form='Th')
+            #08/23/2026 - The right sweep with QRs is storing the Q as an A form site; but the SVs are WRONG!
+            #In the MPS version, the Q is stored with form `None`. But for the DMT, we need the left tensor of
+            # bond to be in A form. I don't think the SVs are actually used anywhere, so this should be fine.
             for i in range(self.L - 1):
                 #B = B.combine_legs(['vL', 'p'])
                 B = B.combine_legs(['vL'] + self._p_label) # SAJANT TODO - modify to work for multiple physical legs
