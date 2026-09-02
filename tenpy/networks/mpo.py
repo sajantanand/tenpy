@@ -1208,7 +1208,7 @@ class MPO(MPSGeometry):
         dMPO = MPO.from_grids(sites, U, self.bc, IdL, IdR, max_range=self.max_range, explicit_plus_hc=self.explicit_plus_hc)
         return dMPO
 
-    def make_doubled_MPO(self, hermitian=True, trivial=False, ds=None, imaginary=False):
+    def make_doubled_MPO(self, hermitian=True, trivial=False, ds=None, imaginary=False, dissipator=None):
         r"""Creates the MPO for evolution in the Doubled space. Given operator :math:`O`, we want to form
         :math:`O \otimes I - I \otimes O^*`. We will do this tensor by tensor in the MPO, and we require
         that the MPO has the usual block form.
@@ -1257,12 +1257,35 @@ class MPO(MPSGeometry):
 
             dW = np.empty((2*DL-2, 2*DR-2), dtype=object)
 
+            if dissipator is not None:
+                # TODO - This is not the ideal way to include the dissipation.
+                # This only works for 1 Lindblad operator.
+                # Eventually one should generalize MPOs to include Lindblad support.
+                # This is needed for multi-qubit noise.
+
+                # Build the gate that does the dissipation.
+                # dis is the noise operator L_i
+                assert imaginary == False
+                dis = dissipator 
+
+                dis_ot_dis = _combine_npc(dis, dis)
+
+                dis2 = npc.tensordot(dis.conj(), dis, axes=(['p*'], ['p']))
+                dis2_ot_Id = _combine_npc(dis2, Id_npc)
+                Id_ot_dis2 = _combine_npc(Id_npc, dis2)
+
+                site_dis = (dis_ot_dis - 1/2*(dis2_ot_Id + Id_ot_dis2)) * 1.j
+            else:
+                site_dis = None
+                
             # First Row
             dW[0,0] = Idd_npc
             for i in range(0, DR-2):
                 dW[0,i+1] = _combine_npc(C_npc[0,i], Id_npc)
                 dW[0,i+DR-2+1] = 1*_combine_npc(Id_npc, C_npc[0,i])
             dW[0,-1] = _combine_npc(D_npc, Id_npc) - _combine_npc(Id_npc, D_npc) * (-1 if imaginary else 1)
+            if site_dis is not None:
+                dW[0,-1] += site_dis
             # Middle Rows
             for i in range(0, DL-2):
                 for j in range(0, DR-2):

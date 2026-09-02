@@ -14,7 +14,7 @@ from ..linalg.charges import LegPipe, ChargeInfo
 from ..algorithms.truncation import svd_theta, TruncationError, _machine_prec_trunc_par
 import warnings
 
-def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True, trivial=False, ds=None, imaginary=False):
+def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True, trivial=False, ds=None, imaginary=False, dissipator=None):
     """
     args:
         H_MPO: TeNPy MPO
@@ -34,13 +34,16 @@ def double_model(H_MPO, NN=False, doubled=False, conjugate=False, hermitian=True
         imaginary: Boolean
             If True, we want to build HI + IH*; if False, we want to build HI - IH*. We want the first for imaginary
             time evolution (e^{-beta H}) and the later for real time evolution (e^{-i t H}).
+        dissipator: npc.array
+            If not none, we add single site dissipation to the MPO
     returns:
         doubled_model: TeNPy model
             Either `MPOModel` or `NearestNeighborModel` depending on the `NN` parameter
     """
     if not doubled:
-        doubled_MPO = H_MPO.make_doubled_MPO(hermitian, trivial, ds=ds, imaginary=imaginary)
+        doubled_MPO = H_MPO.make_doubled_MPO(hermitian, trivial, ds=ds, imaginary=imaginary, dissipator=dissipator)
     else:
+        assert dissipator is None
         doubled_MPO = deepcopy(H_MPO)
 
     if conjugate:
