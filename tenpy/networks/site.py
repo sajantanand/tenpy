@@ -2000,12 +2000,14 @@ class ClockSite(Site):
     ``X, Z``                    Clock operators
     ``Xhc, Zhc``                Hermitian conjugates of clock operators
     ``Xphc, Zphc``              Clock operator plus its hermitian conjugate
+    ``XhcZ``                    Lattice operator for Potts critical point
+    ``XhcZhc``                  Lattice operator for Potts critical point
     =========================== ================================================
 
     ============== ====  ============================
     `conserve`     qmod  *excluded* onsite operators
     ============== ====  ============================
-    ``'Z'``        [q]   ``Xphc, Zphc``
+    ``'Z'``        [q]   ``Xphc``
     ``'None'``     []    --
     ============== ====  ============================
 
@@ -2056,9 +2058,11 @@ class ClockSite(Site):
         self.add_op('Xhc', Xhc, hc='X')
         self.add_op('Z', Z, hc='Zhc')
         self.add_op('Zhc', Zhc, hc='Z')
+        self.add_op('Zphc', Zphc, hc='Zphc')        # This operator is the sum of two charge=0 (diagonal) operators.
+        self.add_op('XhcZ', Xhc @ Z, hc=False)
+        self.add_op('XhcZhc', Xhc @ Zhc, hc=False)
         if conserve != 'Z':
             self.add_op('Xphc', Xphc, hc='Xphc')
-            self.add_op('Zphc', Zphc, hc='Zphc')
         self.state_labels['up'] = self.state_labels['0']
         if q % 2 == 0:
             self.state_labels['down'] = self.state_labels[str(q // 2)]
@@ -2187,12 +2191,21 @@ class DoubledSite(Site):
         if trivial:
             # We can conserve charge with a trivial site
             assert not hermitian
-        self.d = d # Dimension of original Hilbert space
         self.hermitian = hermitian
         self.trivial = trivial
+        
+        if isinstance(d, int):
+            self.d = d # Dimension of original Hilbert space
 
-        # sort_charge=False as the sorting should be done later
-        ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
+            # sort_charge=False as the sorting should be done later
+            ss_op = SpinSite(S=(d-1)/2, conserve=conserve, sort_charge=False)
+        else:
+            # We have passed in a specific site to double
+            self.d = d.dim
+            ss_op = d
+            d = self.d
+
+            assert conserve == ss_op.conserve
         # Bunch doesn't matter if we don't sort since the neighboring charges are not the same
         # If we are to sort the charges, it should be done now so that we still have a leg pipe.
         # If we just sort at the end when calling the Site initializer, the leg pipe will get replaced
