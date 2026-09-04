@@ -20,7 +20,7 @@ __all__ = ['version', 'released', 'short_version', 'git_revision', 'full_version
 
 # hard-coded version for people without git...
 #: current release version as a string
-version = '1.1.0'
+version = '1.1.1'
 
 #: whether this is a released version or modified
 released = False
@@ -48,7 +48,7 @@ def _get_git_revision(cwd=None):
         cwd = os.path.dirname(os.path.abspath(__file__))
     try:
         rev = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=cwd, stderr=subprocess.STDOUT).decode().strip()
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except Exception:
         # FileNotFound e.g if git is not installed or cwd doesn't exist
         # SubprocessError: git command failed for whatever reason
         rev = 'unknown'

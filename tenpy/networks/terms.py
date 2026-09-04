@@ -798,7 +798,7 @@ class CouplingTerms(Hdf5Exportable):
         # done
 
     def to_TermList(self):
-        """Convert :attr:`onsite_terms` into a :class:`TermList`.
+        """Convert :attr:`coupling_terms` into a :class:`TermList`.
 
         Returns
         -------
@@ -1250,7 +1250,7 @@ class MultiCouplingTerms(CouplingTerms):
         # done
 
     def to_TermList(self):
-        """Convert :attr:`coupling_terms` into a :class:`TermList`.
+        """Convert :attr:`terms_left` and :attr:`terms_right` into a :class:`TermList`.
 
         Returns
         -------

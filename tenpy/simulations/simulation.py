@@ -278,7 +278,7 @@ class Simulation:
     def __exit__(self, exc_type, exc_value, traceback):
         self.cache.__exit__(exc_type, exc_value, traceback)  # exit cache context
         if exc_type is not None:
-            self.logger.exception(
+            self.logger.exception(  # noqa: LOG004
                 'simulation abort with the following exception', exc_info=(exc_type, exc_value, traceback)
             )
         self.options.warn_unused(True)
@@ -1354,7 +1354,7 @@ def init_simulation_from_checkpoint(
 
     Returns
     -------
-    results :
+    ``results`` : dict
         The results from running the simulation, i.e.,
         what :meth:`~tenpy.simulations.Simulation.resume_run()` returned.
 
@@ -1413,7 +1413,7 @@ def resume_from_checkpoint(
 
     Returns
     -------
-    results :
+    ``results`` : dict
         The results from running the simulation, i.e.,
         what :meth:`~tenpy.simulations.Simulation.resume_run()` returned.
 

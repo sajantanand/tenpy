@@ -4548,7 +4548,7 @@ class MPS(BaseMPSExpectationValue):
 
         Returns
         -------
-        norm_error: array, shape (L, 2)
+        norm_error: (L, 2) array
             For each site the norm error to the left and right.
             The error ``norm_error[i, 0]`` is defined as the norm-difference between
             the following networks::
@@ -5935,9 +5935,7 @@ class MPS(BaseMPSExpectationValue):
                 f'expected |o| = 1., got |o| = {abs(ov[0]):.3e}\n'
             )
 
-        logger.info(
-            'compute_K: overlap %.5f, |o| = 1. - %.e5., trunc_err.eps=%.3e', ov[0], 1.0 - np.abs(ov[0]), trunc_err.eps
-        )
+        logger.info(f'compute_K: overlap {ov[0]:.5f}, |o| = 1. - {1.0 - np.abs(ov[0]):.5e}, {trunc_err.eps=:.3e}')
         sUs = sUs[0].split_legs(0)
         _, sUs_blocked = sUs.as_completely_blocked()
         W = npc.eigvals(sUs_blocked, sort='m>')

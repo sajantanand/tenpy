@@ -562,10 +562,10 @@ class LegCharge:
     ----------
     chargeinfo : :class:`ChargeInfo`
         The nature of the charge.
-    slices: 1D array_like, len(block_number+1)
+    slices: (block_number + 1,) array
         A block with 'qindex' ``qi`` corresponds to the leg indices in
         ``slice(slices[qi], slices[qi+1])``.
-    charges : 2D array_like, shape(block_number, chargeinfo.qnumber)
+    charges : (block_number, chargeinfo.qnumber) array
         ``charges[qi]`` gives the charges for a block with 'qindex' ``qi``.
     qconj : {+1, -1}
         A flag telling whether the charge points inwards (+1, default) or outwards (-1).
@@ -578,10 +578,10 @@ class LegCharge:
         The number of blocks, i.e., a 'qindex' for this leg is in ``range(block_number)``.
     chinfo : :class:`ChargeInfo` instance
         The nature of the charge. Can be shared between LegCharges.
-    slices : ndarray[np.intp_t,ndim=1] (block_number+1)
+    slices : (block_number + 1,) ndarray[np.intp_t,ndim=1]
         A block with 'qindex' ``qi`` corresponds to the leg indices in
         ``slice(self.slices[qi], self.slices[qi+1])``. See :meth:`get_slice`.
-    charges : ndarray[QTYPE_t,ndim=1] (block_number, chinfo.qnumber)
+    charges : (block_number, chinfo.qnumber) ndarray[QTYPE_t,ndim=1]
         ``charges[qi]`` gives the charges for a block with 'qindex' ``qi``.
         Note: the sign might be changed by `qconj`. See also :meth:`get_charge`.
     qconj : {-1, 1}
@@ -914,12 +914,14 @@ class LegCharge:
         """
         if charge is None:
             return cls.from_trivial(leg.ind_len, chargeinfo, leg.qconj)
+        if isinstance(charge, str):
+            charge = leg.chinfo.names.index(charge)
+        if isinstance(leg.chinfo, DipolarChargeInfo) and charge not in leg.chinfo._dipole_idcs:
+            raise KeyError('In the case of dipolar charges all of the dipolar components of must be dropped.')
         chinfo = ChargeInfo.drop(leg.chinfo, charge)
         if chargeinfo is not None:
             assert chinfo == chargeinfo
             chinfo = chargeinfo
-        if isinstance(charge, str):
-            charge = chinfo.names.index(charge)
         return cls.from_qind(chinfo, leg.slices, np.delete(leg.charges, charge, 1), leg.qconj)
 
     @classmethod
@@ -1159,7 +1161,7 @@ class LegCharge:
 
         Returns
         -------
-        sizes : ndarray, shape (block_number,)
+        sizes : (block_number,) ndarray
             The sizes of the individual blocks; ``sizes[i] = slices[i+1] - slices[i]``.
 
         """
@@ -1763,7 +1765,7 @@ class LegPipe(LegCharge):
         """Fairly short debug output."""
         res_lines = [
             f'LegPipe(shape {self.subshape!s}->{self.ind_len:d}, ',
-            f'    qconj ({", ".join(f"{l.qconj:+d}" for l in self.legs)})->{self.qconj:+1};'
+            f'    qconj ({", ".join(f"{l.qconj:+d}" for l in self.legs)})->{self.qconj:+1};',
             f'    block numbers {self.subqshape!s}->{self.block_number:d})',
             vert_join([str(l) for l in self.legs], delim=' | '),
             ')',
