@@ -2000,6 +2000,7 @@ class ClockSite(Site):
     ``X, Z``                    Clock operators
     ``Xhc, Zhc``                Hermitian conjugates of clock operators
     ``Xphc, Zphc``              Clock operator plus its hermitian conjugate
+    ``Zmhc``                    :math:`i(Z - Z^\dagger)` (hermitian; zero for q=2; real diagonal :math:`-2\sin(2\pi j/q)` for q>2)
     ``XhcZ``                    Lattice operator for Potts critical point
     ``XhcZhc``                  Lattice operator for Potts critical point
     =========================== ================================================
@@ -2045,6 +2046,7 @@ class ClockSite(Site):
         Zhc = Z.conj().transpose()
         Xphc = X + Xhc
         Zphc = np.diag(2.0 * np.cos(2.0 * np.pi * np.arange(q, dtype=np.complex128) / q))
+        Zmhc = 1.0j * (Z - Zhc)  # hermitian, real diagonal -2 sin(2 pi j/q); diagonal (like Zphc), so charge=0 under conserve='Z' too -- no exclusion needed
         if conserve == 'Z':
             # we store n as the charge where <Z> = exp(2.j * pi * n / q)
             chinfo = npc.ChargeInfo([q], ['clock_phase'])
@@ -2059,6 +2061,7 @@ class ClockSite(Site):
         self.add_op('Z', Z, hc='Zhc')
         self.add_op('Zhc', Zhc, hc='Z')
         self.add_op('Zphc', Zphc, hc='Zphc')        # This operator is the sum of two charge=0 (diagonal) operators.
+        self.add_op('Zmhc', Zmhc, hc='Zmhc')        # hermitian: i(Z - Zhc) is its own conjugate.
         self.add_op('XhcZ', Xhc @ Z, hc=False)
         self.add_op('XhcZhc', Xhc @ Zhc, hc=False)
         if conserve != 'Z':
