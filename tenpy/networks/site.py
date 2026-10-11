@@ -2001,6 +2001,8 @@ class ClockSite(Site):
     ``Xhc, Zhc``                Hermitian conjugates of clock operators
     ``Xphc, Zphc``              Clock operator plus its hermitian conjugate
     ``Zmhc``                    :math:`i(Z - Z^\dagger)` (hermitian; zero for q=2; real diagonal :math:`-2\sin(2\pi j/q)` for q>2)
+    ``Xmhc``                    :math:`i(X - X^\dagger)` (hermitian; analogous to Zmhc but for X; zero for q=2)
+    ``Y``                       Pauli Y (q=2 only; :math:`=i X Z`, since X,Z reduce to Pauli X,Z there)
     ``XhcZ``                    Lattice operator for Potts critical point
     ``XhcZhc``                  Lattice operator for Potts critical point
     =========================== ================================================
@@ -2008,7 +2010,7 @@ class ClockSite(Site):
     ============== ====  ============================
     `conserve`     qmod  *excluded* onsite operators
     ============== ====  ============================
-    ``'Z'``        [q]   ``Xphc``
+    ``'Z'``        [q]   ``Xphc``, ``Xmhc``
     ``'None'``     []    --
     ============== ====  ============================
 
@@ -2047,6 +2049,14 @@ class ClockSite(Site):
         Xphc = X + Xhc
         Zphc = np.diag(2.0 * np.cos(2.0 * np.pi * np.arange(q, dtype=np.complex128) / q))
         Zmhc = 1.0j * (Z - Zhc)  # hermitian, real diagonal -2 sin(2 pi j/q); diagonal (like Zphc), so charge=0 under conserve='Z' too -- no exclusion needed
+        Xmhc = 1.0j * (X - Xhc)  # hermitian, same construction as Zmhc but for X (zero for q=2, same
+        # reason: X is already real/symmetric there, so X == Xhc); mixes the +1/-1 charge sectors of
+        # X/Xhc (like Xphc), so excluded under conserve='Z' for the same reason.
+        if q == 2:
+            Y = 1.0j * (X @ Z)  # == the standard Pauli Y at q=2 (X,Z reduce to Pauli X,Z there);
+            # hermitian (X,Z anticommute at q=2), and has the SAME single well-defined charge as X
+            # alone (Z is diagonal/charge-0), so -- unlike Xphc/Xmhc -- no conserve='Z' exclusion
+            # needed. Not a meaningful generalization at q>2, so only defined here.
         if conserve == 'Z':
             # we store n as the charge where <Z> = exp(2.j * pi * n / q)
             chinfo = npc.ChargeInfo([q], ['clock_phase'])
@@ -2066,6 +2076,9 @@ class ClockSite(Site):
         self.add_op('XhcZhc', Xhc @ Zhc, hc=False)
         if conserve != 'Z':
             self.add_op('Xphc', Xphc, hc='Xphc')
+            self.add_op('Xmhc', Xmhc, hc='Xmhc')    # hermitian: i(X - Xhc) is its own conjugate.
+        if q == 2:
+            self.add_op('Y', Y, hc='Y')              # hermitian: Pauli Y.
         self.state_labels['up'] = self.state_labels['0']
         if q % 2 == 0:
             self.state_labels['down'] = self.state_labels[str(q // 2)]
