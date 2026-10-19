@@ -186,6 +186,7 @@ class DoubledMPS(MPS):
         self._S = reg_MPS._S
         self.norm = reg_MPS.norm
         self.form = reg_MPS.form
+        self.dtype = reg_MPS.dtype      # 10/16/2026 - copy over dtype of vectorized MPS
         # Don't want to do this as of 05/09/2024; when doing backflow experiments, we want to have finite MPS with a dangling
         # right vR leg; test_sanity() doesn't allow for this.
         #self.test_sanity()
