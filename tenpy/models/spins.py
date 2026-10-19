@@ -92,7 +92,8 @@ class SpinModel(CouplingMPOModel):
         muJ = model_params.get('muJ', 0.0, 'real_or_array')
         F = model_params.get('F', 0., 'real_or_array')
         G = model_params.get('G', 0., 'real_or_array')
-        L = model_params['L']
+        if F != 0.0 or G != 0.0:
+            L = model_params['L']
 
         # (u is always 0 as we have only one site in the unit cell)
         for u in range(len(self.lat.unit_cell)):
@@ -102,14 +103,15 @@ class SpinModel(CouplingMPOModel):
             self.add_onsite(D, u, 'Sz Sz')
             self.add_onsite(E * 0.5, u, 'Sp Sp')
             self.add_onsite(E * 0.5, u, 'Sm Sm')
-        for i in range(L):
-            # Linearly tilted magnetic field
-            # 0 of magnetic field is at middle site
-            self.add_onsite_term((i - L//2) * F, i, 'Sz')
+        if F != 0.0 or G != 0.0:
+            for i in range(L):
+                # Linearly tilted magnetic field
+                # 0 of magnetic field is at middle site
+                self.add_onsite_term((i - L//2) * F, i, 'Sz')
 
-            # Quadratically tilted magnetic field
-            # 0 of magnetic field is at middle site
-            self.add_onsite_term((i - L//2)**2 * G, i, 'Sz')
+                # Quadratically tilted magnetic field
+                # 0 of magnetic field is at middle site
+                self.add_onsite_term((i - L//2)**2 * G, i, 'Sz')
 
         # Sp = Sx + i Sy, Sm = Sx - i Sy,  Sx = (Sp+Sm)/2, Sy = (Sp-Sm)/2i
         # Sx.Sx = 0.25 ( Sp.Sm + Sm.Sp + Sp.Sp + Sm.Sm )
