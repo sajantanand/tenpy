@@ -2002,15 +2002,19 @@ class ClockSite(Site):
     ``Xphc, Zphc``              Clock operator plus its hermitian conjugate
     ``Zmhc``                    :math:`i(Z - Z^\dagger)` (hermitian; zero for q=2; real diagonal :math:`-2\sin(2\pi j/q)` for q>2)
     ``Xmhc``                    :math:`i(X - X^\dagger)` (hermitian; analogous to Zmhc but for X; zero for q=2)
-    ``Y``                       Pauli Y (q=2 only; :math:`=i X Z`, since X,Z reduce to Pauli X,Z there)
     ``XhcZ``                    Lattice operator for Potts critical point
     ``XhcZhc``                  Lattice operator for Potts critical point
+    ``ZX``                      :math:`Z X` (needed for the critical-point operator's dagger, :math:`b_i^\dagger`)
+    ``ZhcX``                    :math:`Z^\dagger X` (needed for the critical-point operator's dagger, :math:`b_i^\dagger`)
+    ``Y``                       :math:`-i\,\tau\eta = -i Z X`, generalizing Pauli Y to all :math:`q` (:math:`=` Pauli Y at q=2)
+    ``Yphc``                    :math:`Y + Y^\dagger` (dissipator option "orthogonal" to :math:`X_{phc}`/:math:`Z_{phc}`; redundant with :math:`2Y` at q=2)
+    ``Ymhc``                    :math:`i(Y - Y^\dagger)` (dissipator option, analogous to :math:`Z_{mhc}`/:math:`X_{mhc}`; zero at q=2)
     =========================== ================================================
 
     ============== ====  ============================
     `conserve`     qmod  *excluded* onsite operators
     ============== ====  ============================
-    ``'Z'``        [q]   ``Xphc``, ``Xmhc``
+    ``'Z'``        [q]   ``Xphc``, ``Xmhc``, ``Yphc``, ``Ymhc``
     ``'None'``     []    --
     ============== ====  ============================
 
@@ -2052,11 +2056,22 @@ class ClockSite(Site):
         Xmhc = 1.0j * (X - Xhc)  # hermitian, same construction as Zmhc but for X (zero for q=2, same
         # reason: X is already real/symmetric there, so X == Xhc); mixes the +1/-1 charge sectors of
         # X/Xhc (like Xphc), so excluded under conserve='Z' for the same reason.
-        if q == 2:
-            Y = 1.0j * (X @ Z)  # == the standard Pauli Y at q=2 (X,Z reduce to Pauli X,Z there);
-            # hermitian (X,Z anticommute at q=2), and has the SAME single well-defined charge as X
-            # alone (Z is diagonal/charge-0), so -- unlike Xphc/Xmhc -- no conserve='Z' exclusion
-            # needed. Not a meaningful generalization at q>2, so only defined here.
+        ZX = Z @ X
+        ZXhc = ZX.conj().transpose()  # == Xhc @ Zhc
+        Y = -1.0j * ZX  # tau*eta generalized to all q (not just q=2): Z is charge=0, so Y has the
+        # SAME single well-defined charge as X alone -- like 'X'/'ZX' themselves, no conserve='Z'
+        # exclusion needed for Y itself. At q=2, X,Z reduce to Pauli X,Z, which anticommute, giving
+        # ZX = i*Pauli_Y -- so Y = -i*(i*Pauli_Y) = Pauli_Y exactly, reproducing the q=2-only
+        # definition this replaces (previously Y = i*X*Z, same value by anticommutation: i*X*Z =
+        # i*(-Z*X) = -i*ZX = Y). The overall phase is physically irrelevant for Yphc/Ymhc as
+        # dissipators (Lindblad dynamics is invariant under an overall phase on the jump operator),
+        # so this choice is just the one that keeps the q=2 value unchanged, not a physics choice.
+        Yhc = Y.conj().transpose()
+        Yphc = Y + Yhc  # dissipator option "orthogonal" to Xphc/Zphc. Mixes Y's charge with Yhc's,
+        Ymhc = 1.0j * (Y - Yhc)  # exactly like Xphc/Xmhc mix X's with Xhc's -- same conserve='Z'
+        # exclusion. At q=2, Y is already hermitian (Y==Yhc, since Pauli_Y is hermitian), so
+        # Yphc == 2*Y (redundant, not a new direction) and Ymhc == 0 (zero) -- same "trivial/zero
+        # at q=2" pattern as Zmhc/Xmhc, for the same reason (nothing new to add at q=2).
         if conserve == 'Z':
             # we store n as the charge where <Z> = exp(2.j * pi * n / q)
             chinfo = npc.ChargeInfo([q], ['clock_phase'])
@@ -2074,11 +2089,18 @@ class ClockSite(Site):
         self.add_op('Zmhc', Zmhc, hc='Zmhc')        # hermitian: i(Z - Zhc) is its own conjugate.
         self.add_op('XhcZ', Xhc @ Z, hc=False)
         self.add_op('XhcZhc', Xhc @ Zhc, hc=False)
+        self.add_op('ZX', ZX, hc=False)          # Z is charge=0 (diagonal), so ZX has the same
+        self.add_op('ZhcX', Zhc @ X, hc=False)  # single well-defined charge as X alone -- no
+        # conserve='Z' exclusion needed, same reasoning as 'Y' below. Needed for b_i^dagger:
+        # the composite single-site terms that appear when daggering XhcZ/XhcZhc term-by-term
+        # ((XhcZ)^dag = Zhc X, (XhcZhc)^dag = Z X), analogous to XhcZ/XhcZhc for b_i itself.
+        self.add_op('Y', Y, hc=False)  # single well-defined charge (see above) -- no exclusion
+        # needed for Y itself, only for Yphc/Ymhc below.
         if conserve != 'Z':
             self.add_op('Xphc', Xphc, hc='Xphc')
             self.add_op('Xmhc', Xmhc, hc='Xmhc')    # hermitian: i(X - Xhc) is its own conjugate.
-        if q == 2:
-            self.add_op('Y', Y, hc='Y')              # hermitian: Pauli Y.
+            self.add_op('Yphc', Yphc, hc='Yphc')
+            self.add_op('Ymhc', Ymhc, hc='Ymhc')    # hermitian: i(Y - Yhc) is its own conjugate.
         self.state_labels['up'] = self.state_labels['0']
         if q % 2 == 0:
             self.state_labels['down'] = self.state_labels[str(q // 2)]
